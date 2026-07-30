@@ -1,2 +1,5 @@
-# Auto detect text files and perform LF normalization
 * text=auto
+# Vendored third-party trees: store as-is, don't normalize or spam CRLF warnings
+third_party/** -text
+*.sln  text eol=crlf
+*.slnx text eol=crlf
