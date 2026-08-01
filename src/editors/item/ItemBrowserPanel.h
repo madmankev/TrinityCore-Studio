@@ -10,7 +10,7 @@
 
 #include "editors/item/ItemRepository.h"
 
-namespace qe
+namespace we
 {
 class LookupCache;
 
@@ -33,4 +33,4 @@ private:
     uint32_t selectedId = 0;
     int lastPageCount = 0;
 };
-} // namespace qe
+} // namespace we

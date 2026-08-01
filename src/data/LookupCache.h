@@ -17,7 +17,7 @@
 
 #include "db/DbTypes.h"
 
-namespace qe
+namespace we
 {
 class IDatabase;
 
@@ -117,7 +117,7 @@ public:
     // --- Search (cache-only) ----------------------------------------------
     // If `query` parses as a number, matches ids (exact first, then id-prefix,
     // then names containing the digits). Otherwise a case-insensitive substring
-    // match on name (via qe::IContains). Returns up to `limit` entries, best
+    // match on name (via we::IContains). Returns up to `limit` entries, best
     // match first. Empty query returns the first `limit` entries by id.
     std::vector<NameEntry> SearchItems(const std::string& query, size_t limit = 50) const;
     std::vector<NameEntry> SearchCreatures(const std::string& query, size_t limit = 50) const;
@@ -228,33 +228,43 @@ private:
     std::vector<NameEntry> questList;
     bool questsLoaded = false;
 
-    // DBC-sourced (optional names)
+    // DBC-sourced (optional names). Each has a `<cat>ClientSourced` flag: true once the
+    // names were set from client DBC data (SetXNames). ClearDbSourced keeps client-sourced
+    // categories (they must survive a DB reconnect) but drops DB/JSON-fallback ones so the
+    // next connect reloads them from the possibly-different DB. See LookupCache.cpp.
     std::unordered_map<uint32_t, std::string> factionById;
     std::vector<NameEntry> factionList;
     bool factionsLoaded = false;
+    bool factionsClientSourced = false;
 
     std::unordered_map<uint32_t, std::string> factionTemplateById;
     std::vector<NameEntry> factionTemplateList;
     bool factionTemplatesLoaded = false;
+    bool factionTemplatesClientSourced = false;
 
     std::unordered_map<uint32_t, std::string> spellById;
     std::vector<NameEntry> spellList;
     bool spellsLoaded = false;
+    bool spellsClientSourced = false;
 
     std::unordered_map<uint32_t, std::string> areaById;
     std::vector<NameEntry> areaList;
     bool areasLoaded = false;
+    bool areasClientSourced = false;
 
     std::unordered_map<uint32_t, std::string> skillById;
     std::vector<NameEntry> skillList;
     bool skillsLoaded = false;
+    bool skillsClientSourced = false;
 
     std::unordered_map<uint32_t, std::string> titleById;
     std::vector<NameEntry> titleList;
     bool titlesLoaded = false;
+    bool titlesClientSourced = false;
 
     std::unordered_map<uint32_t, std::string> mailTemplateById;
     std::vector<NameEntry> mailTemplateList;
     bool mailTemplatesLoaded = false;
+    bool mailTemplatesClientSourced = false;
 };
-} // namespace qe
+} // namespace we

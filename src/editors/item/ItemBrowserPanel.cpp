@@ -12,7 +12,7 @@
 #include <cstdio>
 #include <vector>
 
-namespace qe
+namespace we
 {
 void ItemBrowserPanel::Draw(const std::vector<ItemListEntry>& entries, bool connected,
                             LookupCache& lookups, ItemBrowserCallbacks& cb)
@@ -214,4 +214,4 @@ void ItemBrowserPanel::Draw(const std::vector<ItemListEntry>& entries, bool conn
     if (doRefresh && connected && cb.onRefresh)
         cb.onRefresh(filter);
 }
-} // namespace qe
+} // namespace we

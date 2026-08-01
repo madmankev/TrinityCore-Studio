@@ -10,7 +10,7 @@
 
 #include "ItemTemplate.h"
 
-namespace qe
+namespace we
 {
 // One row of item_template_locale (per `locale` code). Empty strings mean the
 // column carries no localized value for that locale.
@@ -24,7 +24,7 @@ struct ItemLocale
 struct Item
 {
     ItemTemplate tmpl;                         // item_template (always present)
-    std::map<std::string, ItemLocale> locales; // key = locale code (see qe::kLocales)
+    std::map<std::string, ItemLocale> locales; // key = locale code (see we::kLocales)
 
     // --- Dirty tracking (save writes only what changed) -------------------
     bool tmplDirty = false;
@@ -36,5 +36,8 @@ struct Item
     bool AnyDirty() const { return tmplDirty || localesDirty; }
 
     void ClearDirty() { tmplDirty = localesDirty = false; }
+
+    // Force every part dirty (whole-record write when no per-part flags were set).
+    void MarkAllDirty() { tmplDirty = localesDirty = true; }
 };
-} // namespace qe
+} // namespace we

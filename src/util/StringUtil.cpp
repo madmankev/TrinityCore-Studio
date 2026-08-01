@@ -3,7 +3,7 @@
 #include <cctype>
 #include <cstdio>
 
-namespace qe
+namespace we
 {
     namespace
     {

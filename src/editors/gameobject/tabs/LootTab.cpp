@@ -12,7 +12,7 @@
 
 #include <cfloat>
 
-namespace qe
+namespace we
 {
 void DrawGameObjectLootTab(GameObjectEditorContext& ctx)
 {
@@ -87,4 +87,4 @@ void DrawGameObjectLootTab(GameObjectEditorContext& ctx)
     }
     if (rm >= 0) { go.loot.erase(go.loot.begin() + rm); md(); }
 }
-} // namespace qe
+} // namespace we

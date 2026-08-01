@@ -18,7 +18,7 @@
 #include "db/IDatabase.h"
 #include "db/ResultSet.h"
 
-namespace qe
+namespace we
 {
 namespace sql
 {
@@ -115,4 +115,4 @@ struct ValueList
     void Text(const std::string& s) { Append("'" + db.EscapeString(s) + "'"); }
 };
 } // namespace sql
-} // namespace qe
+} // namespace we

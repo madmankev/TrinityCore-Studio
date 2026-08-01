@@ -11,7 +11,7 @@
 
 #include <cstdio>
 
-namespace qe
+namespace we
 {
 void DrawCreatureScriptingTab(CreatureEditorContext& ctx)
 {
@@ -53,4 +53,4 @@ void DrawCreatureScriptingTab(CreatureEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

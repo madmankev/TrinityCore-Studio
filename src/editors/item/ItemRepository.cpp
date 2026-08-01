@@ -10,7 +10,7 @@
 #include "db/ResultSet.h"
 #include "data/SqlBuild.h"
 
-namespace qe
+namespace we
 {
 using namespace sql;
 
@@ -302,7 +302,10 @@ DbError ItemRepository::SaveItem(IDatabase& db, const Item& item)
         return e;
     };
 
+    const bool all = item.isNew;   // new record writes all tables; else per-part deltas
+
     // --- item_template (REPLACE) -----------------------------------------
+    if (all || item.tmplDirty)
     {
         const ItemTemplate& t = item.tmpl;
         ValueList v(db);
@@ -423,10 +426,12 @@ DbError ItemRepository::SaveItem(IDatabase& db, const Item& item)
     }
 
     // --- item_template_locale (delete-then-insert) -----------------------
-    if (!ExecStep(db, "DELETE FROM item_template_locale WHERE ID = " + idStr, err))
+    if ((all || item.localesDirty) &&
+        !ExecStep(db, "DELETE FROM item_template_locale WHERE ID = " + idStr, err))
         return fail(err);
     static const std::vector<std::string> locCols = SplitCols(kItemLocaleCols);
     const std::set<std::string> locExisting = ExistingCols(db, "item_template_locale");
+    if (all || item.localesDirty)
     for (const auto& kv : item.locales)
     {
         const ItemLocale& l = kv.second;
@@ -621,4 +626,4 @@ DbError ItemRepository::BatchUpdateItems(IDatabase& db, const std::vector<uint32
     affected = static_cast<uint32_t>(entries.size());
     return db.Commit();
 }
-} // namespace qe
+} // namespace we

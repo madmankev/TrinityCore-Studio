@@ -5,7 +5,7 @@
 
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 struct QuestTemplateAddon
 {
@@ -30,4 +30,4 @@ struct QuestTemplateAddon
 
     bool present = false;                   // true when an addon row exists
 };
-} // namespace qe
+} // namespace we

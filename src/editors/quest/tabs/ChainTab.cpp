@@ -19,7 +19,7 @@
 
 #include <string>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -161,4 +161,4 @@ void DrawChainTab(QuestEditorContext& ctx)
         link("Breadcrumb for:", addon.breadcrumbForQuestId);
     }
 }
-} // namespace qe
+} // namespace we

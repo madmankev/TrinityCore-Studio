@@ -5,7 +5,7 @@
 
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 struct QuestMailSender
 {
@@ -14,4 +14,4 @@ struct QuestMailSender
 
     bool present = false;
 };
-} // namespace qe
+} // namespace we

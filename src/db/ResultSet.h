@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <string>
 
-namespace qe
+namespace we
 {
 class ResultSet
 {
@@ -39,4 +39,4 @@ public:
     // columns the DB doesn't have.
     virtual int ColumnIndex(const std::string& name) const = 0;
 };
-} // namespace qe
+} // namespace we

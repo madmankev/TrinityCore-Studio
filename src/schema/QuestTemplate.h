@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <string>
 
-namespace qe
+namespace we
 {
 struct QuestTemplate
 {
@@ -91,4 +91,4 @@ struct QuestTemplate
 
     int32_t  verifiedBuild = 0;             // `VerifiedBuild`  int  (DEFAULT NULL; stored as int)
 };
-} // namespace qe
+} // namespace we

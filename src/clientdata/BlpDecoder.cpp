@@ -4,7 +4,7 @@
 
 #include <cstring>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -222,4 +222,4 @@ BlpImage DecodeBlp(const std::vector<uint8_t>& bytes)
 
     return img;
 }
-} // namespace qe
+} // namespace we

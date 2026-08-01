@@ -8,7 +8,7 @@
 #include "data/Validation.h"
 #include "schema/GameObject.h"
 
-namespace qe
+namespace we
 {
 class LookupCache;
 
@@ -17,4 +17,4 @@ class GameObjectValidator
 public:
     std::vector<ValidationIssue> Validate(const GameObject& go, const LookupCache& cache) const;
 };
-} // namespace qe
+} // namespace we

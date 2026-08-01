@@ -12,7 +12,7 @@
 
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 void DrawCreatureTypeLootTab(CreatureEditorContext& ctx)
 {
@@ -66,4 +66,4 @@ void DrawCreatureTypeLootTab(CreatureEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

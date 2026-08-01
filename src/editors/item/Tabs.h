@@ -4,7 +4,7 @@
 // the per-frame ItemEditorContext by reference (signatures stay stable; only bodies
 // change). Bodies live in editors/item/tabs/*.cpp.
 
-namespace qe
+namespace we
 {
 struct ItemEditorContext;
 
@@ -17,4 +17,4 @@ void DrawItemSpellsTab(ItemEditorContext&);
 void DrawItemSocketsTab(ItemEditorContext&);
 void DrawItemTextSetTab(ItemEditorContext&);
 void DrawItemLocalesTab(ItemEditorContext&);
-} // namespace qe
+} // namespace we

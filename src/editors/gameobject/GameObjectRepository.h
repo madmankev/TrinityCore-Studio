@@ -2,7 +2,7 @@
 
 // Layer C (data) — GameObjectRepository: loads/saves a whole gameobject across
 // gameobject_template + addon + locale + questitem, plus the loot slice (by Data1)
-// and world spawns. Reuses qe::sql and the creature editor's save shapes.
+// and world spawns. Reuses we::sql and the creature editor's save shapes.
 
 #include <cstdint>
 #include <string>
@@ -11,7 +11,7 @@
 #include "db/DbTypes.h"
 #include "schema/GameObject.h"
 
-namespace qe
+namespace we
 {
 class IDatabase;
 
@@ -70,4 +70,4 @@ private:
     DbError LoadAssociated(IDatabase& db, uint32_t entry, GameObject& out);
     bool SaveAssociated(IDatabase& db, const GameObject& go, DbError& err);
 };
-} // namespace qe
+} // namespace we

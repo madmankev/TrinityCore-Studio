@@ -7,7 +7,7 @@
 
 #include "schema/Quest.h"
 
-namespace qe
+namespace we
 {
 class LookupCache;
 
@@ -22,4 +22,4 @@ struct QuestEditorContext
 
     void MarkChanged() { changed = true; }
 };
-} // namespace qe
+} // namespace we

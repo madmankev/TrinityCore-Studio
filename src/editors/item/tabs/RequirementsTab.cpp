@@ -12,7 +12,7 @@
 
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 void DrawItemRequirementsTab(ItemEditorContext& ctx)
 {
@@ -104,4 +104,4 @@ void DrawItemRequirementsTab(ItemEditorContext& ctx)
         ImGui::TextDisabled("(-1 / all bits = usable by every race)");
     }
 }
-} // namespace qe
+} // namespace we

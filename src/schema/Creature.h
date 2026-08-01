@@ -13,7 +13,7 @@
 #include "CreatureTemplate.h"
 #include "LootItem.h"
 
-namespace qe
+namespace we
 {
 // creature_template_locale (PK entry+locale). Only Name + Title are localized.
 struct CreatureLocale
@@ -136,5 +136,12 @@ struct Creature
         tmplDirty = addonDirty = movementDirty = resistDirty = spellsDirty = equipsDirty =
             localesDirty = vendorDirty = trainerDirty = lootDirty = spawnsDirty = false;
     }
+
+    // Force every part dirty (whole-record write when no per-part flags were set).
+    void MarkAllDirty()
+    {
+        tmplDirty = addonDirty = movementDirty = resistDirty = spellsDirty = equipsDirty =
+            localesDirty = vendorDirty = trainerDirty = lootDirty = spawnsDirty = true;
+    }
 };
-} // namespace qe
+} // namespace we

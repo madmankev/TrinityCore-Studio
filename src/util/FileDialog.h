@@ -6,7 +6,7 @@
 
 #include <string>
 
-namespace qe
+namespace we
 {
 std::string OpenFileDialog(const std::string& title, const std::string& filterName,
                            const std::string& filterPattern);
@@ -16,4 +16,4 @@ std::string SaveFileDialog(const std::string& title, const std::string& filterNa
 // Pick an existing folder (e.g. the WoW 'Data' directory). Returns the chosen path
 // (UTF-8) or "" if cancelled.
 std::string PickFolderDialog(const std::string& title);
-} // namespace qe
+} // namespace we

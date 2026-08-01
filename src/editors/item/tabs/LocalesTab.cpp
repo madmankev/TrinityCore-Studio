@@ -11,7 +11,7 @@
 
 #include <string>
 
-namespace qe
+namespace we
 {
 void DrawItemLocalesTab(ItemEditorContext& ctx)
 {
@@ -67,4 +67,4 @@ void DrawItemLocalesTab(ItemEditorContext& ctx)
     ImGui::TextUnformatted("Description:");
     if (InputMultiline("##locdesc", l.description, 60.0f)) md();
 }
-} // namespace qe
+} // namespace we

@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <string>
 
-namespace qe
+namespace we
 {
 struct CreatureTemplate
 {
@@ -106,4 +106,4 @@ struct CreatureEquip
     uint8_t  id = 1;                     // `ID` tinyint unsigned (set number, 1..N)
     std::array<uint32_t, 3> itemId{};    // `ItemID1..3` int unsigned (main/off/ranged)
 };
-} // namespace qe
+} // namespace we

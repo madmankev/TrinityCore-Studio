@@ -7,7 +7,7 @@
 
 #include <functional>
 
-namespace qe
+namespace we
 {
 struct QuestEditorContext;
 
@@ -36,4 +36,4 @@ public:
 private:
     int pendingSelect = -1;
 };
-} // namespace qe
+} // namespace we

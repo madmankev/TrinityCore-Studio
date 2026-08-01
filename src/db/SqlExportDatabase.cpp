@@ -3,7 +3,7 @@
 #include <fstream>
 #include <utility>
 
-namespace qe
+namespace we
 {
 SqlExportDatabase::SqlExportDatabase(IDatabase* readSource)
     : readSource(readSource)
@@ -145,4 +145,4 @@ std::string SqlExportDatabase::EscapeString(const std::string& raw)
     }
     return out;
 }
-} // namespace qe
+} // namespace we

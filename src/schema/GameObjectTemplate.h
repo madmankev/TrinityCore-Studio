@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <string>
 
-namespace qe
+namespace we
 {
 struct GameObjectTemplate
 {
@@ -64,4 +64,4 @@ struct GameObjectSpawn
     bool deleted = false;
     bool rowDirty = false;
 };
-} // namespace qe
+} // namespace we

@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace qe
+namespace we
 {
 // One vertex of a POI polygon (quest_poi_points).
 struct QuestPoiPoint
@@ -35,4 +35,4 @@ struct QuestPoi
 
     std::vector<QuestPoiPoint> points;      // rows from quest_poi_points for this POI
 };
-} // namespace qe
+} // namespace we

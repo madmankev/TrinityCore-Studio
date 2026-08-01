@@ -6,7 +6,7 @@
 
 #include "schema/Item.h"
 
-namespace qe
+namespace we
 {
 class LookupCache;
 
@@ -21,4 +21,4 @@ struct ItemEditorContext
 
     void MarkChanged() { changed = true; }
 };
-} // namespace qe
+} // namespace we

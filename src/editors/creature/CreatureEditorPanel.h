@@ -5,7 +5,7 @@
 
 #include <functional>
 
-namespace qe
+namespace we
 {
 struct CreatureEditorContext;
 
@@ -28,4 +28,4 @@ public:
 private:
     int pendingSelect = -1;
 };
-} // namespace qe
+} // namespace we

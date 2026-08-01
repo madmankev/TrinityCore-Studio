@@ -12,7 +12,7 @@
 
 #include <cstdio>
 
-namespace qe
+namespace we
 {
 void DrawConditionsTab(QuestEditorContext& ctx)
 {
@@ -146,4 +146,4 @@ void DrawConditionsTab(QuestEditorContext& ctx)
         ImGui::TextDisabled("No conditions. This quest is available to anyone who meets the "
                             "quest_template requirements.");
 }
-} // namespace qe
+} // namespace we

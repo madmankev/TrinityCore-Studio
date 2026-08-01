@@ -13,7 +13,7 @@
 #include "db/ResultSet.h"
 #include "util/StringUtil.h"
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -135,29 +135,37 @@ void LookupCache::Assign(IdNameMap m, IdNameMap& byId, std::vector<NameEntry>& l
     loaded = true;
 }
 
+// The Set*Names setters are the CLIENT-data path: they overwrite unconditionally and mark
+// the category client-sourced so ClearDbSourced keeps it across a DB reconnect.
 void LookupCache::SetFactionNames(std::unordered_map<uint32_t, std::string> m)
 {
     Assign(std::move(m), factionById, factionList, factionsLoaded);
+    factionsClientSourced = true;
 }
 void LookupCache::SetFactionTemplateNames(std::unordered_map<uint32_t, std::string> m)
 {
     Assign(std::move(m), factionTemplateById, factionTemplateList, factionTemplatesLoaded);
+    factionTemplatesClientSourced = true;
 }
 void LookupCache::SetSpellNames(std::unordered_map<uint32_t, std::string> m)
 {
     Assign(std::move(m), spellById, spellList, spellsLoaded);
+    spellsClientSourced = true;
 }
 void LookupCache::SetAreaNames(std::unordered_map<uint32_t, std::string> m)
 {
     Assign(std::move(m), areaById, areaList, areasLoaded);
+    areasClientSourced = true;
 }
 void LookupCache::SetSkillNames(std::unordered_map<uint32_t, std::string> m)
 {
     Assign(std::move(m), skillById, skillList, skillsLoaded);
+    skillsClientSourced = true;
 }
 void LookupCache::SetTitleNames(std::unordered_map<uint32_t, std::string> m)
 {
     Assign(std::move(m), titleById, titleList, titlesLoaded);
+    titlesClientSourced = true;
 }
 
 DbError LookupCache::LoadGameObjects(IDatabase& db)
@@ -636,37 +644,47 @@ void LookupCache::Clear()
     factionById.clear();
     factionList.clear();
     factionsLoaded = false;
+    factionsClientSourced = false;
 
     factionTemplateById.clear();
     factionTemplateList.clear();
     factionTemplatesLoaded = false;
+    factionTemplatesClientSourced = false;
 
     spellById.clear();
     spellList.clear();
     spellsLoaded = false;
+    spellsClientSourced = false;
 
     areaById.clear();
     areaList.clear();
     areasLoaded = false;
+    areasClientSourced = false;
 
     skillById.clear();
     skillList.clear();
     skillsLoaded = false;
+    skillsClientSourced = false;
 
     titleById.clear();
     titleList.clear();
     titlesLoaded = false;
+    titlesClientSourced = false;
 
     mailTemplateById.clear();
     mailTemplateList.clear();
     mailTemplatesLoaded = false;
+    mailTemplatesClientSourced = false;
 }
 
 void LookupCache::ClearDbSourced()
 {
-    // Drop only the world-DB categories (item/creature/gameobject/quest). The
-    // DBC-sourced names (faction/spell/area/skill/title/mailtemplate) usually come
-    // from the client and must survive a DB (re)connect/disconnect.
+    // Drop everything tied to a specific DB connection so the next connect reloads it:
+    //  - the world-DB categories (item/creature/gameobject/quest), always; and
+    //  - any DBC-sourced category whose names came from the DB/JSON fallback (NOT the
+    //    client). Client-sourced names (SetXNames) must survive a DB (re)connect, so a
+    //    clientSourced category is kept. This keeps its `loaded` flag true, which makes
+    //    the LoadX fallback skip it (client data stays authoritative).
     itemById.clear();
     itemDisplay.clear();
     itemList.clear();
@@ -684,5 +702,23 @@ void LookupCache::ClearDbSourced()
     questById.clear();
     questList.clear();
     questsLoaded = false;
+
+    auto dropDbSourced = [](IdNameMap& byId, std::vector<NameEntry>& list, bool& loaded,
+                            bool clientSourced) {
+        if (clientSourced)
+            return;  // keep client-sourced names across the reconnect
+        byId.clear();
+        list.clear();
+        loaded = false;  // so LoadExtras reloads it from the (possibly different) DB
+    };
+    dropDbSourced(factionById, factionList, factionsLoaded, factionsClientSourced);
+    dropDbSourced(factionTemplateById, factionTemplateList, factionTemplatesLoaded,
+                  factionTemplatesClientSourced);
+    dropDbSourced(spellById, spellList, spellsLoaded, spellsClientSourced);
+    dropDbSourced(areaById, areaList, areasLoaded, areasClientSourced);
+    dropDbSourced(skillById, skillList, skillsLoaded, skillsClientSourced);
+    dropDbSourced(titleById, titleList, titlesLoaded, titlesClientSourced);
+    dropDbSourced(mailTemplateById, mailTemplateList, mailTemplatesLoaded,
+                  mailTemplatesClientSourced);
 }
-} // namespace qe
+} // namespace we

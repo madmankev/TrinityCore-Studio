@@ -5,7 +5,7 @@
 
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 // Locale codes present in the *_locale tables. enUS is the base row stored in
 // the main tables and never appears here. Order matches the client's locale
@@ -23,4 +23,4 @@ enum class GreetingType : uint8_t
     Creature = 0,
     GameObject = 1
 };
-} // namespace qe
+} // namespace we

@@ -2,7 +2,7 @@
 
 // The editor-module seam. Each record type (quest, item, creature, ...) is one
 // IEditorModule that owns its browser/editor/validation panels, repository, document
-// lifecycle, tools, modals, and menu contributions. The shell (qe::App) hosts a list
+// lifecycle, tools, modals, and menu contributions. The shell (we::App) hosts a list
 // of modules, activates one at a time, and provides shared services (EditorServices).
 // Adding a new editor = implementing this interface — the shell needs no changes.
 
@@ -11,7 +11,7 @@
 
 #include <json.hpp>
 
-namespace qe
+namespace we
 {
 struct EditorServices;
 
@@ -83,4 +83,4 @@ public:
     virtual void DrawTabForCapture(int tab) { (void)tab; }      // screenshot: draw one tab standalone
     virtual void DrawAllTabsForSelftest() {}                    // selftest: exercise every tab
 };
-} // namespace qe
+} // namespace we

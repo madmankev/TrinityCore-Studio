@@ -10,7 +10,7 @@
 #include "db/DbTypes.h"
 #include "db/ResultSet.h"
 
-namespace qe
+namespace we
 {
 class IDatabase
 {
@@ -52,4 +52,4 @@ public:
     // Which write semantics this implementation provides.
     virtual WriteMode Mode() const = 0;
 };
-} // namespace qe
+} // namespace we

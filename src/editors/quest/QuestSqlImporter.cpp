@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -1027,4 +1027,4 @@ ImportResult QuestSqlImporter::ImportFromSql(const std::string& sqlText, uint32_
     }
     return result;
 }
-} // namespace qe
+} // namespace we

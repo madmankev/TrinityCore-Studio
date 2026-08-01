@@ -10,7 +10,7 @@
 #include <cctype>
 #include <cstdlib>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -123,4 +123,4 @@ int MysqlResultSet::ColumnIndex(const std::string& name) const
     auto it = nameToIndex.find(key);
     return it == nameToIndex.end() ? -1 : it->second;
 }
-} // namespace qe
+} // namespace we

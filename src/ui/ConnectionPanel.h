@@ -11,7 +11,7 @@
 #include "db/ConnectionStore.h"
 #include "db/DbTypes.h"
 
-namespace qe
+namespace we
 {
 struct ConnectionCallbacks
 {
@@ -60,4 +60,4 @@ private:
     std::string soapUser;
     std::string soapPassword;
 };
-} // namespace qe
+} // namespace we

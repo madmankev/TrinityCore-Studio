@@ -11,7 +11,7 @@
 
 #include <cfloat>
 
-namespace qe
+namespace we
 {
 void DrawGameObjectSpawnsTab(GameObjectEditorContext& ctx)
 {
@@ -90,4 +90,4 @@ void DrawGameObjectSpawnsTab(GameObjectEditorContext& ctx)
         go.spawnsDirty = true;
     }
 }
-} // namespace qe
+} // namespace we

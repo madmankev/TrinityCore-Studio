@@ -1,22 +1,24 @@
 #pragma once
 
-// The shared platform services the shell (qe::App) hands to every editor module.
+// The shared platform services the shell (we::App) hands to every editor module.
 // Modules receive a pointer to a single instance the shell keeps updated each frame,
-// so they always read current values without reaching into App internals. Theme, log,
-// and the GLFW/GL/ImGui lifecycle live entirely in the shell and are NOT exposed here.
+// so they always read current values without reaching into App internals. The Window
+// and ImGui lifecycle live entirely in the shell; the renderer is exposed only through
+// the backend-neutral IRenderer seam (for the model viewer's 3D rendering).
 
 #include <functional>
 #include <string>
 
 #include "db/DbTypes.h"   // WriteMode
 
-namespace qe
+namespace we
 {
 class IDatabase;
 class LookupCache;
 class ClientData;
 class DbcStore;
 class ClientAssets;
+class IRenderer;
 
 struct EditorServices
 {
@@ -33,6 +35,7 @@ struct EditorServices
     ClientData*   clientData = nullptr;
     DbcStore*     dbcStore = nullptr;
     ClientAssets* clientAssets = nullptr;
+    IRenderer*    renderer = nullptr;   // 3D rendering (model viewer); null in headless harness modes
 
     // Shell-provided sinks/helpers (bound once).
     std::function<void(const std::string&)> setStatus;          // push a status-line message
@@ -40,4 +43,4 @@ struct EditorServices
     std::function<void()> requestSaveSettings;                  // persist settings (module prefs changed)
     std::function<void(const char* windowTitle)> focusWindow;   // focus/raise a dock window (may be null)
 };
-} // namespace qe
+} // namespace we

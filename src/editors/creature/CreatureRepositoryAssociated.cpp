@@ -13,7 +13,7 @@
 #include "db/ResultSet.h"
 #include "data/SqlBuild.h"
 
-namespace qe
+namespace we
 {
 using namespace sql;
 
@@ -207,10 +207,13 @@ bool CreatureRepository::SaveAssociated(IDatabase& db, const Creature& c, DbErro
 {
     const uint32_t id = c.tmpl.entry;
     const std::string idStr = std::to_string(id);
+    const bool all = c.isNew;   // new record writes all; else per-system deltas
 
     // --- npc_vendor (delete-then-insert) ---------------------------------
-    if (!ExecStep(db, "DELETE FROM npc_vendor WHERE entry = " + idStr, err))
+    if ((all || c.vendorDirty) &&
+        !ExecStep(db, "DELETE FROM npc_vendor WHERE entry = " + idStr, err))
         return false;
+    if (all || c.vendorDirty)
     {
         static const std::vector<std::string> cols = SplitCols(kVendorCols);
         const std::set<std::string> existing = ExistingCols(db, "npc_vendor");
@@ -232,7 +235,7 @@ bool CreatureRepository::SaveAssociated(IDatabase& db, const Creature& c, DbErro
     }
 
     // --- trainer (creature_default_trainer + trainer + trainer_spell) ----
-    if (c.trainer.present)
+    if ((all || c.trainerDirty) && c.trainer.present)
     {
         uint32_t trainerId = c.trainer.trainerId;
         if (trainerId == 0)
@@ -286,18 +289,23 @@ bool CreatureRepository::SaveAssociated(IDatabase& db, const Creature& c, DbErro
                 return false;
         }
     }
-    else if (!ExecStep(db, "DELETE FROM creature_default_trainer WHERE CreatureId = " + idStr, err))
+    else if ((all || c.trainerDirty) &&
+             !ExecStep(db, "DELETE FROM creature_default_trainer WHERE CreatureId = " + idStr, err))
         return false;  // unbind; leave the shared trainer row intact
 
     // --- loot (3 slices) -------------------------------------------------
-    if (!SaveLootSlice(db, "creature_loot_template", c.tmpl.lootId, c.creatureLoot, err))
+    if ((all || c.lootDirty) &&
+        !SaveLootSlice(db, "creature_loot_template", c.tmpl.lootId, c.creatureLoot, err))
         return false;
-    if (!SaveLootSlice(db, "pickpocketing_loot_template", c.tmpl.pickpocketLoot, c.pickpocketLoot, err))
+    if ((all || c.lootDirty) &&
+        !SaveLootSlice(db, "pickpocketing_loot_template", c.tmpl.pickpocketLoot, c.pickpocketLoot, err))
         return false;
-    if (!SaveLootSlice(db, "skinning_loot_template", c.tmpl.skinLoot, c.skinLoot, err))
+    if ((all || c.lootDirty) &&
+        !SaveLootSlice(db, "skinning_loot_template", c.tmpl.skinLoot, c.skinLoot, err))
         return false;
 
     // --- spawns (in-place per guid: delete / insert-new / replace-dirty) -
+    if (all || c.spawnsDirty)
     {
         static const std::vector<std::string> fullCols = SplitCols(kSpawnColsFull);
         static const std::vector<std::string> newCols = SplitCols(kSpawnColsNew);
@@ -443,4 +451,4 @@ DbError CreatureRepository::BatchUpdateCreatures(IDatabase& db, const std::vecto
     affected = static_cast<uint32_t>(entries.size());
     return db.Commit();
 }
-} // namespace qe
+} // namespace we

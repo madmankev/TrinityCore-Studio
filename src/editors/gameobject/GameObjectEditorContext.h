@@ -4,7 +4,7 @@
 
 #include "schema/GameObject.h"
 
-namespace qe
+namespace we
 {
 class LookupCache;
 
@@ -17,4 +17,4 @@ struct GameObjectEditorContext
 
     void MarkChanged() { changed = true; }
 };
-} // namespace qe
+} // namespace we

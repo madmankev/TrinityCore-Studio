@@ -13,7 +13,7 @@
 #include <cstdint>
 #include <cstdio>
 
-namespace qe
+namespace we
 {
 void DrawItemSpellsTab(ItemEditorContext& ctx)
 {
@@ -61,4 +61,4 @@ void DrawItemSpellsTab(ItemEditorContext& ctx)
         ImGui::PopID();
     }
 }
-} // namespace qe
+} // namespace we

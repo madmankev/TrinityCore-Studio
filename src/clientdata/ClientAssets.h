@@ -1,8 +1,8 @@
 #pragma once
 
-// Ties client data (MPQ), DBC icon chains, and the GL texture cache together to
-// resolve item/spell icons to ImGui textures. Owned by the App (needs a GL
-// context) and exposed via a global accessor so the reusable Widgets can draw
+// Ties client data (MPQ), DBC icon chains, and the texture cache together to
+// resolve item/spell icons to ImGui textures. Owned by the App (uploads via the
+// renderer) and exposed via a global accessor so the reusable Widgets can draw
 // icons without threading the dependency through every call.
 
 #include <cstdint>
@@ -14,15 +14,19 @@
 
 #include "gfx/TextureCache.h"
 
-namespace qe
+namespace we
 {
 class ClientData;
 class DbcStore;
 class LookupCache;
+class IRenderer;
 
 class ClientAssets
 {
 public:
+    // Set the renderer used to upload/free icon textures (call once at startup).
+    void SetRenderer(IRenderer* r) { textures.SetRenderer(r); }
+
     // Load the icon lookup maps from the DBCs (call after ClientData opens).
     void Build(ClientData& cd, DbcStore& store, LookupCache& lookups);
     void Clear();
@@ -72,4 +76,4 @@ private:
 // Global accessor (set by the App). May return nullptr when no client data is loaded.
 ClientAssets* Assets();
 void SetAssets(ClientAssets* assets);
-} // namespace qe
+} // namespace we

@@ -12,7 +12,7 @@
 #include <cfloat>
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 void DrawItemStatsTab(ItemEditorContext& ctx)
 {
@@ -75,4 +75,4 @@ void DrawItemStatsTab(ItemEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

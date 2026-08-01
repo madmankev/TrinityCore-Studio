@@ -13,7 +13,7 @@
 #include <cstdio>
 #include <vector>
 
-namespace qe
+namespace we
 {
 void QuestBrowserPanel::Draw(const std::vector<QuestListEntry>& entries, bool connected,
                              LookupCache& lookups, BrowserCallbacks& cb)
@@ -206,4 +206,4 @@ void QuestBrowserPanel::Draw(const std::vector<QuestListEntry>& entries, bool co
     if (doRefresh && connected && cb.onRefresh)
         cb.onRefresh(filter);
 }
-} // namespace qe
+} // namespace we

@@ -10,7 +10,7 @@
 
 struct MYSQL; // libmysql, defined in mysql.h
 
-namespace qe
+namespace we
 {
 class LiveMysqlDatabase final : public IDatabase
 {
@@ -41,4 +41,4 @@ private:
     MYSQL* conn = nullptr;
     bool connected = false;
 };
-} // namespace qe
+} // namespace we

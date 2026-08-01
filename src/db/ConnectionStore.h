@@ -10,7 +10,7 @@
 
 #include "db/DbTypes.h"
 
-namespace qe
+namespace we
 {
 // A user-named connection preset.
 struct ConnectionProfile
@@ -52,4 +52,4 @@ private:
     std::string filePath = "config/connections.json";
     std::vector<ConnectionProfile> profiles;
 };
-} // namespace qe
+} // namespace we

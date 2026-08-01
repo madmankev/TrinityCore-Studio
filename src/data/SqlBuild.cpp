@@ -5,7 +5,7 @@
 #include <cctype>
 #include <cstdio>
 
-namespace qe
+namespace we
 {
 namespace sql
 {
@@ -128,4 +128,4 @@ std::string FilteredUpsert(const char* table, const std::vector<std::string>& co
     return sql;
 }
 } // namespace sql
-} // namespace qe
+} // namespace we

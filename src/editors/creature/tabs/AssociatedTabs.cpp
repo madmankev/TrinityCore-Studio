@@ -14,7 +14,7 @@
 #include <cfloat>
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 // ---------------------------------------------------------------------------
 void DrawCreatureVendorTab(CreatureEditorContext& ctx)
@@ -290,4 +290,4 @@ void DrawCreatureSpawnsTab(CreatureEditorContext& ctx)
         c.spawnsDirty = true;
     }
 }
-} // namespace qe
+} // namespace we

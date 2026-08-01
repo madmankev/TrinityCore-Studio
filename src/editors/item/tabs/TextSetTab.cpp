@@ -10,7 +10,7 @@
 
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 void DrawItemTextSetTab(ItemEditorContext& ctx)
 {
@@ -83,4 +83,4 @@ void DrawItemTextSetTab(ItemEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

@@ -16,7 +16,7 @@
 
 #include <cfloat>
 
-namespace qe
+namespace we
 {
 void DrawRewardsTab(QuestEditorContext& ctx)
 {
@@ -198,7 +198,7 @@ void DrawRewardsTab(QuestEditorContext& ctx)
     if (BeginFieldTable("qe_rewards_mail"))
     {
         FieldRow("Mail Template ID", "quest_template_addon.RewardMailTemplateID.");
-        if (InputU32("##mailtmpl", q.addon.rewardMailTemplateID))
+        if (IdNamePicker("##mailtmpl", q.addon.rewardMailTemplateID, cache, RefKind::MailTemplate))
             markAddon();
 
         FieldRow("Mail Delay (seconds)", "quest_template_addon.RewardMailDelay.");
@@ -212,4 +212,4 @@ void DrawRewardsTab(QuestEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

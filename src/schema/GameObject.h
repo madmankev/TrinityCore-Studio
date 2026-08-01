@@ -12,7 +12,7 @@
 #include "GameObjectTemplate.h"
 #include "LootItem.h"
 
-namespace qe
+namespace we
 {
 // gameobject_template_locale (PK entry+locale).
 struct GameObjectLocale
@@ -49,5 +49,11 @@ struct GameObject
     {
         tmplDirty = addonDirty = localesDirty = questItemsDirty = lootDirty = spawnsDirty = false;
     }
+
+    // Force every part dirty (whole-record write when no per-part flags were set).
+    void MarkAllDirty()
+    {
+        tmplDirty = addonDirty = localesDirty = questItemsDirty = lootDirty = spawnsDirty = true;
+    }
 };
-} // namespace qe
+} // namespace we

@@ -8,7 +8,7 @@
 
 #include <vector>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -146,4 +146,4 @@ std::string PickFolderDialog(const std::string& title)
         CoUninitialize();
     return result;
 }
-} // namespace qe
+} // namespace we

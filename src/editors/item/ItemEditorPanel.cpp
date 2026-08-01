@@ -9,7 +9,7 @@
 #include "editors/item/Tabs.h"
 #include "ui/Widgets.h"
 
-namespace qe
+namespace we
 {
 void ItemEditorPanel::Draw(ItemEditorContext& ctx, bool hasItem, bool dirty,
                            const ItemEditorCallbacks& cb)
@@ -106,4 +106,4 @@ void ItemEditorPanel::Draw(ItemEditorContext& ctx, bool hasItem, bool dirty,
 
     ImGui::End();
 }
-} // namespace qe
+} // namespace we

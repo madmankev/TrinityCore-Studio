@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <string>
 
-namespace qe
+namespace we
 {
 struct LootItem
 {
@@ -20,4 +20,4 @@ struct LootItem
     uint8_t  maxCount = 1;       // `MaxCount` tinyint unsigned
     std::string comment;         // `Comment` varchar(255)
 };
-} // namespace qe
+} // namespace we

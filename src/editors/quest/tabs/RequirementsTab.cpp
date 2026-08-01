@@ -10,7 +10,7 @@
 #include "schema/Quest.h"
 #include "data/LookupCache.h"
 
-namespace qe
+namespace we
 {
 void DrawRequirementsTab(QuestEditorContext& ctx)
 {
@@ -127,4 +127,4 @@ void DrawRequirementsTab(QuestEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

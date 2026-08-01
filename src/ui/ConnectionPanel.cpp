@@ -9,7 +9,7 @@
 #include "ui/Widgets.h"
 #include "util/Log.h"
 
-namespace qe
+namespace we
 {
 void ConnectionPanel::LoadProfileIntoForm(const ConnectionProfile& p)
 {
@@ -204,4 +204,4 @@ void ConnectionPanel::DrawBody(ConnectionStore& store, bool connected, const std
     if (!lastError.empty())
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", lastError.c_str());
 }
-} // namespace qe
+} // namespace we

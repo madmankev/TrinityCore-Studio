@@ -10,7 +10,7 @@
 
 #include "db/IDatabase.h"
 
-namespace qe
+namespace we
 {
 class SqlExportDatabase final : public IDatabase
 {
@@ -52,4 +52,4 @@ private:
     std::string buffer;              // ordered, terminated statements
     bool inTransaction = false;
 };
-} // namespace qe
+} // namespace we

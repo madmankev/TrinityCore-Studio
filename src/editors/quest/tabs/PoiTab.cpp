@@ -21,7 +21,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -569,4 +569,4 @@ void DrawPoiTab(QuestEditorContext& ctx)
         q.poisDirty = true;
     }
 }
-} // namespace qe
+} // namespace we

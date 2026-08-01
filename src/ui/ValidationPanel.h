@@ -10,7 +10,7 @@
 
 #include "data/Validation.h"
 
-namespace qe
+namespace we
 {
 class ValidationPanel
 {
@@ -24,4 +24,4 @@ public:
               const std::function<void(const std::string&)>& onSelectTab,
               const std::function<void()>& onRevalidate);
 };
-} // namespace qe
+} // namespace we

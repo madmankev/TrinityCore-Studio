@@ -15,7 +15,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace qe
+namespace we
 {
     // A single selectable value (combo box entry).
     struct EnumEntry

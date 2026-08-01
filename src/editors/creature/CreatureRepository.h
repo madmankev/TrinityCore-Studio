@@ -3,7 +3,7 @@
 // Layer C (data) — CreatureRepository: loads/saves a whole creature across
 // creature_template + its child tables (addon, movement, resistance, spell, equip,
 // locale) AND the four associated systems keyed by the entry (vendor, trainer, loot,
-// spawns), via the IDatabase seam. Reuses the schema-adaptive qe::sql helpers and the
+// spawns), via the IDatabase seam. Reuses the schema-adaptive we::sql helpers and the
 // Quest editor's save shapes (REPLACE / upsert-or-delete / delete-then-insert).
 
 #include <cstdint>
@@ -13,7 +13,7 @@
 #include "db/DbTypes.h"
 #include "schema/Creature.h"
 
-namespace qe
+namespace we
 {
 class IDatabase;
 
@@ -90,4 +90,4 @@ private:
     DbError LoadAssociated(IDatabase& db, uint32_t entry, Creature& out);
     bool SaveAssociated(IDatabase& db, const Creature& c, DbError& err);
 };
-} // namespace qe
+} // namespace we

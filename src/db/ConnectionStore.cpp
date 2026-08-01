@@ -7,7 +7,7 @@
 
 #include <json.hpp>
 
-namespace qe
+namespace we
 {
 using nlohmann::json;
 
@@ -168,4 +168,4 @@ DbError ConnectionStore::Save() const
     }
     return DbError{};
 }
-} // namespace qe
+} // namespace we

@@ -14,7 +14,7 @@
 
 #include <cfloat>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -232,4 +232,4 @@ void DrawQuestgiversTab(QuestEditorContext& ctx)
     if (q.creatureStarters.empty() && q.creatureEnders.empty())
         ImGui::TextDisabled("No creature questgivers to cross-reference.");
 }
-} // namespace qe
+} // namespace we

@@ -11,7 +11,7 @@
 
 #include <string>
 
-namespace qe
+namespace we
 {
 void DrawCreatureLocalesTab(CreatureEditorContext& ctx)
 {
@@ -64,4 +64,4 @@ void DrawCreatureLocalesTab(CreatureEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

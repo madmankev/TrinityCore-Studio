@@ -19,7 +19,7 @@
 #include "ui/ValidationPanel.h"
 #include "editors/quest/UndoStack.h"
 
-namespace qe
+namespace we
 {
 struct EditorServices;
 
@@ -138,4 +138,4 @@ private:
     bool requestSaveConfirm = false;
     bool requestDeleteConfirm = false;
 };
-} // namespace qe
+} // namespace we

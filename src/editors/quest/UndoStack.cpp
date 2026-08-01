@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -188,6 +188,25 @@ bool Eq(const QuestLocale& a, const QuestLocale& b)
            a.greetingGameObjectPresent == b.greetingGameObjectPresent;
 }
 
+bool Eq(const QuestCondition& a, const QuestCondition& b)
+{
+    return a.sourceTypeOrReferenceId == b.sourceTypeOrReferenceId &&
+           a.sourceGroup == b.sourceGroup &&
+           a.sourceEntry == b.sourceEntry &&
+           a.sourceId == b.sourceId &&
+           a.elseGroup == b.elseGroup &&
+           a.conditionTypeOrReference == b.conditionTypeOrReference &&
+           a.conditionTarget == b.conditionTarget &&
+           a.conditionValue1 == b.conditionValue1 &&
+           a.conditionValue2 == b.conditionValue2 &&
+           a.conditionValue3 == b.conditionValue3 &&
+           a.negativeCondition == b.negativeCondition &&
+           a.errorType == b.errorType &&
+           a.errorTextId == b.errorTextId &&
+           a.scriptName == b.scriptName &&
+           a.comment == b.comment;
+}
+
 // Order-sensitive vector comparison using the element Eq helpers.
 template <typename T>
 bool VecEq(const std::vector<T>& a, const std::vector<T>& b)
@@ -243,6 +262,9 @@ bool Differs(const Quest& a, const Quest& b)
         if (!Eq(val, it->second))
             return true;
     }
+
+    if (!VecEq(a.conditions, b.conditions))
+        return true;
 
     return false;
 }
@@ -315,4 +337,4 @@ size_t UndoStack::RedoDepth() const
 {
     return redo_.size();
 }
-} // namespace qe
+} // namespace we

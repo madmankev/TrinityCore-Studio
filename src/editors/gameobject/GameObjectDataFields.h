@@ -10,7 +10,7 @@
 
 #include "ui/Widgets.h"  // RefKind
 
-namespace qe
+namespace we
 {
 struct GoDataField
 {
@@ -22,4 +22,4 @@ struct GoDataField
 
 // Named Data fields for a gameobject type (empty vector for empty/unknown types).
 const std::vector<GoDataField>& GameObjectDataFields(uint8_t type);
-} // namespace qe
+} // namespace we

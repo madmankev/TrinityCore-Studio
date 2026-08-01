@@ -1,6 +1,6 @@
 #include "Enums.h"
 
-namespace qe
+namespace we
 {
     const std::vector<EnumEntry>& QuestTypeValues()
     {

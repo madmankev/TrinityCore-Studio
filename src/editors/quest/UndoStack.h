@@ -20,7 +20,7 @@
 
 #include "schema/Quest.h"
 
-namespace qe
+namespace we
 {
 // Compare the meaningful editable content of two quests. Returns true when they
 // differ in any field the editor can change. Per-part dirty flags (and isNew)
@@ -63,4 +63,4 @@ private:
     std::vector<Quest> redo_;
     static constexpr size_t kMax = 100; // cap; drop oldest when exceeded
 };
-} // namespace qe
+} // namespace we

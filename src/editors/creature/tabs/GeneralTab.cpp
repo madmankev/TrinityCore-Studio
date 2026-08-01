@@ -10,7 +10,7 @@
 
 #include <cstdio>
 
-namespace qe
+namespace we
 {
 void DrawCreatureGeneralTab(CreatureEditorContext& ctx)
 {
@@ -59,4 +59,4 @@ void DrawCreatureGeneralTab(CreatureEditorContext& ctx)
     }
     ImGui::TextDisabled("A random non-zero modelid is chosen at spawn.");
 }
-} // namespace qe
+} // namespace we

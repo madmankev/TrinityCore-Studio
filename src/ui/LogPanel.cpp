@@ -6,7 +6,7 @@
 
 #include "util/Log.h"
 
-namespace qe
+namespace we
 {
 void LogPanel::Draw()
 {
@@ -36,4 +36,4 @@ void LogPanel::Draw()
 
     ImGui::End();
 }
-} // namespace qe
+} // namespace we

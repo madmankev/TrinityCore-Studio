@@ -7,7 +7,7 @@
 
 #include <functional>
 
-namespace qe
+namespace we
 {
 struct ItemEditorContext;
 
@@ -33,4 +33,4 @@ public:
 private:
     int pendingSelect = -1;
 };
-} // namespace qe
+} // namespace we

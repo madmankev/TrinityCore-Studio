@@ -5,7 +5,7 @@
 #include <mutex>
 #include <vector>
 
-namespace qe
+namespace we
 {
     namespace
     {

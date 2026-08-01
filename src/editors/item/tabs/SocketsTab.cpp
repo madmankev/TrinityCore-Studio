@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 
-namespace qe
+namespace we
 {
 void DrawItemSocketsTab(ItemEditorContext& ctx)
 {
@@ -62,4 +62,4 @@ void DrawItemSocketsTab(ItemEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

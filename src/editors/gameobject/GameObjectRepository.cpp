@@ -10,7 +10,7 @@
 #include "db/ResultSet.h"
 #include "data/SqlBuild.h"
 
-namespace qe
+namespace we
 {
 using namespace sql;
 
@@ -196,7 +196,10 @@ DbError GameObjectRepository::SaveGameObject(IDatabase& db, const GameObject& go
         return e;
     };
 
+    const bool all = go.isNew;   // new record writes all tables; else per-part deltas
+
     // --- gameobject_template (REPLACE) -----------------------------------
+    if (all || go.tmplDirty)
     {
         const GameObjectTemplate& t = go.tmpl;
         ValueList v(db);
@@ -231,7 +234,7 @@ DbError GameObjectRepository::SaveGameObject(IDatabase& db, const GameObject& go
     }
 
     // --- gameobject_template_addon (upsert-or-delete) --------------------
-    if (go.addon.present)
+    if ((all || go.addonDirty) && go.addon.present)
     {
         const GameObjectAddon& a = go.addon;
         ValueList v(db);
@@ -248,12 +251,15 @@ DbError GameObjectRepository::SaveGameObject(IDatabase& db, const GameObject& go
         if (!ExecStep(db, sql, err))
             return fail(err);
     }
-    else if (!ExecStep(db, "DELETE FROM gameobject_template_addon WHERE entry = " + idStr, err))
+    else if ((all || go.addonDirty) &&
+             !ExecStep(db, "DELETE FROM gameobject_template_addon WHERE entry = " + idStr, err))
         return fail(err);
 
     // --- gameobject_template_locale (delete-then-insert) -----------------
-    if (!ExecStep(db, "DELETE FROM gameobject_template_locale WHERE entry = " + idStr, err))
+    if ((all || go.localesDirty) &&
+        !ExecStep(db, "DELETE FROM gameobject_template_locale WHERE entry = " + idStr, err))
         return fail(err);
+    if (all || go.localesDirty)
     {
         static const std::vector<std::string> cols = SplitCols(kLocaleCols);
         const std::set<std::string> existing = ExistingCols(db, "gameobject_template_locale");
@@ -274,8 +280,10 @@ DbError GameObjectRepository::SaveGameObject(IDatabase& db, const GameObject& go
     }
 
     // --- gameobject_questitem (delete-then-insert) -----------------------
-    if (!ExecStep(db, "DELETE FROM gameobject_questitem WHERE GameObjectEntry = " + idStr, err))
+    if ((all || go.questItemsDirty) &&
+        !ExecStep(db, "DELETE FROM gameobject_questitem WHERE GameObjectEntry = " + idStr, err))
         return fail(err);
+    if (all || go.questItemsDirty)
     {
         static const std::vector<std::string> cols = SplitCols(kQuestItemCols);
         const std::set<std::string> existing = ExistingCols(db, "gameobject_questitem");
@@ -360,4 +368,4 @@ DbError GameObjectRepository::NextFreeGameObjectIdFrom(IDatabase& db, uint32_t m
 }
 
 // Associated load/save + where-used + batch live in GameObjectRepositoryAssociated.cpp.
-} // namespace qe
+} // namespace we

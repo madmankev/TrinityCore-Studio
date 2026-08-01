@@ -10,7 +10,7 @@
 #include "db/ResultSet.h"
 #include "data/SqlBuild.h"
 
-namespace qe
+namespace we
 {
 using namespace sql;
 
@@ -313,7 +313,10 @@ DbError CreatureRepository::SaveCreature(IDatabase& db, const Creature& c)
         return e;
     };
 
+    const bool all = c.isNew;   // new record writes all tables; else per-part deltas
+
     // --- creature_template (REPLACE) -------------------------------------
+    if (all || c.tmplDirty)
     {
         const CreatureTemplate& t = c.tmpl;
         ValueList v(db);
@@ -387,7 +390,7 @@ DbError CreatureRepository::SaveCreature(IDatabase& db, const Creature& c)
     }
 
     // --- creature_template_addon (upsert-or-delete) ----------------------
-    if (c.addon.present)
+    if ((all || c.addonDirty) && c.addon.present)
     {
         const CreatureAddon& a = c.addon;
         ValueList v(db);
@@ -409,11 +412,12 @@ DbError CreatureRepository::SaveCreature(IDatabase& db, const Creature& c)
         if (!ExecStep(db, sql, err))
             return fail(err);
     }
-    else if (!ExecStep(db, "DELETE FROM creature_template_addon WHERE entry = " + idStr, err))
+    else if ((all || c.addonDirty) &&
+             !ExecStep(db, "DELETE FROM creature_template_addon WHERE entry = " + idStr, err))
         return fail(err);
 
     // --- creature_template_movement (upsert-or-delete; -1 -> NULL) -------
-    if (c.movement.present)
+    if ((all || c.movementDirty) && c.movement.present)
     {
         const CreatureMovement& m = c.movement;
         auto nz = [&](ValueList& v, long long val) { if (val < 0) v.Append("NULL"); else v.Int(val); };
@@ -432,12 +436,15 @@ DbError CreatureRepository::SaveCreature(IDatabase& db, const Creature& c)
         if (!ExecStep(db, sql, err))
             return fail(err);
     }
-    else if (!ExecStep(db, "DELETE FROM creature_template_movement WHERE CreatureId = " + idStr, err))
+    else if ((all || c.movementDirty) &&
+             !ExecStep(db, "DELETE FROM creature_template_movement WHERE CreatureId = " + idStr, err))
         return fail(err);
 
     // --- creature_template_resistance (delete-then-insert) ---------------
-    if (!ExecStep(db, "DELETE FROM creature_template_resistance WHERE CreatureID = " + idStr, err))
+    if ((all || c.resistDirty) &&
+        !ExecStep(db, "DELETE FROM creature_template_resistance WHERE CreatureID = " + idStr, err))
         return fail(err);
+    if (all || c.resistDirty)
     {
         static const std::vector<std::string> cols = SplitCols(kResistanceCols);
         const std::set<std::string> existing = ExistingCols(db, "creature_template_resistance");
@@ -458,8 +465,10 @@ DbError CreatureRepository::SaveCreature(IDatabase& db, const Creature& c)
     }
 
     // --- creature_template_spell (delete-then-insert; `Index` backticked) -
-    if (!ExecStep(db, "DELETE FROM creature_template_spell WHERE CreatureID = " + idStr, err))
+    if ((all || c.spellsDirty) &&
+        !ExecStep(db, "DELETE FROM creature_template_spell WHERE CreatureID = " + idStr, err))
         return fail(err);
+    if (all || c.spellsDirty)
     for (int i = 0; i < 8; ++i)
     {
         if (c.spells[i] == 0)
@@ -472,8 +481,10 @@ DbError CreatureRepository::SaveCreature(IDatabase& db, const Creature& c)
     }
 
     // --- creature_equip_template (delete-then-insert) --------------------
-    if (!ExecStep(db, "DELETE FROM creature_equip_template WHERE CreatureID = " + idStr, err))
+    if ((all || c.equipsDirty) &&
+        !ExecStep(db, "DELETE FROM creature_equip_template WHERE CreatureID = " + idStr, err))
         return fail(err);
+    if (all || c.equipsDirty)
     {
         static const std::vector<std::string> cols = SplitCols(kEquipCols);
         const std::set<std::string> existing = ExistingCols(db, "creature_equip_template");
@@ -494,8 +505,10 @@ DbError CreatureRepository::SaveCreature(IDatabase& db, const Creature& c)
     }
 
     // --- creature_template_locale (delete-then-insert) -------------------
-    if (!ExecStep(db, "DELETE FROM creature_template_locale WHERE entry = " + idStr, err))
+    if ((all || c.localesDirty) &&
+        !ExecStep(db, "DELETE FROM creature_template_locale WHERE entry = " + idStr, err))
         return fail(err);
+    if (all || c.localesDirty)
     {
         static const std::vector<std::string> cols = SplitCols(kLocaleCols);
         const std::set<std::string> existing = ExistingCols(db, "creature_template_locale");
@@ -587,4 +600,4 @@ DbError CreatureRepository::NextFreeCreatureIdFrom(IDatabase& db, uint32_t minId
 }
 
 // Associated load/save are implemented in CreatureRepositoryAssociated.cpp (Stage 5).
-} // namespace qe
+} // namespace we

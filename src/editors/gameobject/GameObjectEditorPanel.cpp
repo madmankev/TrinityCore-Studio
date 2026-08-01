@@ -9,7 +9,7 @@
 #include "editors/gameobject/Tabs.h"
 #include "ui/Widgets.h"
 
-namespace qe
+namespace we
 {
 void GameObjectEditorPanel::Draw(GameObjectEditorContext& ctx, bool hasGo, bool dirty,
                                  const GameObjectEditorCallbacks& cb)
@@ -78,4 +78,4 @@ void GameObjectEditorPanel::Draw(GameObjectEditorContext& ctx, bool hasGo, bool 
 
     ImGui::End();
 }
-} // namespace qe
+} // namespace we

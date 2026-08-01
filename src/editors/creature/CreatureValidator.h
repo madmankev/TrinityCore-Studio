@@ -8,7 +8,7 @@
 #include "data/Validation.h"
 #include "schema/Creature.h"
 
-namespace qe
+namespace we
 {
 class LookupCache;
 
@@ -17,4 +17,4 @@ class CreatureValidator
 public:
     std::vector<ValidationIssue> Validate(const Creature& c, const LookupCache& cache) const;
 };
-} // namespace qe
+} // namespace we

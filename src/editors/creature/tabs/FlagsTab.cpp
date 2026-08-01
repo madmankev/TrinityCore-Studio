@@ -10,7 +10,7 @@
 #include "schema/Creature.h"
 #include "util/Enums.h"
 
-namespace qe
+namespace we
 {
 void DrawCreatureFlagsTab(CreatureEditorContext& ctx)
 {
@@ -45,4 +45,4 @@ void DrawCreatureFlagsTab(CreatureEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

@@ -1,9 +1,10 @@
 #pragma once
 
-// Layer E (ui) — App: the editor-agnostic shell. Owns the GLFW/GL/ImGui loop, the DB
-// connection, client data, theme, settings, log, and status line, and hosts a list of
-// IEditorModule instances (one active at a time). All record-specific editing lives in
-// the modules (see editors/quest/QuestModule). main() constructs an App and calls Run().
+// Layer E (ui) — App: the editor-agnostic shell. Owns the Window (GLFW) + Renderer
+// (Vulkan) seams and the ImGui loop, the DB connection, client data, theme, settings,
+// log, and status line, and hosts a list of IEditorModule instances (one active at a
+// time). All record-specific editing lives in the modules (see editors/quest/
+// QuestModule). main() constructs an App and calls Run().
 
 #include <memory>
 #include <string>
@@ -22,15 +23,15 @@
 
 #include "app/EditorServices.h"
 #include "app/IEditorModule.h"
+#include "app/Window.h"
+#include "gfx/IRenderer.h"
 
 struct ImFont;
 
 #include "ui/ConnectionPanel.h"
 #include "ui/LogPanel.h"
 
-struct GLFWwindow;
-
-namespace qe
+namespace we
 {
 class App
 {
@@ -102,7 +103,8 @@ private:
     void SetStatus(const std::string& s) { statusLine = s; }
 
     // --- graphics / shell ---
-    GLFWwindow* window = nullptr;
+    Window window;
+    std::unique_ptr<IRenderer> renderer;
     float dpiScale = 1.0f;
     bool layoutBuilt = false;
     bool forceLayout = false;
@@ -170,4 +172,4 @@ private:
     std::string statusLine;
     std::string lastError;
 };
-} // namespace qe
+} // namespace we

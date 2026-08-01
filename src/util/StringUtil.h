@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace qe
+namespace we
 {
     // Remove leading/trailing ASCII whitespace ( \t\r\n\f\v and space). Non-mutating.
     std::string Trim(const std::string& s);

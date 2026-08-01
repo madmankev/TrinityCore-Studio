@@ -11,7 +11,7 @@
 
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 void DrawItemFlagsTab(ItemEditorContext& ctx)
 {
@@ -45,4 +45,4 @@ void DrawItemFlagsTab(ItemEditorContext& ctx)
         }
     }
 }
-} // namespace qe
+} // namespace we

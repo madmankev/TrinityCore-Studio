@@ -14,7 +14,7 @@
 #include "editors/gameobject/GameObjectEditorPanel.h"
 #include "ui/ValidationPanel.h"
 
-namespace qe
+namespace we
 {
 struct EditorServices;
 
@@ -114,4 +114,4 @@ private:
     bool requestSaveConfirm = false;
     bool requestDeleteConfirm = false;
 };
-} // namespace qe
+} // namespace we

@@ -6,7 +6,7 @@
 
 #include "imgui.h"
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -88,4 +88,4 @@ void ValidationPanel::Draw(const char* windowTitle,
 
     ImGui::End();
 }
-} // namespace qe
+} // namespace we

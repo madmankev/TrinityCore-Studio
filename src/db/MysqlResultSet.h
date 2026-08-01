@@ -13,7 +13,7 @@
 
 struct MYSQL_RES; // libmysql, defined in mysql.h
 
-namespace qe
+namespace we
 {
 class MysqlResultSet final : public ResultSet
 {
@@ -45,4 +45,4 @@ private:
     int columnCount = 0;
     std::unordered_map<std::string, int> nameToIndex;  // lowercased column name -> index
 };
-} // namespace qe
+} // namespace we

@@ -12,7 +12,7 @@
 #include "data/Validation.h"
 #include "schema/Quest.h"
 
-namespace qe
+namespace we
 {
 class LookupCache;
 
@@ -24,4 +24,4 @@ public:
     // Returned issues are sorted Error > Warning > Info (stable within a level).
     std::vector<ValidationIssue> Validate(const Quest& q, const LookupCache& cache) const;
 };
-} // namespace qe
+} // namespace we

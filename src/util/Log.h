@@ -8,7 +8,7 @@
 #include <deque>
 #include <string>
 
-namespace qe
+namespace we
 {
     enum class Level
     {

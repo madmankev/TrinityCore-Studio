@@ -12,7 +12,7 @@
 #include "imgui.h"
 #include "util/Enums.h"
 
-namespace qe
+namespace we
 {
 class LookupCache;
 
@@ -65,7 +65,8 @@ enum class RefKind
     Title,     // CharTitles.dbc
     Area,      // AreaTable.dbc (zones)
     Quest,     // quest_template titles (world DB)
-    FactionTemplate  // FactionTemplate.dbc -> Faction.dbc name (creature_template.faction)
+    FactionTemplate, // FactionTemplate.dbc -> Faction.dbc name (creature_template.faction)
+    MailTemplate     // MailTemplate.dbc subject (quest_template_addon.RewardMailTemplateID)
 };
 
 // Id field + resolved label + "..." search popup. Works with an unloaded cache
@@ -95,4 +96,4 @@ bool IdNamePickerSigned(const char* label, int32_t& value, LookupCache& cache);
 bool BeginFieldTable(const char* id, float labelWidth = 190.0f);
 void FieldRow(const char* label, const char* tooltip = nullptr);
 void EndFieldTable();
-} // namespace qe
+} // namespace we

@@ -9,7 +9,7 @@
 #include "editors/quest/Tabs.h"
 #include "ui/Widgets.h"
 
-namespace qe
+namespace we
 {
 void QuestEditorPanel::Draw(QuestEditorContext& ctx, bool hasQuest, bool dirty,
                             const QuestEditorCallbacks& cb)
@@ -117,4 +117,4 @@ void QuestEditorPanel::Draw(QuestEditorContext& ctx, bool hasQuest, bool dirty,
 
     ImGui::End();
 }
-} // namespace qe
+} // namespace we

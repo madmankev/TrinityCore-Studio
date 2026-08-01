@@ -11,10 +11,8 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
 
-#include <GLFW/glfw3.h>
+#include "gfx/VulkanRenderer.h"
 
 #include "ui/Theme.h"
 #include "ui/Widgets.h"
@@ -25,6 +23,9 @@
 #include "editors/item/ItemModule.h"
 #include "editors/creature/CreatureModule.h"
 #include "editors/gameobject/GameObjectModule.h"
+#include "editors/model/ModelViewerModule.h"
+#include "editors/wmo/WmoViewerModule.h"
+#include "editors/adt/AdtViewerModule.h"
 
 #include <cfloat>
 #include <filesystem>
@@ -32,28 +33,17 @@
 
 #include <json.hpp>
 
-namespace qe
+namespace we
 {
 namespace
 {
-void GlfwErrorCallback(int error, const char* description)
+// Write top-down RGBA8 pixels (as returned by IRenderer::CaptureFramebuffer) to a
+// 32-bit BMP. BMP with positive height is bottom-up, so rows are emitted in reverse.
+// Used by headless screenshot mode to verify rendering without a display.
+void WriteRgbaBmp(const std::vector<uint8_t>& rgba, int w, int h, const std::string& path)
 {
-    LogError(std::string("[GLFW] error ") + std::to_string(error) + ": " +
-             (description ? description : ""));
-    std::fprintf(stderr, "[GLFW] error %d: %s\n", error, description ? description : "");
-}
-
-// Capture the current GL back buffer to a 32-bit BMP (bottom-up, which matches GL's
-// row order). Used by headless screenshot mode to verify rendering without a display.
-void WriteFramebufferBmp(GLFWwindow* win, const std::string& path)
-{
-    int w = 0, h = 0;
-    glfwGetFramebufferSize(win, &w, &h);
-    if (w <= 0 || h <= 0)
+    if (w <= 0 || h <= 0 || rgba.size() < static_cast<size_t>(w) * h * 4)
         return;
-    std::vector<unsigned char> px(static_cast<size_t>(w) * h * 4);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
 
     const uint32_t rowBytes = static_cast<uint32_t>(w) * 4;
     const uint32_t pixBytes = rowBytes * static_cast<uint32_t>(h);
@@ -64,7 +54,7 @@ void WriteFramebufferBmp(GLFWwindow* win, const std::string& path)
     uint32_t off = 54; std::memcpy(hdr + 10, &off, 4);
     uint32_t dib = 40; std::memcpy(hdr + 14, &dib, 4);
     std::memcpy(hdr + 18, &w, 4);
-    std::memcpy(hdr + 22, &h, 4);           // positive => bottom-up, matches GL
+    std::memcpy(hdr + 22, &h, 4);           // positive => bottom-up
     uint16_t planes = 1; std::memcpy(hdr + 26, &planes, 2);
     uint16_t bpp = 32; std::memcpy(hdr + 28, &bpp, 2);
     std::memcpy(hdr + 34, &pixBytes, 4);
@@ -74,9 +64,9 @@ void WriteFramebufferBmp(GLFWwindow* win, const std::string& path)
         return;
     f.write(reinterpret_cast<const char*>(hdr), 54);
     std::vector<unsigned char> row(rowBytes);
-    for (int y = 0; y < h; ++y)
+    for (int y = h - 1; y >= 0; --y)   // source is top-down; BMP wants bottom row first
     {
-        const unsigned char* src = px.data() + static_cast<size_t>(y) * rowBytes;
+        const unsigned char* src = rgba.data() + static_cast<size_t>(y) * rowBytes;
         for (int x = 0; x < w; ++x)
         {
             row[x * 4 + 0] = src[x * 4 + 2]; // B
@@ -95,36 +85,13 @@ void WriteFramebufferBmp(GLFWwindow* win, const std::string& path)
 // ---------------------------------------------------------------------------
 bool App::InitGraphics(bool selftest)
 {
-    glfwSetErrorCallback(GlfwErrorCallback);
-    if (!glfwInit())
-    {
-        std::fprintf(stderr, "Failed to initialize GLFW\n");
-        return false;
-    }
-
     const bool headless = selftest || !shotPath.empty();
-    const char* glslVersion = "#version 130";
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-    if (headless)
-        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
-    window = glfwCreateWindow(1600, 960, "TrinityCore Studio", nullptr, nullptr);
-    if (!window)
-    {
-        std::fprintf(stderr, "Failed to create GLFW window\n");
-        glfwTerminate();
+    if (!window.Create(1600, 960, "TrinityCore Studio", !headless))
         return false;
-    }
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(headless ? 0 : 1);
-    if (!headless)
-        glfwMaximizeWindow(window);
 
     // DPI scale from the window's content scale (1.0 on 96dpi, 1.25/1.5/2.0 on HiDPI).
-    float sx = 1.0f, sy = 1.0f;
-    glfwGetWindowContentScale(window, &sx, &sy);
-    dpiScale = sx > 0.0f ? sx : 1.0f;
+    dpiScale = window.ContentScale();
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -138,24 +105,32 @@ bool App::InitGraphics(bool selftest)
     appliedTheme = ThemeKind::Dark;
     themeApplied = true;
 
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL3_Init(glslVersion);
+    // Bring up Vulkan and bind the ImGui backends (the renderer owns both halves).
+    renderer = std::make_unique<VulkanRenderer>();
+    if (!renderer->Init(window, headless))
+    {
+        renderer.reset();
+        ImGui::DestroyContext();
+        return false;
+    }
+    clientAssets.SetRenderer(renderer.get());
     return true;
 }
 
 void App::ShutdownGraphics()
 {
-    // Free GL textures while the context is still current.
+    // Free client textures (via the renderer, which drains the GPU first), then drop the
+    // cache's renderer pointer BEFORE the renderer is destroyed — otherwise ~App's later
+    // ~TextureCache would call into a freed renderer.
     SetAssets(nullptr);
     clientAssets.Clear();
+    clientAssets.SetRenderer(nullptr);
 
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+    if (renderer)
+        renderer->Shutdown();
     ImGui::DestroyContext();
-    if (window)
-        glfwDestroyWindow(window);
-    glfwTerminate();
-    window = nullptr;
+    renderer.reset();
+    // window tears itself down (GLFW) in its destructor.
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +173,7 @@ void App::RefreshServicesInto(EditorServices& s)
     s.connected = connected;
     s.mode = mode;
     s.exportPath = exportPath;
+    s.renderer = renderer.get();   // stable once InitGraphics ran (null in pure-offline modes)
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +195,9 @@ int App::Run(bool selftest, bool demo)
     modules_.push_back(std::make_unique<ItemModule>());
     modules_.push_back(std::make_unique<CreatureModule>());
     modules_.push_back(std::make_unique<GameObjectModule>());
+    modules_.push_back(std::make_unique<ModelViewerModule>());
+    modules_.push_back(std::make_unique<WmoViewerModule>());
+    modules_.push_back(std::make_unique<AdtViewerModule>());
     services_ = MakeServices();
     for (auto& m : modules_)
         m->Init(&services_);
@@ -265,12 +244,11 @@ int App::Run(bool selftest, bool demo)
 
     int frames = 0;
     int loopFrame = 0;
-    while (!glfwWindowShouldClose(window))
+    while (!window.ShouldClose())
     {
-        glfwPollEvents();
+        window.PollEvents();
 
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
+        renderer->BeginFrame();
         ImGui::NewFrame();
 
         RefreshServices();   // keep the module-facing service fields current
@@ -350,24 +328,21 @@ int App::Run(bool selftest, bool demo)
         }
 
         ImGui::Render();
-        int w = 0, h = 0;
-        glfwGetFramebufferSize(window, &w, &h);
-        glViewport(0, 0, w, h);
-        glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        renderer->EndFrame(ImGui::GetDrawData());
 
         // Headless screenshot: once client data has finished loading (or was never
-        // configured) and a few frames have settled, capture and exit.
+        // configured) and a few frames have settled, capture the presented frame and exit.
         if (!shotPath.empty() && clientLoadStep < 0 && loopFrame >= 24)
         {
-            WriteFramebufferBmp(window, shotPath);
-            std::printf("SHOT OK -> %s\n", shotPath.c_str());
-            glfwSwapBuffers(window);
+            std::vector<uint8_t> px;
+            int cw = 0, ch = 0;
+            if (renderer->CaptureFramebuffer(px, cw, ch))
+            {
+                WriteRgbaBmp(px, cw, ch, shotPath);
+                std::printf("SHOT OK -> %s\n", shotPath.c_str());
+            }
             break;
         }
-
-        glfwSwapBuffers(window);
 
         ++loopFrame;
         if (selftest && ++frames >= 3)
@@ -402,7 +377,7 @@ void App::DrawMenuBar()
         m->DrawFileMenu();   // New/Save/Export/Preview/Diff/Import for the active editor
         ImGui::Separator();
         if (ImGui::MenuItem("Exit"))
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
+            window.RequestClose();
         ImGui::EndMenu();
     }
 
@@ -448,19 +423,12 @@ void App::DrawMenuBar()
 // ---------------------------------------------------------------------------
 void App::DrawEditorRail()
 {
-    // Slim vertical strip of editor modules on the far left. Quests and Items exist
-    // today; the rest are disabled "coming soon" stubs that make the platform shape
-    // visible. Drawn as a viewport side bar so the dockspace auto-fits beside it.
-    // Single-letter glyphs (placeholders for real client icons); full name in tooltip.
-    // NOTE: positional order MUST match the modules_ push order in Run().
-    struct RailItem { const char* glyph; const char* name; bool enabled; };
-    static const RailItem kItems[] = {
-        {"Q", "Quests", true},
-        {"I", "Items", true},
-        {"N", "Creatures / NPCs", true},
-        {"G", "GameObjects", true},
-    };
-
+    // Slim vertical strip of editor modules on the far left, one button per module in
+    // modules_ order (the button index IS the activeEditor index). Drawn as a viewport
+    // side bar so the dockspace auto-fits beside it. Glyph and tooltip come from the
+    // module itself (RailGlyph/DisplayName), so adding a module to modules_ is the only
+    // change needed — the rail has no separate list to keep in sync.
+    // Single-letter glyphs are placeholders for real client icons.
     const float railW = 52.0f * dpiScale;
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 9));
@@ -469,23 +437,19 @@ void App::DrawEditorRail()
                                         ImGuiWindowFlags_NoSavedSettings))
     {
         const float btnH = 40.0f * dpiScale;
-        for (int i = 0; i < IM_ARRAYSIZE(kItems); ++i)
+        for (int i = 0; i < static_cast<int>(modules_.size()); ++i)
         {
-            const RailItem& it = kItems[i];
+            IEditorModule* m = modules_[i].get();
             ImGui::PushID(i);
             const bool active = (i == activeEditor);
-            if (!it.enabled)
-                ImGui::BeginDisabled();
             if (active)
                 ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-            if (ImGui::Button(it.glyph, ImVec2(-FLT_MIN, btnH)) && it.enabled)
+            if (ImGui::Button(m->RailGlyph(), ImVec2(-FLT_MIN, btnH)))
                 activeEditor = i;
             if (active)
                 ImGui::PopStyleColor();
-            if (!it.enabled)
-                ImGui::EndDisabled();
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("%s", it.name);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", m->DisplayName());
             ImGui::Spacing();
             ImGui::PopID();
         }
@@ -567,7 +531,7 @@ void App::DrawSharedPanels()
         {
             ImGui::TextUnformatted("TrinityCore Studio");
             ImGui::TextUnformatted("A multi-editor toolkit for TrinityCore 3.3.5a world data.");
-            ImGui::TextUnformatted("Dear ImGui (docking) + GLFW + OpenGL3");
+            ImGui::TextUnformatted("Dear ImGui (docking) + GLFW + Vulkan");
             ImGui::TextDisabled("Editors: Quests, Items, Creatures, GameObjects.");
         }
         ImGui::End();
@@ -874,6 +838,10 @@ void App::StepClientLoad()
                     " skills=" + std::to_string(lookups.SkillCount()) +
                     " titles=" + std::to_string(lookups.TitleCount()) + "; icons ready.");
             SaveSettings();
+            // Client DBCs/icons are now available; let every module react (refresh
+            // name-resolved views, etc.). Fires on each successful (re)load.
+            for (auto& m : modules_)
+                m->OnClientDataLoaded();
             clientLoadStep = -1;
             break;
 
@@ -1088,4 +1056,4 @@ void App::DrawParchmentBackdrop()
     dl->AddRectFilled(p0, p1, IM_COL32(20, 15, 9, 165));
 }
 
-} // namespace qe
+} // namespace we

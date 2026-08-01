@@ -9,7 +9,7 @@
 #include "schema/Creature.h"
 #include "data/LookupCache.h"
 
-namespace qe
+namespace we
 {
 void DrawCreatureAddonTab(CreatureEditorContext& ctx)
 {
@@ -53,4 +53,4 @@ void DrawCreatureAddonTab(CreatureEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

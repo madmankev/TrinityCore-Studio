@@ -11,7 +11,7 @@
 
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 void DrawCreatureStatsTab(CreatureEditorContext& ctx)
 {
@@ -60,4 +60,4 @@ void DrawCreatureStatsTab(CreatureEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

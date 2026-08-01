@@ -16,7 +16,7 @@
 
 #include <cstdio>
 
-namespace qe
+namespace we
 {
 void DrawGameObjectDataTab(GameObjectEditorContext& ctx)
 {
@@ -81,4 +81,4 @@ void DrawGameObjectDataTab(GameObjectEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

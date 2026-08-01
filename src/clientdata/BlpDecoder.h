@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace qe
+namespace we
 {
 struct BlpImage
 {
@@ -20,4 +20,4 @@ struct BlpImage
 
 // Decode a .blp blob. Returns an invalid image on failure (never throws).
 BlpImage DecodeBlp(const std::vector<uint8_t>& bytes);
-} // namespace qe
+} // namespace we

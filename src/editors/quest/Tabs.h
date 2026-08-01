@@ -4,7 +4,7 @@
 // per frame with the current QuestEditorContext. Signatures MUST stay stable; only
 // the bodies (in ui/tabs/*.cpp) change.
 
-namespace qe
+namespace we
 {
 struct QuestEditorContext;
 
@@ -18,4 +18,4 @@ void DrawQuestgiversTab(QuestEditorContext&);
 void DrawPoiTab(QuestEditorContext&);
 void DrawLocalesTab(QuestEditorContext&);
 void DrawConditionsTab(QuestEditorContext&);
-} // namespace qe
+} // namespace we

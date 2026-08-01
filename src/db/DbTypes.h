@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <string>
 
-namespace qe
+namespace we
 {
 // Uniform success/error result for DB operations. `ok == true` means success;
 // on failure `ok == false` and `message` carries a human-readable reason
@@ -37,4 +37,4 @@ enum class WriteMode
     Live,
     SqlExport
 };
-} // namespace qe
+} // namespace we

@@ -23,7 +23,7 @@
 
 #include <json.hpp>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -662,6 +662,7 @@ void ItemModule::DoSaveItem()
     }
     dirty = false;
     currentItem.isNew = false;
+    currentItem.ClearDirty();   // delta-write: parts just saved are now clean
     if (mode == WriteMode::SqlExport)
     {
         SetStatus("Exported item " + std::to_string(currentItem.tmpl.entry) + " -> " + exportPath);
@@ -758,7 +759,9 @@ void ItemModule::PreviewSql()
         return;
     SqlExportDatabase exp(nullptr);
     exp.SetOutputPath("");
-    DbError e = repo.SaveItem(exp, currentItem);
+    Item full = currentItem;   // preview shows the whole record, not just pending deltas
+    full.MarkAllDirty();
+    DbError e = repo.SaveItem(exp, full);
     previewText = exp.PreviewBuffer();
     if (previewText.empty())
         previewText = e.ok ? "(no statements)" : ("-- preview error: " + e.message);
@@ -908,4 +911,4 @@ void ItemModule::DrawAllTabsForSelftest()
     DrawItemTextSetTab(ctx);
     DrawItemLocalesTab(ctx);
 }
-} // namespace qe
+} // namespace we

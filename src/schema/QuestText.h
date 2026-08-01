@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <string>
 
-namespace qe
+namespace we
 {
 struct QuestOfferReward
 {
@@ -43,4 +43,4 @@ struct QuestDetails
 
     bool present = false;
 };
-} // namespace qe
+} // namespace we

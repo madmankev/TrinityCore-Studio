@@ -6,7 +6,7 @@
 //   quest_offer_reward_locale   (line 2636)
 //   quest_request_items_locale  (line 2741)
 //   quest_greeting_locale       (line 2582) - keyed additionally by Type (creature/GO)
-// One QuestLocale corresponds to one `locale` code (see qe::kLocales); the base
+// One QuestLocale corresponds to one `locale` code (see we::kLocales); the base
 // enUS text lives in the main tables, not here. Empty strings mean "no localized
 // value for that column in this locale".
 
@@ -14,7 +14,7 @@
 #include <cstdint>
 #include <string>
 
-namespace qe
+namespace we
 {
 struct QuestLocale
 {
@@ -45,4 +45,4 @@ struct QuestLocale
     bool greetingCreaturePresent = false;
     bool greetingGameObjectPresent = false;
 };
-} // namespace qe
+} // namespace we

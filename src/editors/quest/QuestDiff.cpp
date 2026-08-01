@@ -6,7 +6,7 @@
 #include <array>
 #include <cstdio>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -179,4 +179,4 @@ std::vector<FieldDiff> QuestDiff::Compare(const Quest& a, const Quest& b) const
                      });
     return out;
 }
-} // namespace qe
+} // namespace we

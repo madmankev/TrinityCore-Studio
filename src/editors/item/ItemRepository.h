@@ -4,7 +4,7 @@
 // (+ item_template_locale) via the IDatabase seam. Mirrors QuestRepository but is
 // simpler: item_template is a single-PK table, so the main row is a REPLACE and the
 // only child is the locale table (delete-then-insert). Reuses the schema-adaptive
-// qe::sql helpers (Row/ValueList/SplitCols/ExistingCols/FilteredInsert).
+// we::sql helpers (Row/ValueList/SplitCols/ExistingCols/FilteredInsert).
 
 #include <cstdint>
 #include <string>
@@ -13,7 +13,7 @@
 #include "db/DbTypes.h"
 #include "schema/Item.h"
 
-namespace qe
+namespace we
 {
 class IDatabase;
 
@@ -105,4 +105,4 @@ public:
                              const std::string& column, BatchOp op, int64_t value,
                              uint32_t& affected);
 };
-} // namespace qe
+} // namespace we

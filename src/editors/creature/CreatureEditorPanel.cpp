@@ -9,7 +9,7 @@
 #include "editors/creature/Tabs.h"
 #include "ui/Widgets.h"
 
-namespace qe
+namespace we
 {
 void CreatureEditorPanel::Draw(CreatureEditorContext& ctx, bool hasCreature, bool dirty,
                                const CreatureEditorCallbacks& cb)
@@ -88,4 +88,4 @@ void CreatureEditorPanel::Draw(CreatureEditorContext& ctx, bool hasCreature, boo
 
     ImGui::End();
 }
-} // namespace qe
+} // namespace we

@@ -12,7 +12,7 @@
 #include <cstdio>
 #include <vector>
 
-namespace qe
+namespace we
 {
 void CreatureBrowserPanel::Draw(const std::vector<CreatureListEntry>& entries, bool connected,
                                 LookupCache& lookups, CreatureBrowserCallbacks& cb)
@@ -178,4 +178,4 @@ void CreatureBrowserPanel::Draw(const std::vector<CreatureListEntry>& entries, b
     if (doRefresh && connected && cb.onRefresh)
         cb.onRefresh(filter);
 }
-} // namespace qe
+} // namespace we

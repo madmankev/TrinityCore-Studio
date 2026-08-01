@@ -12,7 +12,7 @@
 #include <cstdio>
 #include <vector>
 
-namespace qe
+namespace we
 {
 void GameObjectBrowserPanel::Draw(const std::vector<GameObjectListEntry>& entries, bool connected,
                                   LookupCache& lookups, GameObjectBrowserCallbacks& cb)
@@ -136,4 +136,4 @@ void GameObjectBrowserPanel::Draw(const std::vector<GameObjectListEntry>& entrie
     if (doRefresh && connected && cb.onRefresh)
         cb.onRefresh(filter);
 }
-} // namespace qe
+} // namespace we

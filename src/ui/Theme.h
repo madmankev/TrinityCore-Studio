@@ -5,7 +5,7 @@
 
 struct ImFont;
 
-namespace qe
+namespace we
 {
 class ClientData;
 
@@ -29,4 +29,4 @@ enum class ThemeKind
 
 // Applies the given theme (colors, rounding, spacing) scaled by dpiScale.
 void ApplyTheme(float dpiScale, ThemeKind kind);
-} // namespace qe
+} // namespace we

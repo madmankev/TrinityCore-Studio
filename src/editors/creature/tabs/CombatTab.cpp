@@ -14,7 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 
-namespace qe
+namespace we
 {
 void DrawCreatureCombatTab(CreatureEditorContext& ctx)
 {
@@ -85,4 +85,4 @@ void DrawCreatureCombatTab(CreatureEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

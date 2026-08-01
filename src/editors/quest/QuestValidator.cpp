@@ -6,7 +6,7 @@
 
 #include "data/LookupCache.h"
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -279,4 +279,4 @@ std::vector<ValidationIssue> QuestValidator::Validate(const Quest& q, const Look
                      });
     return issues;
 }
-} // namespace qe
+} // namespace we

@@ -6,7 +6,7 @@
 #include "clientdata/DbcStore.h"
 #include "data/LookupCache.h"
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -117,4 +117,4 @@ ImTextureID ClientAssets::SpellIcon(uint32_t spellId)
         path += ".blp";
     return textures.GetOrLoad(*cd, path);
 }
-} // namespace qe
+} // namespace we

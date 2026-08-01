@@ -13,7 +13,7 @@
 #include "db/ResultSet.h"
 #include "data/SqlBuild.h"
 
-namespace qe
+namespace we
 {
 using namespace sql;
 
@@ -113,12 +113,13 @@ DbError GameObjectRepository::LoadAssociated(IDatabase& db, uint32_t entry, Game
 bool GameObjectRepository::SaveAssociated(IDatabase& db, const GameObject& go, DbError& err)
 {
     const uint32_t id = go.tmpl.entry;
+    const bool all = go.isNew;   // new record writes all; else per-system deltas
 
     // --- loot (delete-then-insert under Data1, in the type's loot table) -
     if (const char* lootTable = LootTableFor(go.tmpl.type))
     {
         const uint32_t lootId = static_cast<uint32_t>(go.tmpl.data[1]);
-        if (lootId != 0)
+        if (lootId != 0 && (all || go.lootDirty))
         {
             if (!ExecStep(db, std::string("DELETE FROM ") + lootTable + " WHERE Entry = " + std::to_string(lootId), err))
                 return false;
@@ -144,6 +145,7 @@ bool GameObjectRepository::SaveAssociated(IDatabase& db, const GameObject& go, D
     }
 
     // --- spawns (in-place per guid) --------------------------------------
+    if (all || go.spawnsDirty)
     {
         static const std::vector<std::string> fullCols = SplitCols(kSpawnColsFull);
         static const std::vector<std::string> newCols = SplitCols(kSpawnColsNew);
@@ -285,4 +287,4 @@ DbError GameObjectRepository::BatchUpdateGameObjects(IDatabase& db, const std::v
     affected = static_cast<uint32_t>(entries.size());
     return db.Commit();
 }
-} // namespace qe
+} // namespace we

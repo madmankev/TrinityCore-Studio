@@ -6,7 +6,7 @@
 
 #include <string>
 
-namespace qe
+namespace we
 {
 enum class Severity
 {
@@ -22,4 +22,4 @@ struct ValidationIssue
     std::string field;    // short field name
     std::string message;  // human-readable
 };
-} // namespace qe
+} // namespace we

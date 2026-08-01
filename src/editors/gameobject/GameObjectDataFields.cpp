@@ -3,7 +3,7 @@
 
 #include "editors/gameobject/GameObjectDataFields.h"
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -152,4 +152,4 @@ const std::vector<GoDataField>& GameObjectDataFields(uint8_t type)
         default: return empty;  // 4 Binder, 14 MapObject, 16/17/20/28 empty/unused
     }
 }
-} // namespace qe
+} // namespace we

@@ -22,7 +22,7 @@
 
 #include <json.hpp>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -619,6 +619,7 @@ void CreatureModule::DoSaveCreature()
     if (!e.ok) { LogError("Save failed: " + e.message); SetStatus("Save failed"); return; }
     dirty = false;
     currentCreature.isNew = false;
+    currentCreature.ClearDirty();   // delta-write: parts just saved are now clean
     if (mode == WriteMode::SqlExport)
     {
         SetStatus("Exported creature " + std::to_string(currentCreature.tmpl.entry) + " -> " + exportPath);
@@ -706,7 +707,9 @@ void CreatureModule::PreviewSql()
         return;
     SqlExportDatabase exp(nullptr);
     exp.SetOutputPath("");
-    DbError e = repo.SaveCreature(exp, currentCreature);
+    Creature full = currentCreature;   // preview shows the whole record, not just deltas
+    full.MarkAllDirty();
+    DbError e = repo.SaveCreature(exp, full);
     previewText = exp.PreviewBuffer();
     if (previewText.empty())
         previewText = e.ok ? "(no statements)" : ("-- preview error: " + e.message);
@@ -850,4 +853,4 @@ void CreatureModule::DrawAllTabsForSelftest()
     DrawCreatureLootTab(ctx);
     DrawCreatureSpawnsTab(ctx);
 }
-} // namespace qe
+} // namespace we

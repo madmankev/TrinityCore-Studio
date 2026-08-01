@@ -11,7 +11,7 @@
 
 #include <cfloat>
 
-namespace qe
+namespace we
 {
 void DrawCreatureEquipmentTab(CreatureEditorContext& ctx)
 {
@@ -64,4 +64,4 @@ void DrawCreatureEquipmentTab(CreatureEditorContext& ctx)
         md();
     }
 }
-} // namespace qe
+} // namespace we

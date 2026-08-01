@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace qe
+namespace we
 {
 class ClientData;
 
@@ -72,5 +72,39 @@ public:
         int offsetX = 0, offsetY = 0;
     };
     std::vector<WorldMapOverlayInfo> LoadWorldMapOverlays(const ClientData&) const;
+
+    // --- creature model resolution (model viewer) ---
+    // CreatureModelData: modelId -> model file path, extension normalized to ".m2".
+    std::unordered_map<uint32_t, std::string> LoadCreatureModelPaths(const ClientData&) const;
+    // CreatureDisplayInfo: displayId -> its model id + up to 3 skin texture names. The
+    // skin names combine with the model's directory to form the body .blp paths.
+    struct CreatureDisplay
+    {
+        uint32_t modelId = 0;
+        std::string skins[3];
+    };
+    std::unordered_map<uint32_t, CreatureDisplay> LoadCreatureDisplays(const ClientData&) const;
+
+    // LiquidType.dbc: id -> its category + animated-texture filename pattern. Used to render
+    // WMO/ADT liquid surfaces with the correct texture, type, and frame animation.
+    struct LiquidTypeInfo
+    {
+        uint32_t    category = 0;   // field 3: 0 water, 1 ocean, 2 magma, 3 slime
+        std::string texture;        // field 15: e.g. "XTextures\\lava\\lava.%d.blp" (%d = frame)
+    };
+    std::unordered_map<uint32_t, LiquidTypeInfo> LoadLiquidTypes(const ClientData&) const;
+
+    // AnimationData.dbc: animation id -> name ("Stand", "Walk", "Attack1H", ...). M2
+    // sequences store this id; the viewer shows the name for each animation.
+    std::unordered_map<uint32_t, std::string> LoadAnimationNames(const ClientData&) const;
+
+    // Map.dbc: map id -> its internal directory + display name. The directory is the
+    // <MapName> in World\Maps\<MapName>\<MapName>_X_Y.adt; the ADT viewer lists maps by it.
+    struct MapInfo
+    {
+        std::string directory;   // field 1, e.g. "Azeroth", "Kalimdor", "Northrend"
+        std::string name;        // localized display name (enUS)
+    };
+    std::unordered_map<uint32_t, MapInfo> LoadMaps(const ClientData&) const;
 };
-} // namespace qe
+} // namespace we

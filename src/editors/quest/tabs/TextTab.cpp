@@ -12,7 +12,7 @@
 
 #include <cfloat>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -201,4 +201,4 @@ void DrawTextTab(QuestEditorContext& ctx)
         }
     }
 }
-} // namespace qe
+} // namespace we

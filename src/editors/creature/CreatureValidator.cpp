@@ -6,7 +6,7 @@
 #include "data/LookupCache.h"
 #include "util/Enums.h"
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -76,4 +76,4 @@ std::vector<ValidationIssue> CreatureValidator::Validate(const Creature& c, cons
                      { return static_cast<int>(a.severity) < static_cast<int>(b.severity); });
     return issues;
 }
-} // namespace qe
+} // namespace we

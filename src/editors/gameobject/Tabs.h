@@ -2,7 +2,7 @@
 
 // Layer E (ui) — gameobject editor tab entry points. Bodies in editors/gameobject/tabs/*.
 
-namespace qe
+namespace we
 {
 struct GameObjectEditorContext;
 
@@ -13,4 +13,4 @@ void DrawGameObjectLocalesTab(GameObjectEditorContext&);
 void DrawGameObjectQuestItemsTab(GameObjectEditorContext&);
 void DrawGameObjectLootTab(GameObjectEditorContext&);
 void DrawGameObjectSpawnsTab(GameObjectEditorContext&);
-} // namespace qe
+} // namespace we

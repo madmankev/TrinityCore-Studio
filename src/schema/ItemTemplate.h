@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <string>
 
-namespace qe
+namespace we
 {
 struct ItemTemplate
 {
@@ -133,4 +133,4 @@ struct ItemTemplate
     uint32_t flagsCustom = 0;           // `flagsCustom`   int unsigned (ItemFlagsCustom bitmask)
     int32_t  verifiedBuild = 0;         // `VerifiedBuild` int DEFAULT NULL (carry-through, not core-loaded)
 };
-} // namespace qe
+} // namespace we

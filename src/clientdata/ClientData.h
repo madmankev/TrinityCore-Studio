@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace qe
+namespace we
 {
 class ClientData
 {
@@ -31,6 +31,11 @@ public:
     std::vector<uint8_t> ReadFile(const std::string& archivePath) const;
     bool HasFile(const std::string& archivePath) const;
 
+    // Enumerate archive files whose path ends with `extension` (case-insensitive, e.g.
+    // ".m2"), read from the MPQ "(listfile)". Paths use backslashes. Empty if there is
+    // no listfile (e.g. a loose-only source). Used by the model browser.
+    std::vector<std::string> ListFiles(const std::string& extension) const;
+
     std::string SourceDescription() const { return description; }
 
 private:
@@ -38,4 +43,4 @@ private:
     std::string looseRoot;        // non-empty when a loose folder is used
     std::string description;
 };
-} // namespace qe
+} // namespace we

@@ -13,7 +13,7 @@
 #include <cfloat>
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -164,4 +164,4 @@ void DrawGeneralTab(QuestEditorContext& ctx)
     if (FlagCheckboxGrid("##AllowableClasses", addon.allowableClasses, ClassMaskBits()))
         addonChanged();
 }
-} // namespace qe
+} // namespace we

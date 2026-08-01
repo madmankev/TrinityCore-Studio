@@ -29,7 +29,7 @@
 
 #include <json.hpp>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -285,6 +285,7 @@ void QuestModule::DrawFileMenu()
             if (ImportLocalesCsv(ss.str(), currentQuest, err))
             {
                 dirty = true; validationDirty = true;
+                currentQuest.localesDirty = true;   // only locales changed
                 SetStatus("Imported locales from CSV");
                 LogInfo("Imported locales CSV from " + p);
             }
@@ -875,6 +876,7 @@ void QuestModule::DoSaveQuest()
     }
     dirty = false;
     currentQuest.isNew = false;
+    currentQuest.ClearDirty();   // delta-write: parts just saved are now clean
     if (mode == WriteMode::SqlExport)
     {
         SetStatus("Exported quest " + std::to_string(currentQuest.tmpl.id) + " -> " + exportPath);
@@ -933,6 +935,7 @@ void QuestModule::Undo()
     currentQuest = undoStack.Undo(currentQuest);
     dirty = true;
     validationDirty = true;
+    currentQuest.MarkAllDirty();   // restored state may differ anywhere; write it all
     SetStatus("Undo");
 }
 
@@ -943,6 +946,7 @@ void QuestModule::Redo()
     currentQuest = undoStack.Redo(currentQuest);
     dirty = true;
     validationDirty = true;
+    currentQuest.MarkAllDirty();   // restored state may differ anywhere; write it all
     SetStatus("Redo");
 }
 
@@ -986,7 +990,10 @@ void QuestModule::PreviewSql()
         return;
     SqlExportDatabase exp(nullptr);
     exp.SetOutputPath("");
-    DbError e = repo.SaveQuest(exp, currentQuest);
+    // Preview shows the whole record as SQL (not just pending deltas), so force all parts.
+    Quest full = currentQuest;
+    full.MarkAllDirty();
+    DbError e = repo.SaveQuest(exp, full);
     previewText = exp.PreviewBuffer();
     if (previewText.empty())
         previewText = e.ok ? "(no statements)" : ("-- preview error: " + e.message);
@@ -1018,6 +1025,7 @@ void QuestModule::ImportSqlFile()
     for (const std::string& w : r.warnings)
         LogWarn("Import: " + w);
     const uint32_t id = r.quest.tmpl.id;
+    r.quest.MarkAllDirty();   // imported record has no per-part flags; write it all
     SetEditedQuest(std::move(r.quest), true);
     SetStatus("Imported quest " + std::to_string(id) + " from SQL");
     LogInfo("Imported quest " + std::to_string(id) + " from " + path);
@@ -1329,4 +1337,4 @@ void QuestModule::DrawAllTabsForSelftest()
     DrawPoiTab(ctx);
     DrawLocalesTab(ctx);
 }
-} // namespace qe
+} // namespace we

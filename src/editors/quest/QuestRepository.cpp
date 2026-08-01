@@ -13,7 +13,7 @@
 #include "db/ResultSet.h"
 #include "data/SqlBuild.h"
 
-namespace qe
+namespace we
 {
 // Schema-adaptive SQL helpers (Row, ValueList, SplitCols, ExistingCols,
 // FilteredInsert, FilteredUpsert, FmtFloat) now live in data/SqlBuild.h and are
@@ -640,7 +640,13 @@ DbError QuestRepository::SaveQuest(IDatabase& db, const Quest& quest)
         return e;
     };
 
-    // --- quest_template (always REPLACE) ---------------------------------
+    // Delta-write: a new record writes everything; otherwise each table is written
+    // only when its per-part dirty flag is set (see schema-and-encodings.md). Import/
+    // undo/redo call Quest::MarkAllDirty() so those paths still write in full.
+    const bool all = quest.isNew;
+
+    // --- quest_template (REPLACE) ----------------------------------------
+    if (all || quest.tmplDirty)
     {
         const QuestTemplate& t = quest.tmpl;
         ValueList v(db);
@@ -726,7 +732,7 @@ DbError QuestRepository::SaveQuest(IDatabase& db, const Quest& quest)
     }
 
     // --- quest_template_addon (REPLACE or DELETE) ------------------------
-    if (quest.addon.present)
+    if ((all || quest.addonDirty) && quest.addon.present)
     {
         const QuestTemplateAddon& a = quest.addon;
         ValueList v(db);
@@ -754,13 +760,14 @@ DbError QuestRepository::SaveQuest(IDatabase& db, const Quest& quest)
         if (!ExecStep(db, sql, err))
             return fail(err);
     }
-    else if (!ExecStep(db, "DELETE FROM quest_template_addon WHERE ID = " + idStr, err))
+    else if ((all || quest.addonDirty) &&
+             !ExecStep(db, "DELETE FROM quest_template_addon WHERE ID = " + idStr, err))
     {
         return fail(err);
     }
 
     // --- quest_offer_reward (REPLACE or DELETE) --------------------------
-    if (quest.offerReward.present)
+    if ((all || quest.offerRewardDirty) && quest.offerReward.present)
     {
         const QuestOfferReward& o = quest.offerReward;
         ValueList v(db);
@@ -777,13 +784,14 @@ DbError QuestRepository::SaveQuest(IDatabase& db, const Quest& quest)
         if (!ExecStep(db, sql, err))
             return fail(err);
     }
-    else if (!ExecStep(db, "DELETE FROM quest_offer_reward WHERE ID = " + idStr, err))
+    else if ((all || quest.offerRewardDirty) &&
+             !ExecStep(db, "DELETE FROM quest_offer_reward WHERE ID = " + idStr, err))
     {
         return fail(err);
     }
 
     // --- quest_request_items (REPLACE or DELETE) -------------------------
-    if (quest.requestItems.present)
+    if ((all || quest.requestItemsDirty) && quest.requestItems.present)
     {
         const QuestRequestItems& r = quest.requestItems;
         ValueList v(db);
@@ -800,13 +808,14 @@ DbError QuestRepository::SaveQuest(IDatabase& db, const Quest& quest)
         if (!ExecStep(db, sql, err))
             return fail(err);
     }
-    else if (!ExecStep(db, "DELETE FROM quest_request_items WHERE ID = " + idStr, err))
+    else if ((all || quest.requestItemsDirty) &&
+             !ExecStep(db, "DELETE FROM quest_request_items WHERE ID = " + idStr, err))
     {
         return fail(err);
     }
 
     // --- quest_details (REPLACE or DELETE) -------------------------------
-    if (quest.details.present)
+    if ((all || quest.detailsDirty) && quest.details.present)
     {
         const QuestDetails& d = quest.details;
         ValueList v(db);
@@ -822,13 +831,14 @@ DbError QuestRepository::SaveQuest(IDatabase& db, const Quest& quest)
         if (!ExecStep(db, sql, err))
             return fail(err);
     }
-    else if (!ExecStep(db, "DELETE FROM quest_details WHERE ID = " + idStr, err))
+    else if ((all || quest.detailsDirty) &&
+             !ExecStep(db, "DELETE FROM quest_details WHERE ID = " + idStr, err))
     {
         return fail(err);
     }
 
     // --- quest_mail_sender (REPLACE or DELETE) ---------------------------
-    if (quest.mailSender.present)
+    if ((all || quest.mailSenderDirty) && quest.mailSender.present)
     {
         ValueList v(db);
         v.UInt(id);
@@ -839,14 +849,17 @@ DbError QuestRepository::SaveQuest(IDatabase& db, const Quest& quest)
         if (!ExecStep(db, sql, err))
             return fail(err);
     }
-    else if (!ExecStep(db, "DELETE FROM quest_mail_sender WHERE QuestId = " + idStr, err))
+    else if ((all || quest.mailSenderDirty) &&
+             !ExecStep(db, "DELETE FROM quest_mail_sender WHERE QuestId = " + idStr, err))
     {
         return fail(err);
     }
 
     // --- quest_greeting (delete-then-insert) -----------------------------
-    if (!ExecStep(db, "DELETE FROM quest_greeting WHERE ID = " + idStr, err))
+    if ((all || quest.greetingsDirty) &&
+        !ExecStep(db, "DELETE FROM quest_greeting WHERE ID = " + idStr, err))
         return fail(err);
+    if (all || quest.greetingsDirty)
     for (const QuestGreeting& g : quest.greetings)
     {
         ValueList v(db);
@@ -875,6 +888,7 @@ DbError QuestRepository::SaveQuest(IDatabase& db, const Quest& quest)
         {"gameobject_queststarter", &quest.goStarters},
         {"gameobject_questender", &quest.goEnders},
     };
+    if (all || quest.questgiversDirty)
     for (const LinkSave& ls : linkSaves)
     {
         std::string del = std::string("DELETE FROM ") + ls.table + " WHERE quest = " + idStr;
@@ -890,14 +904,17 @@ DbError QuestRepository::SaveQuest(IDatabase& db, const Quest& quest)
     }
 
     // --- quest_poi + quest_poi_points (delete-then-insert) ---------------
-    if (!ExecStep(db, "DELETE FROM quest_poi_points WHERE QuestID = " + idStr, err))
+    if ((all || quest.poisDirty) &&
+        !ExecStep(db, "DELETE FROM quest_poi_points WHERE QuestID = " + idStr, err))
         return fail(err);
-    if (!ExecStep(db, "DELETE FROM quest_poi WHERE QuestID = " + idStr, err))
+    if ((all || quest.poisDirty) &&
+        !ExecStep(db, "DELETE FROM quest_poi WHERE QuestID = " + idStr, err))
         return fail(err);
     static const std::vector<std::string> poiCols = SplitCols(kPoiCols);
     static const std::vector<std::string> ptCols = SplitCols(kPoiPointCols);
     const std::set<std::string> poiExisting = ExistingCols(db, "quest_poi");
     const std::set<std::string> ptExisting = ExistingCols(db, "quest_poi_points");
+    if (all || quest.poisDirty)
     for (const QuestPoi& p : quest.pois)
     {
         ValueList v(db);
@@ -932,13 +949,17 @@ DbError QuestRepository::SaveQuest(IDatabase& db, const Quest& quest)
 
     // --- locales (delete-then-insert across four *_locale tables) --------
     // VerifiedBuild is not tracked on QuestLocale; it is written as 0.
-    if (!ExecStep(db, "DELETE FROM quest_template_locale WHERE ID = " + idStr, err))
+    if ((all || quest.localesDirty) &&
+        !ExecStep(db, "DELETE FROM quest_template_locale WHERE ID = " + idStr, err))
         return fail(err);
-    if (!ExecStep(db, "DELETE FROM quest_offer_reward_locale WHERE ID = " + idStr, err))
+    if ((all || quest.localesDirty) &&
+        !ExecStep(db, "DELETE FROM quest_offer_reward_locale WHERE ID = " + idStr, err))
         return fail(err);
-    if (!ExecStep(db, "DELETE FROM quest_request_items_locale WHERE ID = " + idStr, err))
+    if ((all || quest.localesDirty) &&
+        !ExecStep(db, "DELETE FROM quest_request_items_locale WHERE ID = " + idStr, err))
         return fail(err);
-    if (!ExecStep(db, "DELETE FROM quest_greeting_locale WHERE ID = " + idStr, err))
+    if ((all || quest.localesDirty) &&
+        !ExecStep(db, "DELETE FROM quest_greeting_locale WHERE ID = " + idStr, err))
         return fail(err);
 
     // Column lists + existing-column sets (schema-adaptive; renamed template-locale
@@ -952,6 +973,7 @@ DbError QuestRepository::SaveQuest(IDatabase& db, const Quest& quest)
     const std::set<std::string> reqLocExisting = ExistingCols(db, "quest_request_items_locale");
     const std::set<std::string> grtLocExisting = ExistingCols(db, "quest_greeting_locale");
 
+    if (all || quest.localesDirty)
     for (const auto& kv : quest.locales)
     {
         const QuestLocale& l = kv.second;
@@ -1037,13 +1059,15 @@ DbError QuestRepository::SaveQuest(IDatabase& db, const Quest& quest)
     }
 
     // --- conditions (SourceType 19 quest-available rows) -----------------
-    if (!ExecStep(db,
+    if ((all || quest.conditionsDirty) &&
+        !ExecStep(db,
                   "DELETE FROM conditions WHERE SourceTypeOrReferenceId = 19 AND SourceEntry = " +
                       idStr,
                   err))
         return fail(err);
     static const std::vector<std::string> condCols = SplitCols(kConditionsCols);
     const std::set<std::string> condExisting = ExistingCols(db, "conditions");
+    if (all || quest.conditionsDirty)
     for (const QuestCondition& c : quest.conditions)
     {
         ValueList v(db);
@@ -1315,4 +1339,4 @@ DbError QuestRepository::BatchUpdate(IDatabase& db, const std::vector<uint32_t>&
     affected = static_cast<uint32_t>(ids.size());
     return db.Commit();
 }
-} // namespace qe
+} // namespace we

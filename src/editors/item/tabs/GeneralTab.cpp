@@ -14,7 +14,7 @@
 #include <cstdio>
 #include <string>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -124,4 +124,4 @@ void DrawItemGeneralTab(ItemEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

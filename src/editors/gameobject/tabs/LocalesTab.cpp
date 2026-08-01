@@ -11,7 +11,7 @@
 
 #include <string>
 
-namespace qe
+namespace we
 {
 void DrawGameObjectLocalesTab(GameObjectEditorContext& ctx)
 {
@@ -63,4 +63,4 @@ void DrawGameObjectLocalesTab(GameObjectEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

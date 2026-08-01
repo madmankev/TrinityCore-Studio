@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <string>
 
-namespace qe
+namespace we
 {
 struct QuestGreeting
 {
@@ -17,4 +17,4 @@ struct QuestGreeting
     std::string greeting;                   // `Greeting`         mediumtext
     int32_t  verifiedBuild = 0;             // `VerifiedBuild`    int  DEFAULT NULL
 };
-} // namespace qe
+} // namespace we

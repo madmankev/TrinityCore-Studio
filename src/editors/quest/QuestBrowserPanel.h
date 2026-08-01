@@ -11,7 +11,7 @@
 
 #include "editors/quest/QuestRepository.h"
 
-namespace qe
+namespace we
 {
 class LookupCache;
 
@@ -39,4 +39,4 @@ private:
     uint32_t selectedId = 0;  // highlighted row
     int lastPageCount = 0;    // rows returned on the last refresh (for paging)
 };
-} // namespace qe
+} // namespace we

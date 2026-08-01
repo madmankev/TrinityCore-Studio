@@ -6,7 +6,7 @@
 
 #include <sstream>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -167,4 +167,4 @@ bool ImportLocalesCsv(const std::string& csv, Quest& q, std::string& error)
     }
     return true;
 }
-} // namespace qe
+} // namespace we

@@ -6,7 +6,7 @@
 
 #include <cstring>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -328,4 +328,101 @@ std::unordered_map<uint32_t, std::string> DbcStore::LoadSpellNames(const ClientD
     }
     return out;
 }
-} // namespace qe
+
+std::unordered_map<uint32_t, std::string> DbcStore::LoadCreatureModelPaths(const ClientData& cd) const
+{
+    // CreatureModelData.dbc: id=0, ModelName (path) = field 2. The DBC stores an .mdx/
+    // .mdl path; normalize to .m2 (the actual on-disk WotLK model).
+    std::unordered_map<uint32_t, std::string> out;
+    Dbc dbc;
+    if (!dbc.Load(cd.ReadFile("DBFilesClient\\CreatureModelData.dbc")) || dbc.FieldCount() <= 2)
+        return out;
+    for (uint32_t r = 0; r < dbc.RecordCount(); ++r)
+    {
+        std::string path = dbc.GetString(r, 2);
+        if (path.empty())
+            continue;
+        size_t dot = path.find_last_of('.');
+        if (dot != std::string::npos)
+            path = path.substr(0, dot);
+        path += ".m2";
+        out[dbc.GetUInt(r, 0)] = std::move(path);
+    }
+    return out;
+}
+
+std::unordered_map<uint32_t, DbcStore::CreatureDisplay>
+DbcStore::LoadCreatureDisplays(const ClientData& cd) const
+{
+    // CreatureDisplayInfo.dbc: id=0, ModelId=1, TextureVariation[3] = fields 6,7,8.
+    std::unordered_map<uint32_t, CreatureDisplay> out;
+    Dbc dbc;
+    if (!dbc.Load(cd.ReadFile("DBFilesClient\\CreatureDisplayInfo.dbc")) || dbc.FieldCount() <= 8)
+        return out;
+    for (uint32_t r = 0; r < dbc.RecordCount(); ++r)
+    {
+        CreatureDisplay d;
+        d.modelId = dbc.GetUInt(r, 1);
+        d.skins[0] = dbc.GetString(r, 6);
+        d.skins[1] = dbc.GetString(r, 7);
+        d.skins[2] = dbc.GetString(r, 8);
+        out[dbc.GetUInt(r, 0)] = std::move(d);
+    }
+    return out;
+}
+
+std::unordered_map<uint32_t, DbcStore::LiquidTypeInfo>
+DbcStore::LoadLiquidTypes(const ClientData& cd) const
+{
+    // LiquidType.dbc (3.3.5a, 45 fields, verified by dump): 0=ID, 1=Name, 3=Type
+    // (0 water/1 ocean/2 magma/3 slime), 15=Texture[0] (animated filename pattern, %d=frame).
+    std::unordered_map<uint32_t, LiquidTypeInfo> out;
+    Dbc dbc;
+    if (!dbc.Load(cd.ReadFile("DBFilesClient\\LiquidType.dbc")) || dbc.FieldCount() < 16)
+        return out;
+    for (uint32_t r = 0; r < dbc.RecordCount(); ++r)
+    {
+        LiquidTypeInfo info;
+        info.category = dbc.GetUInt(r, 3);
+        info.texture = dbc.GetString(r, 15);
+        out[dbc.GetUInt(r, 0)] = std::move(info);
+    }
+    return out;
+}
+
+std::unordered_map<uint32_t, std::string>
+DbcStore::LoadAnimationNames(const ClientData& cd) const
+{
+    // AnimationData.dbc (3.3.5a): 0=ID, 1=Name, then flags/fallback/behavior.
+    std::unordered_map<uint32_t, std::string> out;
+    Dbc dbc;
+    if (!dbc.Load(cd.ReadFile("DBFilesClient\\AnimationData.dbc")) || dbc.FieldCount() < 2)
+        return out;
+    for (uint32_t r = 0; r < dbc.RecordCount(); ++r)
+    {
+        std::string name = dbc.GetString(r, 1);
+        if (!name.empty())
+            out[dbc.GetUInt(r, 0)] = std::move(name);
+    }
+    return out;
+}
+
+std::unordered_map<uint32_t, DbcStore::MapInfo> DbcStore::LoadMaps(const ClientData& cd) const
+{
+    // Map.dbc (3.3.5a): 0=ID, 1=Directory, 2=InstanceType, 3=Flags, 4=PVP, 5=MapName[enUS]
+    // (then 15 more locale slots + a flags word). Directory feeds World\Maps\<dir>\.
+    std::unordered_map<uint32_t, MapInfo> out;
+    Dbc dbc;
+    if (!dbc.Load(cd.ReadFile("DBFilesClient\\Map.dbc")) || dbc.FieldCount() < 6)
+        return out;
+    for (uint32_t r = 0; r < dbc.RecordCount(); ++r)
+    {
+        MapInfo mi;
+        mi.directory = dbc.GetString(r, 1);
+        mi.name = dbc.GetString(r, 5);
+        if (!mi.directory.empty())
+            out[dbc.GetUInt(r, 0)] = std::move(mi);
+    }
+    return out;
+}
+} // namespace we

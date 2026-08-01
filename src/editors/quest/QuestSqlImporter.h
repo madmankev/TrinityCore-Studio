@@ -12,7 +12,7 @@
 
 #include "schema/Quest.h"
 
-namespace qe
+namespace we
 {
 // Outcome of an import attempt. `ok` is true only when a quest_template row for
 // the chosen quest id was found and assembled. `warnings` collects non-fatal
@@ -34,4 +34,4 @@ public:
     // throws; failures are reported via ImportResult::ok / ::error.
     ImportResult ImportFromSql(const std::string& sqlText, uint32_t onlyQuestId = 0) const;
 };
-} // namespace qe
+} // namespace we

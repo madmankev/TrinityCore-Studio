@@ -10,7 +10,7 @@
 
 #include <vector>
 
-namespace qe
+namespace we
 {
 LiveMysqlDatabase::~LiveMysqlDatabase()
 {
@@ -49,10 +49,15 @@ DbError LiveMysqlDatabase::Connect(const ConnectionConfig& config)
         return err;
     }
 
-    // utf8mb4 for full Unicode; auto-reconnect so idle connections recover.
+    // utf8mb4 for full Unicode.
     mysql_options(conn, MYSQL_SET_CHARSET_NAME, "utf8mb4");
-    // libmysql 8.0 dropped my_bool; the reconnect option takes a bool.
-    bool reconnect = true;
+    // Auto-reconnect is deliberately DISABLED. With it enabled, a connection drop
+    // mid-transaction silently reconnects on a fresh autocommit session: the open
+    // transaction is gone, statements already run are lost, and the remaining ones commit
+    // individually — voiding the rollback-on-error guarantee of the repository Save path.
+    // Better to fail loud on a dropped connection and let the user reconnect. (libmysql 8.0
+    // dropped my_bool; the option takes a bool.) See docs/db-layer.md.
+    bool reconnect = false;
     mysql_options(conn, MYSQL_OPT_RECONNECT, &reconnect);
 
     MYSQL* ok = mysql_real_connect(
@@ -210,4 +215,4 @@ std::string LiveMysqlDatabase::EscapeString(const std::string& raw)
         conn, buf.data(), raw.c_str(), static_cast<unsigned long>(raw.size()));
     return std::string(buf.data(), static_cast<size_t>(n));
 }
-} // namespace qe
+} // namespace we

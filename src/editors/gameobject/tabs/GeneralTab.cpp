@@ -11,7 +11,7 @@
 
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 void DrawGameObjectGeneralTab(GameObjectEditorContext& ctx)
 {
@@ -60,4 +60,4 @@ void DrawGameObjectGeneralTab(GameObjectEditorContext& ctx)
     }
     ImGui::TextDisabled("The type-specific Data0..23 fields are on the Data tab.");
 }
-} // namespace qe
+} // namespace we

@@ -7,7 +7,7 @@ each record across every related table, resolves item / creature / gameobject /
 faction / spell IDs to names, and can either write changes **live** (transactional)
 or **export a reviewable `.sql` file** - selectable per session.
 
-Built with Dear ImGui (docking) + GLFW + OpenGL3. Optional World of Warcraft client
+Built with Dear ImGui (docking) + GLFW + Vulkan 1.4. Optional World of Warcraft client
 data (MPQ/DBC) adds icons, zone maps, name resolution, and a Blizzard-styled theme.
 
 ## Editors
@@ -91,4 +91,5 @@ maps, and names.
   is written as `''` (not SQL `NULL`).
 - Editing shared child data (loot templates, trainers) affects every record that
   references it; spawn edits apply per-`guid`.
-- Windows-only for now (GLFW/OpenGL3 backend; the code is otherwise portable).
+- Windows-only for now (GLFW + Vulkan backend, Win32 surface; the code is otherwise
+  portable). Requires the LunarG Vulkan SDK to build and a Vulkan-1.4 driver to run.

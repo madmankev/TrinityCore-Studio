@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-namespace qe {
+namespace we {
 
 // Configuration for connecting to a TrinityCore worldserver SOAP endpoint.
 struct SoapConfig {
@@ -30,4 +30,4 @@ public:
     SoapResult ExecuteCommand(const SoapConfig& cfg, const std::string& command) const;
 };
 
-} // namespace qe
+} // namespace we

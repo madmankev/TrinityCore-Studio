@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <string>
 
-namespace qe
+namespace we
 {
 // TrinityCore 3.3.5a: conditions row that gates quest availability.
 inline constexpr int32_t kConditionSourceQuestAvailable = 19;
@@ -31,4 +31,4 @@ struct QuestCondition
     std::string scriptName;
     std::string comment;
 };
-} // namespace qe
+} // namespace we

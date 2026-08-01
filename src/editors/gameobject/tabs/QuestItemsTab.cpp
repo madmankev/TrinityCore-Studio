@@ -12,7 +12,7 @@
 #include <cfloat>
 #include <cstdio>
 
-namespace qe
+namespace we
 {
 void DrawGameObjectQuestItemsTab(GameObjectEditorContext& ctx)
 {
@@ -53,4 +53,4 @@ void DrawGameObjectQuestItemsTab(GameObjectEditorContext& ctx)
     }
     if (rm >= 0) { go.questItems.erase(go.questItems.begin() + rm); md(); }
 }
-} // namespace qe
+} // namespace we

@@ -12,7 +12,7 @@
 
 #include <cstdio>
 
-namespace qe
+namespace we
 {
 void DrawGameObjectAddonTab(GameObjectEditorContext& ctx)
 {
@@ -54,4 +54,4 @@ void DrawGameObjectAddonTab(GameObjectEditorContext& ctx)
     ImGui::SeparatorText("flags (GameObjectFlags)");
     if (FlagCheckboxGrid("##flags", a.flags, GameObjectFlagBits(), 2)) md();
 }
-} // namespace qe
+} // namespace we

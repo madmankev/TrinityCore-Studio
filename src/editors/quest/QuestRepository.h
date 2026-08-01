@@ -17,7 +17,7 @@
 #include "db/DbTypes.h"
 #include "schema/Quest.h"
 
-namespace qe
+namespace we
 {
 class IDatabase;
 
@@ -128,4 +128,4 @@ public:
     DbError BatchUpdate(IDatabase& db, const std::vector<uint32_t>& ids, const std::string& column,
                         BatchOp op, int64_t value, uint32_t& affected);
 };
-} // namespace qe
+} // namespace we

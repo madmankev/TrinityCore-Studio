@@ -10,7 +10,7 @@
 #include <cstring>
 #include <vector>
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -201,4 +201,4 @@ void ApplyTheme(float dpiScale, ThemeKind kind)
 
     s.ScaleAllSizes(dpiScale);
 }
-} // namespace qe
+} // namespace we

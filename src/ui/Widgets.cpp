@@ -10,7 +10,7 @@
 #include "data/LookupCache.h"
 #include "util/StringUtil.h"
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -47,6 +47,7 @@ std::string PickerLabel(LookupCache& cache, RefKind kind, uint32_t id)
         case RefKind::Area:       return id ? cache.LabelArea(id) : std::string();
         case RefKind::Quest:      return id ? cache.LabelQuest(id) : std::string();
         case RefKind::FactionTemplate: return id ? cache.LabelFactionTemplate(id) : std::string();
+        case RefKind::MailTemplate: return id ? cache.LabelMailTemplate(id) : std::string();
     }
     return {};
 }
@@ -65,6 +66,7 @@ std::vector<NameEntry> PickerSearch(const LookupCache& cache, RefKind kind, cons
         case RefKind::Area:       return cache.SearchAreas(query);
         case RefKind::Quest:      return cache.SearchQuests(query);
         case RefKind::FactionTemplate: return cache.SearchFactionTemplates(query);
+        case RefKind::MailTemplate: return cache.SearchMailTemplates(query);
     }
     return {};
 }
@@ -421,4 +423,4 @@ void EndFieldTable()
 {
     ImGui::EndTable();
 }
-} // namespace qe
+} // namespace we

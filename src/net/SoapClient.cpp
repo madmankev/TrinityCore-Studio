@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace qe {
+namespace we {
 
 namespace {
 
@@ -334,4 +334,4 @@ SoapResult SoapClient::ExecuteCommand(const SoapConfig& cfg, const std::string& 
     return result;
 }
 
-} // namespace qe
+} // namespace we

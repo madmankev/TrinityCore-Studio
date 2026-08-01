@@ -22,7 +22,7 @@
 #include "QuestTemplateAddon.h"
 #include "QuestText.h"
 
-namespace qe
+namespace we
 {
 struct Quest
 {
@@ -79,5 +79,14 @@ struct Quest
             mailSenderDirty = greetingsDirty = questgiversDirty = poisDirty =
                 localesDirty = conditionsDirty = false;
     }
+
+    // Force every part dirty. Used when the whole record must be written but no
+    // per-part flags were set (SQL/CSV import, undo/redo, headless emit-sql).
+    void MarkAllDirty()
+    {
+        tmplDirty = addonDirty = offerRewardDirty = requestItemsDirty = detailsDirty =
+            mailSenderDirty = greetingsDirty = questgiversDirty = poisDirty =
+                localesDirty = conditionsDirty = true;
+    }
 };
-} // namespace qe
+} // namespace we

@@ -8,7 +8,7 @@
 
 #include "schema/Quest.h"
 
-namespace qe
+namespace we
 {
 struct FieldDiff
 {
@@ -25,4 +25,4 @@ public:
     // ordered by tab then field.
     std::vector<FieldDiff> Compare(const Quest& dbVersion, const Quest& edited) const;
 };
-} // namespace qe
+} // namespace we

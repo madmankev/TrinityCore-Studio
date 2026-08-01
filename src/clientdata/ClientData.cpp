@@ -8,12 +8,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
-namespace qe
+namespace we
 {
 namespace
 {
@@ -208,4 +210,41 @@ bool ClientData::HasFile(const std::string& archivePath) const
             return true;
     return false;
 }
-} // namespace qe
+
+std::vector<std::string> ClientData::ListFiles(const std::string& extension) const
+{
+    std::vector<std::string> out;
+
+    // Lowercase the extension for a case-insensitive suffix match.
+    std::string ext = extension;
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    auto endsWith = [&](const char* s) {
+        size_t len = std::strlen(s);
+        if (len < ext.size())
+            return false;
+        for (size_t i = 0; i < ext.size(); ++i)
+            if (std::tolower(static_cast<unsigned char>(s[len - ext.size() + i])) != ext[i])
+                return false;
+        return true;
+    };
+
+    // Enumerate via StormLib, which resolves names from each archive's internal
+    // (listfile) across the whole patch chain (SFileOpenFileEx("(listfile)") only ever
+    // sees the base archive, so it misses most models). De-dup patched overrides.
+    std::unordered_set<std::string> seen;
+    for (void* h : archives)
+    {
+        SFILE_FIND_DATA fd = {};
+        HANDLE find = SFileFindFirstFile(h, "*", &fd, nullptr);
+        if (!find)
+            continue;
+        do
+        {
+            if (endsWith(fd.cFileName) && seen.insert(fd.cFileName).second)
+                out.emplace_back(fd.cFileName);
+        } while (SFileFindNextFile(find, &fd));
+        SFileFindClose(find);
+    }
+    return out;
+}
+} // namespace we

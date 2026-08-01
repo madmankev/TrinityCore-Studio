@@ -3,7 +3,7 @@
 // Layer E (ui) — creature editor tab entry points. Each is a free function taking the
 // per-frame CreatureEditorContext by reference. Bodies live in editors/creature/tabs/*.
 
-namespace qe
+namespace we
 {
 struct CreatureEditorContext;
 
@@ -24,4 +24,4 @@ void DrawCreatureVendorTab(CreatureEditorContext&);
 void DrawCreatureTrainerTab(CreatureEditorContext&);
 void DrawCreatureLootTab(CreatureEditorContext&);
 void DrawCreatureSpawnsTab(CreatureEditorContext&);
-} // namespace qe
+} // namespace we

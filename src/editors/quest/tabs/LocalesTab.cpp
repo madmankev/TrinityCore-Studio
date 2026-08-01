@@ -15,7 +15,7 @@
 #include <cstdio>
 #include <string>
 
-namespace qe
+namespace we
 {
 void DrawLocalesTab(QuestEditorContext& ctx)
 {
@@ -170,4 +170,4 @@ void DrawLocalesTab(QuestEditorContext& ctx)
         }
     }
 }
-} // namespace qe
+} // namespace we

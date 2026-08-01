@@ -5,7 +5,7 @@
 
 #include "schema/Creature.h"
 
-namespace qe
+namespace we
 {
 class LookupCache;
 
@@ -18,4 +18,4 @@ struct CreatureEditorContext
 
     void MarkChanged() { changed = true; }
 };
-} // namespace qe
+} // namespace we

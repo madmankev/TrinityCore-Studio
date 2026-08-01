@@ -11,7 +11,7 @@
 
 #include <cstdint>
 
-namespace qe
+namespace we
 {
 void DrawItemWeaponArmorTab(ItemEditorContext& ctx)
 {
@@ -91,4 +91,4 @@ void DrawItemWeaponArmorTab(ItemEditorContext& ctx)
         EndFieldTable();
     }
 }
-} // namespace qe
+} // namespace we

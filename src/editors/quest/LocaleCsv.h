@@ -5,7 +5,7 @@
 
 #include <string>
 
-namespace qe
+namespace we
 {
 struct Quest;
 
@@ -15,4 +15,4 @@ std::string ExportLocalesCsv(const Quest& q);
 // Parse CSV text into `q.locales`, setting per-source present flags and
 // q.localesDirty. Returns false with `error` set on a malformed file.
 bool ImportLocalesCsv(const std::string& csv, Quest& q, std::string& error);
-} // namespace qe
+} // namespace we
