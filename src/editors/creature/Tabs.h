@@ -24,4 +24,5 @@ void DrawCreatureVendorTab(CreatureEditorContext&);
 void DrawCreatureTrainerTab(CreatureEditorContext&);
 void DrawCreatureLootTab(CreatureEditorContext&);
 void DrawCreatureSpawnsTab(CreatureEditorContext&);
+void DrawCreatureQuestItemsTab(CreatureEditorContext&);
 } // namespace we

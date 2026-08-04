@@ -6,6 +6,9 @@
 
 #include "imgui.h"
 
+#include "clientdata/ClientData.h"
+#include "clientdata/DbcStore.h"
+#include "editors/item/ItemDbcSchema.h"
 #include "editors/item/ItemEditorContext.h"
 #include "editors/item/Tabs.h"
 #include "ui/Widgets.h"
@@ -175,10 +178,17 @@ void ItemModule::DrawPanels()
 
     if (showEditor)
     {
+        if (!resolveMapsLoaded_ && svc_ && svc_->clientData && svc_->clientData->IsOpen())
+            LoadItemResolveMaps();
+
         ItemEditorContext ctx;
         ctx.item = hasItem ? &currentItem : nullptr;
         ctx.lookups = &lookups;
         ctx.changed = false;
+        ctx.itemSetNames = &itemSetNames_;
+        ctx.randomPropNames = &randomPropNames_;
+        ctx.randomSuffixNames = &randomSuffixNames_;
+        ctx.limitCategoryNames = &limitCategoryNames_;
 
         ItemEditorCallbacks ecb;
         ecb.onNew = [this]() { NewItem(); };
@@ -663,20 +673,94 @@ void ItemModule::DoSaveItem()
     dirty = false;
     currentItem.isNew = false;
     currentItem.ClearDirty();   // delta-write: parts just saved are now clean
+    // Project the client Item.dbc stub so custom items render — in BOTH Live and SqlExport modes.
+    // It's a loose-overlay file (not a DB write), so a "reviewable .sql" export needs it too.
+    const bool wroteDbc = WriteItemDbc();
+    const std::string dbcNote = wroteDbc ? " (+ Item.dbc)" : "";
+    const uint32_t entry = currentItem.tmpl.entry;
     if (mode == WriteMode::SqlExport)
     {
-        SetStatus("Exported item " + std::to_string(currentItem.tmpl.entry) + " -> " + exportPath);
-        LogInfo("Item " + std::to_string(currentItem.tmpl.entry) + " exported to " + exportPath);
+        SetStatus("Exported item " + std::to_string(entry) + " -> " + exportPath + dbcNote);
+        LogInfo("Item " + std::to_string(entry) + " exported to " + exportPath);
     }
     else
     {
-        SetStatus("Saved item " + std::to_string(currentItem.tmpl.entry));
-        LogInfo("Item " + std::to_string(currentItem.tmpl.entry) + " saved (live)");
+        SetStatus("Saved item " + std::to_string(entry) + dbcNote);
+        LogInfo("Item " + std::to_string(entry) + " saved (live)");
         if (svc_->reloadAfterSaveIfEnabled)
             svc_->reloadAfterSaveIfEnabled();
     }
     validationDirty = true;
     RefreshBrowser(browserPanel.Filter());
+}
+
+bool ItemModule::WriteItemDbc()
+{
+    if (!svc_ || svc_->editRoot.empty() || !svc_->clientData)
+        return false;
+    if (!itemDbcLoaded_)
+    {
+        itemDbcDoc_.Init(&ItemDbcSchema(), "DBFilesClient\\Item.dbc");
+        itemDbcDoc_.Load(*svc_->clientData);
+        itemDbcLoaded_ = true;
+    }
+    if (!itemDbcDoc_.IsLoaded())
+        return false;  // no client data or unexpected layout — silently skip
+
+    const ItemTemplate& t = currentItem.tmpl;
+    int idx = itemDbcDoc_.table().FindById(t.entry);
+    uint32_t row = idx >= 0 ? static_cast<uint32_t>(idx) : itemDbcDoc_.AddRow();
+    itemDbcDoc_.SetU32(row, itemdbc::Id, t.entry);
+    itemDbcDoc_.SetU32(row, itemdbc::ClassID, t.cls);
+    itemDbcDoc_.SetU32(row, itemdbc::SubclassID, t.subclass);
+    itemDbcDoc_.SetI32(row, itemdbc::SoundOverrideSubclass, t.soundOverrideSubclass);
+    itemDbcDoc_.SetU32(row, itemdbc::Material, static_cast<uint8_t>(t.material));
+    itemDbcDoc_.SetU32(row, itemdbc::DisplayInfoID, t.displayId);
+    itemDbcDoc_.SetU32(row, itemdbc::InventoryType, t.inventoryType);
+    itemDbcDoc_.SetU32(row, itemdbc::SheatheType, t.sheath);
+
+    std::string err;
+    if (itemDbcDoc_.SaveOverlay(svc_->editRoot, err))
+    {
+        LogInfo("Item.dbc stub written for entry " + std::to_string(t.entry));
+        return true;
+    }
+    LogError("Item.dbc write failed: " + err);
+    return false;
+}
+
+void ItemModule::LoadItemResolveMaps()
+{
+    resolveMapsLoaded_ = true;
+    itemSetNames_.clear();
+    randomPropNames_.clear();
+    randomSuffixNames_.clear();
+    limitCategoryNames_.clear();
+    if (!svc_ || !svc_->clientData)
+        return;
+    ClientData& cd = *svc_->clientData;
+    auto loadNames = [&](const char* path, uint32_t nameCol,
+                         std::unordered_map<uint32_t, std::string>& out) {
+        Dbc d;
+        if (!d.Load(cd.ReadFile(path)))
+            return;
+        for (uint32_t r = 0; r < d.RecordCount(); ++r)
+        {
+            std::string n = d.GetString(r, nameCol);
+            if (!n.empty())
+                out[d.GetUInt(r, 0)] = std::move(n);
+        }
+    };
+    loadNames("DBFilesClient\\ItemSet.dbc", 1, itemSetNames_);            // Name_lang enUS = col 1
+    loadNames("DBFilesClient\\ItemRandomProperties.dbc", 7, randomPropNames_);  // Name_lang enUS = col 7
+    loadNames("DBFilesClient\\ItemRandomSuffix.dbc", 1, randomSuffixNames_);    // Name_lang enUS = col 1
+    loadNames("DBFilesClient\\ItemLimitCategory.dbc", 1, limitCategoryNames_);  // Name_lang enUS = col 1
+}
+
+std::string ItemModule::Resolve(const std::unordered_map<uint32_t, std::string>& m, uint32_t id) const
+{
+    auto it = m.find(id);
+    return it != m.end() ? it->second : std::string();
 }
 
 void ItemModule::DoDeleteItem()

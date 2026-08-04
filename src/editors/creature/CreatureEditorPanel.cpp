@@ -82,6 +82,7 @@ void CreatureEditorPanel::Draw(CreatureEditorContext& ctx, bool hasCreature, boo
         if (ImGui::BeginTabItem("Trainer", nullptr, tf(11)))    { DrawCreatureTrainerTab(ctx);   ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Loot", nullptr, tf(12)))       { DrawCreatureLootTab(ctx);      ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Spawns", nullptr, tf(13)))     { DrawCreatureSpawnsTab(ctx);    ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Quest Items", nullptr, tf(14))){ DrawCreatureQuestItemsTab(ctx);ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
     pendingSelect = -1;

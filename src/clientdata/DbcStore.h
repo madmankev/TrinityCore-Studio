@@ -85,6 +85,25 @@ public:
     };
     std::unordered_map<uint32_t, CreatureDisplay> LoadCreatureDisplays(const ClientData&) const;
 
+    // GameObjectDisplayInfo.dbc: displayId -> model path. Field 1 holds the model filename
+    // directly (single hop, unlike creatures). The path is normalized to ".m2" when it is an
+    // .mdx/.mdl model, but ".wmo" paths are kept as-is — the GameObject layer picks the M2 vs
+    // WMO load path by extension.
+    std::unordered_map<uint32_t, std::string> LoadGameObjectModelPaths(const ClientData&) const;
+
+    // --- transport movement (moving GameObjects; paths live in DBCs, not the world DB) ---
+    // TransportAnimation.dbc: per gameobject_template.entry, the local translation keyframes a
+    // type-11 transport (elevator/lift) loops through. Sorted by timeMs within each entry.
+    struct TransportPosKey { uint32_t timeMs = 0; float x = 0, y = 0, z = 0; };
+    std::unordered_map<uint32_t, std::vector<TransportPosKey>> LoadTransportAnimation(const ClientData&) const;
+    // TransportRotation.dbc: optional local rotation keyframes (quaternion) for the same entries.
+    struct TransportRotKey { uint32_t timeMs = 0; float rot[4] = {0, 0, 0, 1}; };
+    std::unordered_map<uint32_t, std::vector<TransportRotKey>> LoadTransportRotation(const ClientData&) const;
+    // TaxiPathNode.dbc: per taxi path id, the ordered route nodes (each with its own map) a
+    // type-15 MO_TRANSPORT (boat/zeppelin) follows. Sorted by node index within each path.
+    struct TaxiNode { uint32_t nodeIndex = 0; uint32_t mapId = 0; float x = 0, y = 0, z = 0; uint32_t delay = 0; };
+    std::unordered_map<uint32_t, std::vector<TaxiNode>> LoadTaxiPathNodes(const ClientData&) const;
+
     // LiquidType.dbc: id -> its category + animated-texture filename pattern. Used to render
     // WMO/ADT liquid surfaces with the correct texture, type, and frame animation.
     struct LiquidTypeInfo

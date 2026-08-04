@@ -175,6 +175,7 @@ struct AdtVertex
     float   normal[3];
     float   uv[2];                              // chunk-local 0..1 (alpha map); tiling derived in shader
     uint8_t color[4] = {255, 255, 255, 255};    // baked MCCV (RGBA); neutral white when absent
+    uint8_t chunkId = 0;                         // compacted MCNK submesh index; selects per-chunk params
 };
 
 // One draw batch. Phase 1 is one submesh per chunk (whole terrain). From Phase 2 each chunk
@@ -201,6 +202,8 @@ struct AdtPlacement
     std::string path;           // normalized .m2 or .wmo (into the tile frame)
     bool        isWmo = false;
     int         doodadSet = -1; // WMO doodad set (MODF)
+    uint32_t    uniqueId = 0;   // MDDF/MODF uniqueId — a spanning object repeats across tiles with
+                                // the same id; the streamer loads/renders it once, keyed by this.
     float       transform[16];  // world placement (already offset into the tile frame)
     float       origin[3];      // world position (framing / transparent sort)
 };
@@ -252,5 +255,17 @@ struct AdtTile
     float     boundsRadius = 1.0f;
 
     bool valid() const { return !vertices.empty() && !indices.empty(); }
+};
+
+// Decoded WDT (World\Maps\<dir>\<dir>.wdt): whether the map is a single global WMO (dungeons/raids)
+// or terrain, plus which tiles exist. Drives the streamer's map open.
+struct AdtWorldInfo
+{
+    bool wmoOnly = false;                      // MPHD flag 0x0001 (wdt_uses_global_map_obj)
+    uint32_t mphdFlags = 0;
+    std::string globalWmo;                     // MWMO path (wmo-only)
+    AdtMapObjDef globalPlacement{};            // MODF (wmo-only), 1 entry
+    bool hasGlobalPlacement = false;
+    std::vector<std::pair<int, int>> tiles;    // existing (x,y) from MAIN (terrain maps)
 };
 } // namespace we::adt

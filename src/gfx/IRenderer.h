@@ -9,6 +9,7 @@
 // ImTextureID_Invalid remains the "no texture" sentinel, as every consumer assumes.
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "imgui.h"   // ImTextureID
@@ -80,11 +81,32 @@ struct TerrainUpload
     std::vector<ModelVertexGpu>     vertices;
     std::vector<uint32_t>           indices;
     std::vector<TerrainSubmeshGpu>  submeshes;
-    std::vector<ModelTextureGpu>    textures;    // unique ground textures (shared across chunks)
-    std::vector<ModelTextureGpu>    alphaMaps;   // per-chunk 64x64 packed weight maps
+    // Ground textures (parallel: texturePaths[i] identifies textures[i]). The renderer dedups
+    // them across tiles in a global cache keyed by path, so a texture used by many tiles lives in
+    // VRAM once; a texture already cached may arrive with an empty textures[i].rgba (path only).
+    std::vector<ModelTextureGpu>    textures;
+    std::vector<std::string>        texturePaths;
+    std::vector<ModelTextureGpu>    alphaMaps;   // per-chunk 64x64 packed weight maps (unique, owned)
 };
 
 using TerrainHandle = uint32_t;   // 0 == invalid
+
+struct SubmeshAnim;   // defined below
+
+// A GPU-instanced group: one model drawn `instanceCount` times in a single instanced draw per
+// submesh. The bone palette is SHARED by all instances (they're at the same animation frame); each
+// instance's world transform is a per-instance model matrix. Used by the streamed world to collapse
+// thousands of same-model doodads/WMOs into a handful of draws.
+struct InstancedGroup
+{
+    ModelHandle        handle = 0;
+    const float*       sharedPalette = nullptr;   // boneCount matrices (shared across instances)
+    int                boneCount = 0;
+    const SubmeshAnim* submeshAnims = nullptr;     // per-batch UV/color (shared across instances)
+    int                submeshAnimCount = 0;
+    const float*       instanceTransforms = nullptr;   // instanceCount * 16 floats (column-major)
+    int                instanceCount = 0;
+};
 
 // Per-submesh animated mesh state for a frame (UV transform + RGBA modulation), one
 // entry per submesh in ModelUpload order. Identity/white when the batch isn't animated.
@@ -138,6 +160,18 @@ struct SceneInstanceGpu
     float                 worldOrigin[3] = {0, 0, 0};   // for back-to-front transparent sort
 };
 
+// Per-frame render statistics, filled by the renderer while recording RenderWorld and read by the
+// viewer HUD. `gpuMs` is the GPU time of the offscreen 3D pass (via timestamp queries).
+struct RenderStats
+{
+    int   drawCalls = 0;         // total indexed/non-indexed draws issued this frame
+    int   terrainTiles = 0;      // terrain tiles drawn
+    int   instancedGroups = 0;   // InstancedGroup count
+    int   instances = 0;         // total instances across all groups
+    int   nonInstanced = 0;      // non-instanced scene entries (liquid + near effects)
+    float gpuMs = 0.0f;          // GPU time of the offscreen RenderWorld pass
+};
+
 class IRenderer
 {
 public:
@@ -184,16 +218,23 @@ public:
     // failure). Destroy with DestroyTerrain.
     virtual TerrainHandle CreateTerrain(const TerrainUpload& upload) = 0;
     virtual void DestroyTerrain(TerrainHandle handle) = 0;
-    // Render a full ADT scene: the terrain tile plus its placed M2/WMO instances, sharing one
-    // depth buffer, into the offscreen target. `terrain` may be 0 (instances only); `count`
-    // may be 0 (terrain only).
-    virtual ImTextureID RenderWorld(TerrainHandle terrain, const SceneInstanceGpu* instances,
-                                    int count, const float view[16], const float proj[16],
+    // Free the shared (grow-only) terrain ground-texture cache. Call only when no terrain is live
+    // (e.g. switching maps) — existing terrains reference these textures.
+    virtual void ClearTerrainTextureCache() = 0;
+    // Render a full ADT world in one pass: `terrainCount` streamed terrain tiles, then `groupCount`
+    // GPU-instanced object groups, then `count` non-instanced instances (liquid + effect-bearing
+    // objects). Any of the counts may be 0.
+    virtual ImTextureID RenderWorld(const TerrainHandle* terrains, int terrainCount,
+                                    const InstancedGroup* groups, int groupCount,
+                                    const SceneInstanceGpu* instances, int count,
+                                    const float view[16], const float proj[16],
                                     int width, int height) = 0;
     // Configure the ground reference grid drawn in RenderModel/RenderScene (on the XY plane
     // at center.z, spanning +/-extent, lines every `spacing`). enabled=false hides it.
     virtual void SetGrid(bool enabled, const float center[3], float extent, float spacing) = 0;
     // Read back the last RenderModel target as top-down RGBA8 (for headless --m2-shot).
     virtual bool CaptureModelTarget(std::vector<uint8_t>& outRgba, int& outW, int& outH) = 0;
+    // Stats from the most recent RenderWorld (draw counts + GPU time) for the viewer HUD.
+    virtual const RenderStats& renderStats() const = 0;
 };
 } // namespace we

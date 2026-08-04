@@ -23,6 +23,8 @@
 
 #include "app/EditorServices.h"
 #include "app/IEditorModule.h"
+#include "app/ProjectStore.h"
+#include "app/ProjectSelectScreen.h"
 #include "app/Window.h"
 #include "gfx/IRenderer.h"
 
@@ -61,6 +63,10 @@ public:
     // Used by --editor for headless demo/selftest/screenshot of a specific module.
     void SetEditor(const std::string& id) { startEditor = id; }
 
+    // Auto-open a project folder at startup (diagnostic / --load-project), bypassing the
+    // selection screen. Runs the normal LoadProject path (DB connect + client data).
+    void SetStartupProject(const std::string& folder) { startupProjectFolder = folder; }
+
 private:
     // --- lifecycle ---
     bool InitGraphics(bool selftest);
@@ -90,9 +96,20 @@ private:
     void LoadClientData(const std::string& path);
     void StepClientLoad();
     void DrawLoadingOverlay();
-    void DrawClientDataPrompt();
     void LoadSettings();
     void SaveSettings();
+
+    // --- projects (pre-editor selection screen) ---
+    void DrawProjectSelect();                    // fullscreen screen when screen == ProjectSelect
+    ProjectLoadResult LoadProject(const ProjectConfig& p);  // connect DB + open client data (the gate)
+    DbError ProbeConnection(const ConnectionConfig& config);// non-committal DB check for the form
+    void CloseProject();                         // back to the selection screen
+
+    // --- editor-window sizing driven by the active project ---
+    void ApplyProjectSelectWindow();             // small centered window for the selection screen
+    void ApplyProjectWindowState(const ProjectConfig& p);   // maximize / restore-to-size on load
+    void CaptureWindowState();                   // read current window state into activeProject + persist
+    void ToggleMaximize();                       // F11 while a project is open
 
     // --- theming ---
     bool BlizzardThemeAvailable() const;
@@ -114,6 +131,7 @@ private:
     std::string shotPath;   // non-empty => headless screenshot mode
     int shotTab = -1;
     std::string forcedClientPath;
+    std::string startupProjectFolder;   // --load-project: auto-open at startup
 
     // --- editor modules ---
     std::vector<std::unique_ptr<IEditorModule>> modules_;
@@ -141,7 +159,7 @@ private:
     SoapConfig soap;
     bool reloadAfterSave = false;
 
-    // --- client data (optional MPQ/DBC) ---
+    // --- client data (per-project MPQ/DBC) ---
     ClientData clientData;
     DbcStore dbcStore;
     ClientAssets clientAssets;
@@ -151,10 +169,17 @@ private:
     int clientLoadStep = -1;
     static constexpr int kClientLoadSteps = 5;
     std::string clientLoadLabel;
-    bool clientAutoLoad = false;
-    bool clientPromptStartup = true;
-    bool showClientPrompt = false;
-    bool clientPromptRemember = false;
+
+    // --- projects (a project bundles a DB connection + client-data path) ---
+    enum class Screen { ProjectSelect, Editor };
+    Screen screen = Screen::ProjectSelect;
+    ProjectStore projectStore{"config/projects.json"};
+    ProjectSelectScreen projectScreen;
+    ProjectConfig activeProject;
+    // Deferred load: the selection screen requests a load during the frame; the main loop
+    // runs it at the frame boundary so window-resize/swapchain work never runs mid-frame.
+    bool pendingProjectLoad = false;
+    ProjectConfig pendingProject;
 
     // --- theme (persisted) ---
     std::string themePref = "auto";

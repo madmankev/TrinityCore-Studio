@@ -30,6 +30,11 @@ struct EditorServices
     WriteMode   mode = WriteMode::Live;
     std::string exportPath;
 
+    // Per-project loose edit folder (<project location>/edited-client) where DBC editors
+    // save edited files; ClientData reads it as an overlay so edits win + round-trip.
+    // Empty when no project is open.
+    std::string editRoot;
+
     // Shared caches / client assets (stable pointers, generic/record-agnostic).
     LookupCache*  lookups = nullptr;
     ClientData*   clientData = nullptr;

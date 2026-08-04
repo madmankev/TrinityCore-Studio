@@ -65,6 +65,9 @@ public:
     virtual void OnConnected() {}         // DB just connected: load lookups, refresh list
     virtual void OnDisconnected() {}      // DB dropped: clear per-DB state
     virtual void OnClientDataLoaded() {}  // client DBCs finished loading
+    // Called once at app exit, BEFORE the renderer/client data are torn down, so a module can
+    // join worker threads and release GPU resources while those are still valid.
+    virtual void OnShutdown() {}
 
     // --- platform integration ---
     virtual std::vector<std::string> ReloadCommands() const { return {}; }  // SOAP .reload list

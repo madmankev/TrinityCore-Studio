@@ -7,8 +7,11 @@
 #include <string>
 #include <vector>
 
+#include <unordered_map>
+
 #include "app/IEditorModule.h"
 
+#include "editors/common/DbcDocument.h"
 #include "editors/item/ItemRepository.h"
 #include "editors/item/ItemValidator.h"
 #include "schema/Item.h"
@@ -65,6 +68,9 @@ private:
     void CloneItem();
     void DoSaveItem();
     void DoDeleteItem();
+    bool WriteItemDbc();          // project item_template -> client Item.dbc overlay (Live + SqlExport); true if written
+    void LoadItemResolveMaps();   // id->name maps for the reference-field previews
+    std::string Resolve(const std::unordered_map<uint32_t, std::string>& m, uint32_t id) const;
     void SetEditedItem(Item&& it, bool markDirty);
     void Undo();
     void Redo();
@@ -88,6 +94,14 @@ private:
     Item currentItem;
     bool hasItem = false;
     bool dirty = false;
+
+    // Client Item.dbc overlay (lazily loaded; projected to on Live save).
+    DbcDocument itemDbcDoc_;
+    bool        itemDbcLoaded_ = false;
+    // id->name maps for inline resolution of the item-reference fields.
+    std::unordered_map<uint32_t, std::string> itemSetNames_, randomPropNames_, randomSuffixNames_,
+        limitCategoryNames_;
+    bool resolveMapsLoaded_ = false;
 
     ItemValidator validator;
     std::vector<ValidationIssue> issues;

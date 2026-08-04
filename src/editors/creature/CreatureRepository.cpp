@@ -47,6 +47,7 @@ constexpr const char* kMovementCols =
 
 constexpr const char* kResistanceCols = "CreatureID, School, Resistance, VerifiedBuild";
 constexpr const char* kEquipCols = "CreatureID, ID, ItemID1, ItemID2, ItemID3, VerifiedBuild";
+constexpr const char* kQuestItemCols = "CreatureEntry, Idx, ItemId, VerifiedBuild";
 constexpr const char* kLocaleCols = "entry, locale, Name, Title, VerifiedBuild";
 
 bool ExecStep(IDatabase& db, const std::string& sql, DbError& err)
@@ -280,6 +281,11 @@ DbError CreatureRepository::LoadCreature(IDatabase& db, uint32_t entry, Creature
             out.equips.push_back(e);
         }
 
+    // --- creature_questitem (quest items this creature provides; Idx = order) ---
+    if (auto rs = db.Query("SELECT ItemId FROM creature_questitem WHERE CreatureEntry = " + idStr + " ORDER BY Idx", err))
+        while (rs->Next())
+            out.questItems.push_back(rs->GetUInt32(0));
+
     // --- creature_template_locale ----------------------------------------
     if (auto rs = db.Query("SELECT locale, Name, Title FROM creature_template_locale WHERE entry = " + idStr, err))
         while (rs->Next())
@@ -504,6 +510,28 @@ DbError CreatureRepository::SaveCreature(IDatabase& db, const Creature& c)
         }
     }
 
+    // --- creature_questitem (delete-then-insert; Idx = order, skip empty) ---
+    if ((all || c.questItemsDirty) &&
+        !ExecStep(db, "DELETE FROM creature_questitem WHERE CreatureEntry = " + idStr, err))
+        return fail(err);
+    if (all || c.questItemsDirty)
+    {
+        static const std::vector<std::string> cols = SplitCols(kQuestItemCols);
+        const std::set<std::string> existing = ExistingCols(db, "creature_questitem");
+        for (int i = 0; i < static_cast<int>(c.questItems.size()); ++i)
+        {
+            if (c.questItems[i] == 0)
+                continue;
+            ValueList v(db);
+            v.UInt(id);
+            v.UInt(i);  // Idx
+            v.UInt(c.questItems[i]);
+            v.Int(0);  // VerifiedBuild
+            if (!ExecStep(db, FilteredInsert("INSERT", "creature_questitem", cols, v.tokens, existing), err))
+                return fail(err);
+        }
+    }
+
     // --- creature_template_locale (delete-then-insert) -------------------
     if ((all || c.localesDirty) &&
         !ExecStep(db, "DELETE FROM creature_template_locale WHERE entry = " + idStr, err))
@@ -548,6 +576,7 @@ DbError CreatureRepository::DeleteCreature(IDatabase& db, uint32_t entry)
     const DelSpec specs[] = {
         {"creature_template_locale", "entry"},
         {"creature_equip_template", "CreatureID"},
+        {"creature_questitem", "CreatureEntry"},
         {"creature_template_spell", "CreatureID"},
         {"creature_template_resistance", "CreatureID"},
         {"creature_template_movement", "CreatureId"},

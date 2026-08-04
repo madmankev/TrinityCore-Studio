@@ -45,19 +45,28 @@ void DrawItemTextSetTab(ItemEditorContext& ctx)
     if (BeginFieldTable("qe_item_set"))
     {
         FieldRow("itemset", "ItemSet.dbc");
-        if (InputU32("##itemset", t.itemSet)) md();
+        if (InputU32Named("##itemset", t.itemSet, ItemEditorContext::Name(ctx.itemSetNames, t.itemSet)))
+            md();
 
         FieldRow("RandomProperty", "ItemRandomProperties.dbc");
-        if (InputI32("##randomprop", t.randomProperty)) md();
+        if (InputI32Named("##randomprop", t.randomProperty,
+                          ItemEditorContext::Name(ctx.randomPropNames,
+                                                  static_cast<uint32_t>(t.randomProperty))))
+            md();
 
         FieldRow("RandomSuffix", "ItemRandomSuffix.dbc");
-        if (InputU32("##randomsuffix", t.randomSuffix)) md();
+        if (InputU32Named("##randomsuffix", t.randomSuffix,
+                          ItemEditorContext::Name(ctx.randomSuffixNames, t.randomSuffix)))
+            md();
 
         FieldRow("TotemCategory", "TotemCategory.dbc");
         if (InputI32("##totemcat", t.totemCategory)) md();
 
         FieldRow("ItemLimitCategory", "ItemLimitCategory.dbc");
-        if (InputI16("##limitcat", t.itemLimitCategory)) md();
+        if (InputI16Named("##limitcat", t.itemLimitCategory,
+                          ItemEditorContext::Name(ctx.limitCategoryNames,
+                                                  static_cast<uint32_t>(t.itemLimitCategory))))
+            md();
 
         FieldRow("HolidayId", "Holidays.dbc gating");
         if (InputU32("##holidayid", t.holidayId)) md();

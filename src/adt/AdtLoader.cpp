@@ -271,13 +271,13 @@ glm::mat4 PlacementMatrix(const float pos[3], const float rot[3], float scale,
     originOut = local;
 
     // Rotation is Euler degrees; in practice all shipped placements are yaw-only (0, yaw, 0).
-    // Yaw is about the world up axis (our Z), offset by -90 to match the client. The pitch/roll
-    // terms (rot[0]/rot[2]) are near-universally zero in 3.3.5a data.
+    // Yaw is about the world up axis (our Z). Pitch/roll (rot[0]/rot[2]) are near-universally
+    // zero in 3.3.5a data.
     glm::mat4 M(1.0f);
     M = glm::translate(M, local);
-    M = glm::rotate(M, glm::radians(rot[1] - 90.0f), glm::vec3(0, 0, 1));   // yaw (up)
-    M = glm::rotate(M, glm::radians(rot[0]),         glm::vec3(0, 1, 0));   // pitch (E-W)
-    M = glm::rotate(M, glm::radians(rot[2]),         glm::vec3(1, 0, 0));   // roll (N-S)
+    M = glm::rotate(M, glm::radians(rot[1] + 180.0f), glm::vec3(0, 0, 1));   // yaw (up)
+    M = glm::rotate(M, glm::radians(rot[0]), glm::vec3(0, 1, 0));   // pitch (E-W)
+    M = glm::rotate(M, glm::radians(rot[2]), glm::vec3(1, 0, 0));   // roll (N-S)
     M = glm::scale(M, glm::vec3(scale));
     return M;
 }
@@ -388,6 +388,9 @@ void BuildChunkTerrain(const ByteReader& rr, const Chunk& mcnk, int texCount, Ad
     };
 
     const uint32_t vertexBase = static_cast<uint32_t>(out.vertices.size());
+    // Chunk id = the compacted submesh index this chunk will receive (empty chunks are dropped and
+    // never push a submesh, so their unused verts keep a stale id — harmless, no indices touch them).
+    const uint8_t chunkId = static_cast<uint8_t>(out.submeshes.size());
     for (int row = 0; row <= 8; ++row)
     {
         for (int col = 0; col <= 8; ++col)
@@ -399,6 +402,8 @@ void BuildChunkTerrain(const ByteReader& rr, const Chunk& mcnk, int texCount, Ad
                                             base.y - (col + 0.5f) * kUnitSize,
                                             (col + 0.5f) / 8.0f, (row + 0.5f) / 8.0f));
     }
+    for (size_t i = vertexBase; i < out.vertices.size(); ++i)
+        out.vertices[i].chunkId = chunkId;
 
     const uint32_t indexStart = static_cast<uint32_t>(out.indices.size());
     for (int row = 0; row < 8; ++row)
@@ -433,10 +438,62 @@ void BuildChunkTerrain(const ByteReader& rr, const Chunk& mcnk, int texCount, Ad
     out.submeshes.push_back(sm);
     ++out.renderedChunks;
 }
+
+// Concatenate `src` into `dst`, remapping every buffer index (vertex/index bases, texture/alpha
+// slots) so the two tiles share one merged AdtTile. Both must already be in the same world frame.
+void MergeInto(AdtTile& dst, const AdtTile& src)
+{
+    // Terrain.
+    const uint32_t vBase = (uint32_t)dst.vertices.size();
+    const uint32_t iBase = (uint32_t)dst.indices.size();
+    const int texBase = (int)dst.texturePaths.size();
+    const int alphaBase = (int)dst.alphaMaps.size();
+    dst.vertices.insert(dst.vertices.end(), src.vertices.begin(), src.vertices.end());
+    for (uint32_t idx : src.indices) dst.indices.push_back(idx + vBase);
+    dst.texturePaths.insert(dst.texturePaths.end(), src.texturePaths.begin(), src.texturePaths.end());
+    dst.alphaMaps.insert(dst.alphaMaps.end(), src.alphaMaps.begin(), src.alphaMaps.end());
+    for (AdtSubmesh s : src.submeshes)
+    {
+        s.indexStart += iBase;
+        for (int k = 0; k < 4; ++k) if (s.layerTex[k] >= 0) s.layerTex[k] += texBase;
+        if (s.alphaMap >= 0) s.alphaMap += alphaBase;
+        dst.submeshes.push_back(s);
+    }
+
+    // Liquid.
+    const uint32_t lvBase = (uint32_t)dst.liquidVertices.size();
+    const uint32_t liBase = (uint32_t)dst.liquidIndices.size();
+    const int liqTexBase = (int)dst.liquidTexturePaths.size();
+    dst.liquidVertices.insert(dst.liquidVertices.end(), src.liquidVertices.begin(), src.liquidVertices.end());
+    for (uint32_t idx : src.liquidIndices) dst.liquidIndices.push_back(idx + lvBase);
+    dst.liquidTexturePaths.insert(dst.liquidTexturePaths.end(), src.liquidTexturePaths.begin(),
+                                  src.liquidTexturePaths.end());
+    for (AdtSubmesh s : src.liquidSubmeshes)
+    {
+        s.indexStart += liBase;
+        if (s.layerTex[0] >= 0) s.layerTex[0] += liqTexBase;
+        if (s.liquidFrameBase >= 0) s.liquidFrameBase += liqTexBase;
+        dst.liquidSubmeshes.push_back(s);
+    }
+
+    // Placements (already in the shared frame).
+    dst.placements.insert(dst.placements.end(), src.placements.begin(), src.placements.end());
+
+    // Diagnostics.
+    dst.chunkCount += src.chunkCount;
+    dst.renderedChunks += src.renderedChunks;
+    dst.doodadDefCount += src.doodadDefCount;
+    dst.wmoDefCount += src.wmoDefCount;
+    dst.liquidTileCount += src.liquidTileCount;
+    dst.mclqChunks += src.mclqChunks;
+    dst.chunksNoLayer += src.chunksNoLayer;
+    dst.hasMh2o = dst.hasMh2o || src.hasMh2o;
+    dst.textureCount = (int)dst.texturePaths.size();
+}
 } // namespace
 
 bool Load(ClientData& cd, const std::string& adtPath, AdtTile& out, const AdtLoadOptions& opt,
-          const LiquidTypeTable* liquidTypes, std::string* error)
+          const LiquidTypeTable* liquidTypes, std::string* error, const glm::vec3* forcedOffset)
 {
     out = AdtTile{};
     out.name = adtPath;
@@ -506,14 +563,18 @@ bool Load(ClientData& cd, const std::string& adtPath, AdtTile& out, const AdtLoa
         lo = glm::min(lo, p);
         hi = glm::max(hi, p);
     }
-    out.worldOffset = glm::vec3((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, 0.0f);
+    // Self-center, unless a shared frame was supplied (stitched neighborhoods).
+    out.worldOffset = forcedOffset ? *forcedOffset
+                                   : glm::vec3((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, 0.0f);
     for (AdtVertex& v : out.vertices)
     {
         v.pos[0] -= out.worldOffset.x;
         v.pos[1] -= out.worldOffset.y;
     }
 
-    out.boundsCenter = glm::vec3(0.0f, 0.0f, (lo.z + hi.z) * 0.5f);
+    // In the (possibly shared) frame, this tile's center is its bounds midpoint minus the offset.
+    out.boundsCenter = glm::vec3((lo.x + hi.x) * 0.5f - out.worldOffset.x,
+                                 (lo.y + hi.y) * 0.5f - out.worldOffset.y, (lo.z + hi.z) * 0.5f);
     out.boundsRadius = glm::max(glm::length(glm::vec3((hi.x - lo.x) * 0.5f, (hi.y - lo.y) * 0.5f,
                                                       (hi.z - lo.z) * 0.5f)), 1.0f);
 
@@ -531,6 +592,7 @@ bool Load(ClientData& cd, const std::string& adtPath, AdtTile& out, const AdtLoa
             AdtPlacement pl;
             pl.path = std::move(path);
             pl.isWmo = false;
+            pl.uniqueId = d.uniqueId;
             glm::vec3 origin;
             glm::mat4 M = PlacementMatrix(d.position, d.rotation, d.scale / 1024.0f, out.worldOffset, origin);
             std::memcpy(pl.transform, &M[0][0], sizeof(pl.transform));
@@ -551,6 +613,7 @@ bool Load(ClientData& cd, const std::string& adtPath, AdtTile& out, const AdtLoa
             pl.path = std::move(path);
             pl.isWmo = true;
             pl.doodadSet = m.doodadSet;
+            pl.uniqueId = m.uniqueId;
             glm::vec3 origin;
             // MODF has no per-instance scale in 3.3.5a (the field is padding); scale is 1.0.
             glm::mat4 M = PlacementMatrix(m.position, m.rotation, 1.0f, out.worldOffset, origin);
@@ -597,5 +660,113 @@ std::vector<std::pair<int, int>> ListTiles(ClientData& cd, const std::string& ma
         break;
     }
     return out;
+}
+
+bool LoadWorldInfo(ClientData& cd, const std::string& mapDir, AdtWorldInfo& out)
+{
+    out = AdtWorldInfo{};
+    std::vector<uint8_t> bytes = cd.ReadFile("World\\Maps\\" + mapDir + "\\" + mapDir + ".wdt");
+    if (bytes.empty())
+        return false;
+    ByteReader rr(bytes);
+    ChunkIter it(rr);
+    Chunk c;
+    std::vector<uint8_t> mwmo;
+    while (it.Next(c))
+    {
+        if (c.Is("MPHD"))
+        {
+            rr.Get(c.offset, out.mphdFlags);   // first uint32 = flags
+            out.wmoOnly = (out.mphdFlags & 0x0001u) != 0;
+        }
+        else if (c.Is("MAIN"))
+        {
+            for (int y = 0; y < 64; ++y)
+                for (int x = 0; x < 64; ++x)
+                {
+                    uint32_t flags = 0;
+                    if (rr.Get(c.offset + (size_t)(y * 64 + x) * 8, flags) && (flags & 1))
+                        out.tiles.emplace_back(x, y);
+                }
+        }
+        else if (c.Is("MWMO"))
+        {
+            rr.GetArrayAt<uint8_t>(c.offset, c.size, mwmo);
+            ByteReader br(mwmo);
+            out.globalWmo = br.GetCString(0);
+        }
+        else if (c.Is("MODF"))
+        {
+            out.hasGlobalPlacement = rr.Get(c.offset, out.globalPlacement);
+        }
+    }
+    return true;
+}
+
+bool LoadWdl(ClientData& cd, const std::string& mapDir, WdlData& out)
+{
+    out = WdlData{};
+    std::vector<uint8_t> bytes = cd.ReadFile("World\\Maps\\" + mapDir + "\\" + mapDir + ".wdl");
+    if (bytes.empty())
+        return false;
+    ByteReader rr(bytes);
+    ChunkIter it(rr);
+    Chunk c;
+    size_t maofData = 0;   // file offset of the MAOF data (4096 uint32 absolute offsets)
+    while (it.Next(c))
+        if (c.Is("MAOF")) { maofData = c.offset; break; }
+    if (!maofData)
+        return false;
+
+    for (int y = 0; y < 64; ++y)
+        for (int x = 0; x < 64; ++x)
+        {
+            uint32_t mareOff = 0;
+            if (!rr.Get(maofData + (size_t)(y * 64 + x) * 4, mareOff) || mareOff == 0)
+                continue;
+            // mareOff points at the MARE chunk header; the 545 int16 heights follow the 8-byte header.
+            WdlTile t;
+            t.x = x;
+            t.y = y;
+            if (rr.GetArrayAt<int16_t>(mareOff + 8, 545, t.heights) && t.heights.size() == 545)
+                out.tiles.push_back(std::move(t));
+        }
+    return !out.tiles.empty();
+}
+
+bool LoadNeighborhood(ClientData& cd, const std::string& mapDir, int cx, int cy, int radius,
+                      AdtTile& out, const AdtLoadOptions& opt, const LiquidTypeTable* liquidTypes,
+                      std::string* error)
+{
+    // The center tile establishes the shared world frame all neighbors are expressed in.
+    if (!Load(cd, TilePath(mapDir, cx, cy), out, opt, liquidTypes, error))
+        return false;
+    if (radius <= 0)
+        return true;
+    const glm::vec3 sharedOffset = out.worldOffset;
+
+    for (int dy = -radius; dy <= radius; ++dy)
+        for (int dx = -radius; dx <= radius; ++dx)
+        {
+            if (dx == 0 && dy == 0)
+                continue;
+            AdtTile t;
+            if (Load(cd, TilePath(mapDir, cx + dx, cy + dy), t, opt, liquidTypes, nullptr, &sharedOffset))
+                MergeInto(out, t);
+        }
+
+    // Bounds over the whole merged neighborhood.
+    glm::vec3 lo(out.vertices[0].pos[0], out.vertices[0].pos[1], out.vertices[0].pos[2]);
+    glm::vec3 hi = lo;
+    for (const AdtVertex& v : out.vertices)
+    {
+        glm::vec3 p(v.pos[0], v.pos[1], v.pos[2]);
+        lo = glm::min(lo, p);
+        hi = glm::max(hi, p);
+    }
+    out.boundsCenter = (lo + hi) * 0.5f;
+    out.boundsRadius = glm::max(glm::length((hi - lo) * 0.5f), 1.0f);
+    out.worldOffset = sharedOffset;
+    return true;
 }
 } // namespace we::adt

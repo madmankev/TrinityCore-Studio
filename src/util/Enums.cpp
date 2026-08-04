@@ -202,6 +202,40 @@ namespace we
         return table;
     }
 
+    const std::vector<EnumEntry>& ConditionSourceTypeValues()
+    {
+        // CONDITION_SOURCE_TYPE_* from TrinityCore 3.3.5a ConditionMgr.h (0..24, MAX=25).
+        // Tooltip = what SourceGroup / SourceEntry / SourceId identify for that source.
+        static const std::vector<EnumEntry> table = {
+            { 0,  "None",                    "condition attached inline (e.g. via conditions_reference)" },
+            { 1,  "Creature Loot",           "group = creature_loot_template.Entry; entry = item id" },
+            { 2,  "Disenchant Loot",         "group = loot Entry; entry = item id" },
+            { 3,  "Fishing Loot",            "group = loot Entry (zone/area); entry = item id" },
+            { 4,  "GameObject Loot",         "group = gameobject_loot_template.Entry; entry = item id" },
+            { 5,  "Item Loot",               "group = item_loot_template.Entry; entry = item id" },
+            { 6,  "Mail Loot",               "group = mail_loot_template.Entry; entry = item id" },
+            { 7,  "Milling Loot",            "group = loot Entry; entry = item id" },
+            { 8,  "Pickpocketing Loot",      "group = loot Entry; entry = item id" },
+            { 9,  "Prospecting Loot",        "group = loot Entry; entry = item id" },
+            { 10, "Reference Loot",          "group = reference_loot_template.Entry; entry = item id" },
+            { 11, "Skinning Loot",           "group = loot Entry; entry = item id" },
+            { 12, "Spell Loot",              "group = spell_loot_template.Entry; entry = item id" },
+            { 13, "Spell Implicit Target",   "group = effect mask; entry = spell id" },
+            { 14, "Gossip Menu",             "group = gossip menu id; entry = npc_text id" },
+            { 15, "Gossip Menu Option",      "group = gossip menu id; entry = option id" },
+            { 16, "Creature Template Vehicle","entry = creature template id" },
+            { 17, "Spell",                   "entry = spell id (cast requirement)" },
+            { 18, "Spell Click Event",       "group = creature entry; entry = spell id" },
+            { 19, "Quest Available",         "entry = quest id (gates accepting the quest)" },
+            { 20, "Unused (20)",             "reserved / not used in 3.3.5a" },
+            { 21, "Vehicle Spell",           "group = creature entry; entry = spell id" },
+            { 22, "SmartAI Event",           "group = event id + 1; entry = entryOrGuid; id = script source type" },
+            { 23, "NPC Vendor",              "group = creature entry; entry = item id" },
+            { 24, "Spell Proc",              "entry = spell id (proc requirement)" },
+        };
+        return table;
+    }
+
     // === item_template =========================================================
     // All values verified against enums in
     //   src/server/game/Entities/Item/ItemTemplate.h  (ItemClass, ItemSubclass*,

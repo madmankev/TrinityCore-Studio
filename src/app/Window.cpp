@@ -54,8 +54,8 @@ bool Window::Create(int width, int height, const char* title, bool visible)
         return false;
     }
 
-    if (visible)
-        glfwMaximizeWindow(window);
+    // Note: the initial window state (maximized for the editor, a smaller centered
+    // window for the project-selection screen) is chosen by App::Run, not here.
     return true;
 }
 
@@ -89,6 +89,53 @@ float Window::ContentScale() const
     if (window)
         glfwGetWindowContentScale(window, &sx, &sy);
     return sx > 0.0f ? sx : 1.0f;
+}
+
+void Window::SetSize(int width, int height)
+{
+    if (window && width > 0 && height > 0)
+        glfwSetWindowSize(window, width, height);
+}
+
+void Window::GetSize(int& outW, int& outH) const
+{
+    outW = 0;
+    outH = 0;
+    if (window)
+        glfwGetWindowSize(window, &outW, &outH);
+}
+
+void Window::Maximize()
+{
+    if (window)
+        glfwMaximizeWindow(window);
+}
+
+void Window::Restore()
+{
+    if (window)
+        glfwRestoreWindow(window);
+}
+
+bool Window::IsMaximized() const
+{
+    return window && glfwGetWindowAttrib(window, GLFW_MAXIMIZED) != 0;
+}
+
+void Window::CenterOnScreen()
+{
+    if (!window)
+        return;
+    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+    if (!monitor)
+        return;
+    int mx = 0, my = 0, mw = 0, mh = 0;
+    glfwGetMonitorWorkarea(monitor, &mx, &my, &mw, &mh);
+    int ww = 0, wh = 0;
+    glfwGetWindowSize(window, &ww, &wh);
+    if (mw <= 0 || mh <= 0)
+        return;
+    glfwSetWindowPos(window, mx + (mw - ww) / 2, my + (mh - wh) / 2);
 }
 
 std::vector<const char*> Window::RequiredInstanceExtensions() const

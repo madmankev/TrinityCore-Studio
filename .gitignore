@@ -17,3 +17,11 @@ config/*.local.json
 config/settings.json
 # DB connection profiles (may hold credentials)
 config/connections.json
+
+# Local project list (machine-specific paths / credentials)
+config/projects.json
+# Scratch DBC/model dumps from dev harness flags
+/ADT.txt
+/M2.txt
+/WDL.txt
+/WDT.txt

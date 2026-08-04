@@ -427,7 +427,7 @@ void CreatureModule::DrawModals()
     {
         if (mode == WriteMode::Live)
             ImGui::Text("Save creature %u LIVE?\nWrites creature_template + child tables + vendor/\n"
-                        "trainer/loot/spawns inside a transaction.",
+                        "trainer/loot/spawns/questitems inside a transaction.",
                         currentCreature.tmpl.entry);
         else
             ImGui::Text("Export creature %u as SQL to:\n%s", currentCreature.tmpl.entry, exportPath.c_str());
@@ -829,7 +829,8 @@ void CreatureModule::DrawTabForCapture(int tab)
         case 10: DrawCreatureVendorTab(ctx); break;
         case 11: DrawCreatureTrainerTab(ctx); break;
         case 12: DrawCreatureLootTab(ctx); break;
-        default: DrawCreatureSpawnsTab(ctx); break;
+        case 13: DrawCreatureSpawnsTab(ctx); break;
+        default: DrawCreatureQuestItemsTab(ctx); break;
     }
 }
 
@@ -852,5 +853,6 @@ void CreatureModule::DrawAllTabsForSelftest()
     DrawCreatureTrainerTab(ctx);
     DrawCreatureLootTab(ctx);
     DrawCreatureSpawnsTab(ctx);
+    DrawCreatureQuestItemsTab(ctx);
 }
 } // namespace we

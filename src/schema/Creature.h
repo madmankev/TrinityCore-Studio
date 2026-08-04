@@ -109,6 +109,7 @@ struct Creature
     std::vector<LootItem> pickpocketLoot;   // pickpocketing_loot_template (by tmpl.pickpocketLoot)
     std::vector<LootItem> skinLoot;         // skinning_loot_template (by tmpl.skinLoot)
     std::vector<CreatureSpawn> spawns;      // creature (world spawns, by creature.id)
+    std::vector<uint32_t> questItems;       // creature_questitem (ItemId, Idx = order)
 
     // --- Dirty tracking ---------------------------------------------------
     bool tmplDirty = false;
@@ -122,6 +123,7 @@ struct Creature
     bool trainerDirty = false;
     bool lootDirty = false;
     bool spawnsDirty = false;
+    bool questItemsDirty = false;
 
     bool isNew = false;   // newly created in the editor, no DB rows yet
 
@@ -129,19 +131,21 @@ struct Creature
     {
         return tmplDirty || addonDirty || movementDirty || resistDirty || spellsDirty ||
                equipsDirty || localesDirty || vendorDirty || trainerDirty || lootDirty ||
-               spawnsDirty;
+               spawnsDirty || questItemsDirty;
     }
     void ClearDirty()
     {
         tmplDirty = addonDirty = movementDirty = resistDirty = spellsDirty = equipsDirty =
-            localesDirty = vendorDirty = trainerDirty = lootDirty = spawnsDirty = false;
+            localesDirty = vendorDirty = trainerDirty = lootDirty = spawnsDirty =
+                questItemsDirty = false;
     }
 
     // Force every part dirty (whole-record write when no per-part flags were set).
     void MarkAllDirty()
     {
         tmplDirty = addonDirty = movementDirty = resistDirty = spellsDirty = equipsDirty =
-            localesDirty = vendorDirty = trainerDirty = lootDirty = spawnsDirty = true;
+            localesDirty = vendorDirty = trainerDirty = lootDirty = spawnsDirty =
+                questItemsDirty = true;
     }
 };
 } // namespace we

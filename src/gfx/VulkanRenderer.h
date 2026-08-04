@@ -36,10 +36,14 @@ public:
                             const float proj[16], int width, int height) override;
     TerrainHandle CreateTerrain(const TerrainUpload& upload) override;
     void DestroyTerrain(TerrainHandle handle) override;
-    ImTextureID RenderWorld(TerrainHandle terrain, const SceneInstanceGpu* instances, int count,
+    void ClearTerrainTextureCache() override;
+    ImTextureID RenderWorld(const TerrainHandle* terrains, int terrainCount,
+                            const InstancedGroup* groups, int groupCount,
+                            const SceneInstanceGpu* instances, int count,
                             const float view[16], const float proj[16], int width, int height) override;
     void SetGrid(bool enabled, const float center[3], float extent, float spacing) override;
     bool CaptureModelTarget(std::vector<uint8_t>& outRgba, int& outW, int& outH) override;
+    const RenderStats& renderStats() const override;
 
 private:
     struct Impl;

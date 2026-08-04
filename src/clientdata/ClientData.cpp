@@ -28,6 +28,24 @@ std::string ToBackslashes(const std::string& p)
     return s;
 }
 
+// Read a loose file <root>/<archivePath> from disk. Empty on missing/empty/error.
+std::vector<uint8_t> ReadLooseRoot(const std::string& root, const std::string& archivePath)
+{
+    std::vector<uint8_t> out;
+    fs::path p = fs::path(root) / ToBackslashes(archivePath);
+    std::ifstream in(p, std::ios::binary);
+    if (!in)
+        return out;
+    in.seekg(0, std::ios::end);
+    std::streamoff sz = in.tellg();
+    in.seekg(0, std::ios::beg);
+    if (sz <= 0)
+        return out;
+    out.resize(static_cast<size_t>(sz));
+    in.read(reinterpret_cast<char*>(out.data()), sz);
+    return out;
+}
+
 // SFileOpenArchive takes TCHAR* (wide in this Unicode build); widen the path.
 std::wstring WidenW(const std::string& s)
 {
@@ -56,8 +74,18 @@ void ClientData::Close()
         if (h)
             SFileCloseArchive(h);
     archives.clear();
+    for (void* h : fallbackArchives_)
+        if (h)
+            SFileCloseArchive(h);
+    fallbackArchives_.clear();
     looseRoot.clear();
     description.clear();
+}
+
+void ClientData::SetEditOverlay(const std::string& editRoot)
+{
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    editOverlayRoot = editRoot;
 }
 
 bool ClientData::Open(const std::string& path)
@@ -111,9 +139,13 @@ bool ClientData::Open(const std::string& path)
     if (!locale.empty())
     {
         const fs::path ld = root / locale;
-        const char* localePatterns[] = {"locale-%s.MPQ", "expansion-locale-%s.MPQ",
-                                        "lichking-locale-%s.MPQ", "patch-%s.MPQ",
-                                        "patch-%s-2.MPQ", "patch-%s-3.MPQ"};
+        // Official 3.3.5a locale load order, lowest priority first. base-<locale>.MPQ is the
+        // first locale archive and holds many client DBCs (CharVariations, CharStartOutfit,
+        // the char-customization tables); omitting it makes those files unreadable.
+        const char* localePatterns[] = {"base-%s.MPQ",           "locale-%s.MPQ",
+                                        "expansion-locale-%s.MPQ", "lichking-locale-%s.MPQ",
+                                        "patch-%s.MPQ",           "patch-%s-2.MPQ",
+                                        "patch-%s-3.MPQ"};
         for (const char* pat : localePatterns)
         {
             char buf[64];
@@ -131,6 +163,15 @@ bool ClientData::Open(const std::string& path)
             archives.push_back(base);
             for (size_t i = 1; i < order.size(); ++i)
                 SFileOpenPatchArchive(base, WidenW(order[i]).c_str(), "", 0);
+        }
+
+        // Standalone fallback handles, highest-priority first, so a chain miss (e.g. a patch
+        // delete-marker shadowing a real file) can still resolve to the real underlying copy.
+        for (size_t i = order.size(); i-- > 0;)
+        {
+            HANDLE h = nullptr;
+            if (SFileOpenArchive(WidenW(order[i]).c_str(), 0, MPQ_OPEN_READ_ONLY, &h) && h)
+                fallbackArchives_.push_back(h);
         }
     }
 
@@ -150,62 +191,70 @@ bool ClientData::Open(const std::string& path)
 
 std::vector<uint8_t> ClientData::ReadFile(const std::string& archivePath) const
 {
+    std::lock_guard<std::mutex> lock(ioMutex_);
     std::vector<uint8_t> out;
 
-    // Loose disk first.
+    // Edit-overlay folder first (a saved edited file shadows the source), then loose disk.
+    if (!editOverlayRoot.empty())
+    {
+        std::vector<uint8_t> ov = ReadLooseRoot(editOverlayRoot, archivePath);
+        if (!ov.empty())
+            return ov;
+    }
     if (!looseRoot.empty())
     {
-        fs::path p = fs::path(looseRoot) / ToBackslashes(archivePath);
-        std::ifstream in(p, std::ios::binary);
-        if (in)
-        {
-            in.seekg(0, std::ios::end);
-            std::streamoff sz = in.tellg();
-            in.seekg(0, std::ios::beg);
-            if (sz > 0)
-            {
-                out.resize(static_cast<size_t>(sz));
-                in.read(reinterpret_cast<char*>(out.data()), sz);
-                return out;
-            }
-        }
+        std::vector<uint8_t> lf = ReadLooseRoot(looseRoot, archivePath);
+        if (!lf.empty())
+            return lf;
     }
 
     const std::string mpqPath = ToBackslashes(archivePath);
-    for (void* h : archives)
-    {
-        HANDLE hFile = nullptr;
-        if (!SFileOpenFileEx(h, mpqPath.c_str(), 0, &hFile) || !hFile)
-            continue;
-        DWORD high = 0;
-        DWORD size = SFileGetFileSize(hFile, &high);
-        if (size != SFILE_INVALID_SIZE && size > 0)
+    auto readFrom = [&](const std::vector<void*>& handles) -> bool {
+        for (void* h : handles)
         {
-            out.resize(size);
-            DWORD read = 0;
-            if (SFileReadFile(hFile, out.data(), size, &read, nullptr) || read > 0)
+            HANDLE hFile = nullptr;
+            if (!SFileOpenFileEx(h, mpqPath.c_str(), 0, &hFile) || !hFile)
+                continue;
+            DWORD high = 0;
+            DWORD size = SFileGetFileSize(hFile, &high);
+            if (size != SFILE_INVALID_SIZE && size > 0)  // skip 0-byte delete-markers
             {
-                out.resize(read);
-                SFileCloseFile(hFile);
-                return out;
+                out.resize(size);
+                DWORD read = 0;
+                if (SFileReadFile(hFile, out.data(), size, &read, nullptr) || read > 0)
+                {
+                    out.resize(read);
+                    SFileCloseFile(hFile);
+                    return true;
+                }
+                out.clear();
             }
-            out.clear();
+            SFileCloseFile(hFile);
         }
-        SFileCloseFile(hFile);
-    }
+        return false;
+    };
+    // Patch chain first (game-accurate); on a miss, the standalone fallback resolves files a
+    // patch delete-marker hides from the chain.
+    if (readFrom(archives) || readFrom(fallbackArchives_))
+        return out;
     return out;
 }
 
 bool ClientData::HasFile(const std::string& archivePath) const
 {
-    if (!looseRoot.empty())
-    {
-        std::error_code ec;
-        if (fs::exists(fs::path(looseRoot) / ToBackslashes(archivePath), ec))
-            return true;
-    }
+    std::lock_guard<std::mutex> lock(ioMutex_);
+    std::error_code ec;
+    if (!editOverlayRoot.empty() &&
+        fs::exists(fs::path(editOverlayRoot) / ToBackslashes(archivePath), ec))
+        return true;
+    if (!looseRoot.empty() && fs::exists(fs::path(looseRoot) / ToBackslashes(archivePath), ec))
+        return true;
     const std::string mpqPath = ToBackslashes(archivePath);
     for (void* h : archives)
+        if (SFileHasFile(h, mpqPath.c_str()))
+            return true;
+    // Fallback: a file the chain reports as deleted may still exist (non-empty) standalone.
+    for (void* h : fallbackArchives_)
         if (SFileHasFile(h, mpqPath.c_str()))
             return true;
     return false;
@@ -213,6 +262,7 @@ bool ClientData::HasFile(const std::string& archivePath) const
 
 std::vector<std::string> ClientData::ListFiles(const std::string& extension) const
 {
+    std::lock_guard<std::mutex> lock(ioMutex_);
     std::vector<std::string> out;
 
     // Lowercase the extension for a case-insensitive suffix match.

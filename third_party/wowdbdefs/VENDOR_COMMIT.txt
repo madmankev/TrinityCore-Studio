@@ -1,0 +1,6 @@
+WoWDBDefs — community WDBC/DB2 layout definitions.
+Source:  https://github.com/wowdev/WoWDBDefs
+Commit:  6d5342bd097d5a42018c4c98c00de02cc6025eb6 (2026-08-03 22:54:14 +0000)
+License: CC0-1.0 (public domain dedication).
+Vendored: only the .dbd files that contain a 3.3.5.12340 build (246 files) under definitions/.
+Used by: src/clientdata/DbdParser + src/editors/generic/DbcDefRegistry to type every client DBC.

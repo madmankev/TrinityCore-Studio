@@ -69,6 +69,11 @@ namespace we
     // meaning of ConditionValue1/2/3 for each type.
     const std::vector<EnumEntry>& ConditionTypeValues();
 
+    // --- Condition source types (conditions.SourceTypeOrReferenceId) --------------
+    // CONDITION_SOURCE_TYPE_* from TrinityCore 3.3.5a ConditionMgr.h (0..24); tooltips
+    // describe what SourceGroup/SourceEntry/SourceId identify for that source.
+    const std::vector<EnumEntry>& ConditionSourceTypeValues();
+
     // --- item_template enums (TC 3.3.5a) -----------------------------------------
     // Values cited from src/server/game/Entities/Item/ItemTemplate.h and
     // src/server/shared/SharedDefines.h.

@@ -1,28 +1,24 @@
 #pragma once
 
-// AdtViewerModule — an IEditorModule that browses and displays WoW ADT map tiles (terrain)
-// in a 3D viewport. Read-only (no DB): it picks a map (Map.dbc) and an existing tile (from
-// the map's WDT), parses the ADT through the ADT loader (terrain + textures + placements +
-// liquid), uploads the terrain via the dedicated terrain pipeline and everything else via the
-// mesh pipeline, and draws the offscreen result (RenderWorld) with the shared orbit/fly camera.
+// AdtViewerModule — a streamed whole-map world viewer. Pick a map (Map.dbc); terrain maps stream
+// tiles in around the fly camera (loaded async, evicted behind you, objects deduped by uniqueId),
+// WMO-only maps load their single global WMO. All the heavy lifting lives in AdtStreamer; this
+// module is the browser + per-frame camera→streamer→RenderWorld glue.
 
-#include <memory>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include <glm/glm.hpp>
-
 #include "app/IEditorModule.h"
 #include "gfx/IRenderer.h"
-#include "model/M2Animator.h"
-#include "model/M2EffectSystem.h"
-#include "model/M2Types.h"
 #include "viewer/ViewportCamera.h"
+#include "adt/AdtStreamer.h"
 #include "adt/AdtLoader.h"
-#include "adt/AdtTypes.h"
 #include "clientdata/DbcStore.h"
+#include "editors/adt/MapSpawnRepository.h"
+#include "editors/adt/NpcLayer.h"
+#include "editors/adt/GameObjectLayer.h"
 
 namespace we
 {
@@ -40,81 +36,70 @@ public:
     }
     void DrawPanels() override;
     void DrawModals() override {}
-
     void OnClientDataLoaded() override;
+    void OnConnected() override;
+    void OnDisconnected() override;
+    void OnShutdown() override;
 
-    bool HasRecord() const override { return terrainHandle_ != 0; }
+    bool HasRecord() const override { return !loadedName_.empty(); }
     std::string RecordSummary() const override { return loadedName_; }
 
 private:
     void DrawBrowserPanel();
     void DrawViewportPanel();
-
-    void OpenTile(const std::string& mapDir, int x, int y);
-    bool LoadTile(bool frameCamera);   // (re)parse loaded tile with opt_ + upload
-    void BuildPlacements();            // load the resolved M2/WMO placements as instances
-    void ClearScene();
-    void FrameCamera();
-
-    // A unique referenced model (M2 doodad or WMO building), loaded once.
-    struct UModel
-    {
-        bool                     isWmo = false;
-        ModelHandle              handle = 0;
-        m2::M2Model              m2;         // (M2 only)
-        m2::M2Animator           animator;   // (M2 only)
-        int                      animIndex = 0;
-        bool                     hasEmitters = false;
-        std::vector<glm::mat4>   localBones;    // animated palette (M2-local), per frame
-        std::vector<SubmeshAnim> submeshAnims;  // per-batch UV transform + color, per frame
-        glm::vec3                boundsCenter{0.0f};
-        float                    boundsRadius = 1.0f;
-    };
-    // One placed instance.
-    struct PInst
-    {
-        int                                 model = -1;
-        glm::mat4                           transform{1.0f};
-        glm::vec3                           origin{0.0f};
-        glm::vec3                           cullCenter{0.0f};
-        float                               cullRadius = 1.0f;
-        std::unique_ptr<m2::M2EffectSystem> effects;   // M2 with emitters only
-        std::vector<glm::mat4>              palette;
-    };
+    void DrawStatsOverlay(const ImVec2& p0, const ImGuiIO& io);
+    void OpenMapDir(const std::string& dir, bool frameCamera);
+    void LoadNpcSpawns();       // query the current map's creature spawns into the NPC layer
+    void LoadGameObjects();     // query the current map's gameobject spawns into the GO layer
 
     EditorServices* svc_ = nullptr;
+    AdtStreamer streamer_;
+    bool streamerInit_ = false;
 
-    // Loaded tile.
-    adt::AdtTile      tile_;
-    TerrainHandle     terrainHandle_ = 0;
-    ModelHandle       liquidHandle_ = 0;
-    std::string       loadedName_;
-    std::string       loadedDir_;
-    int               loadedX_ = 0, loadedY_ = 0;
-    std::string       error_;
-    adt::AdtLoadOptions opt_;   // doodad/wmo/liquid toggles (baked at load)
-    adt::LiquidTypeTable liquidTypes_;
-    bool              liquidTypesLoaded_ = false;
-
-    // Instances.
-    std::vector<std::unique_ptr<UModel>> models_;
-    std::vector<PInst>                   insts_;
-    float doodadTime_ = 0.0f;
-
-    // Liquid frame animation.
-    std::vector<SubmeshAnim> liquidAnims_;
-    float liquidTime_ = 0.0f;
-
-    ViewportCamera camera_;
-    bool showGrid_ = true;
-
-    // Browser state.
     std::unordered_map<uint32_t, DbcStore::MapInfo> maps_;
     std::vector<std::pair<uint32_t, std::string>>   mapList_;   // (id, "dir (name)") sorted
-    int selectedMap_ = -1;                                      // index into mapList_
-    std::vector<std::pair<int, int>> tiles_;                    // existing (x,y) for selectedMap_
+    int selectedMap_ = -1;
+    uint32_t currentMapId_ = 0;   // Map.dbc id of the open map (for creature.map queries)
     std::string selectedMapDir_;
-    char search_[128] = {0};
+    std::string loadedName_;
+    std::string error_;
+
+    // NPC layer: DB creature spawns rendered + movement-simulated on the terrain.
+    MapSpawnRepository spawnRepo_;
+    NpcLayer npcLayer_;
+    bool  showNpcs_ = true;
+    int   npcMaxDraw_ = 200;       // cap on animated NPCs (nearest first)
+    float npcCullDist_ = 300.0f;   // yards: simulate/draw NPCs within this of the camera
+    std::string npcStatus_;
+
+    // GameObject layer: DB gameobject spawns rendered (M2 + WMO) on the terrain.
+    GameObjectLayer goLayer_;
+    bool  showGos_ = true;
+    int   goMaxDraw_ = 300;        // cap on drawn GameObjects (nearest first)
+    float goCullDist_ = 400.0f;    // yards: draw GameObjects within this of the camera
+    std::string goStatus_;
+
+    // Spawn-visibility filters (live; assembled into a SpawnFilter each frame).
+    // Phase: phaseSel_ 0 = All phases (0xFFFFFFFF); N>0 = single phase bit (1 << (N-1)).
+    int      phaseSel_ = 1;               // default: Phase 1
+    uint32_t viewPhaseMask_ = 1;
+    int      diffSel_ = 0;                // spawnMask: 0 = All; N>0 = mode bit (1 << (N-1))
+    int      eventSel_ = 0;               // events: 0 = None, 1 = All, 2+ = gameEvents_[i-2]
+    bool     respectPools_ = true;        // hide pooled spawns beyond max_limit
+    bool     showManualGroups_ = false;   // show MANUAL_SPAWN group members
+    std::vector<GameEventInfo> gameEvents_;   // game_event list for the Events dropdown
+
+    adt::AdtLoadOptions opt_;
+    int  streamRadius_ = 4;   // tiles kept in each direction (user-chosen "large" default)
+    ViewportCamera camera_;
+    bool showGrid_ = false;   // a world grid at ±17k isn't useful; off by default
+    bool showStats_ = true;   // perf HUD overlay
     bool dbcLoaded_ = false;
+    char search_[128] = {0};
+    float cpuBuildMs_ = 0.0f;   // last BuildFrame CPU time
+
+    std::vector<TerrainHandle>    frameTerrains_;   // scratch, reused per frame
+    std::vector<InstancedGroup>   frameGroups_;
+    std::vector<SceneInstanceGpu> frameScene_;
 };
 } // namespace we

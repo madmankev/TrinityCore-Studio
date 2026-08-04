@@ -38,6 +38,14 @@ public:
     void FramebufferSize(int& outW, int& outH) const;
     float ContentScale() const;   // 1.0 at 96dpi, 1.25/1.5/2.0 on HiDPI
 
+    // --- window state (used by the project screen sizing + F11 maximize toggle) ---
+    void SetSize(int width, int height);         // window size in screen coordinates
+    void GetSize(int& outW, int& outH) const;    // current window size (screen coords)
+    void Maximize();
+    void Restore();                              // un-maximize (back to a floating window)
+    bool IsMaximized() const;
+    void CenterOnScreen();                       // center on the primary monitor's work area
+
     // --- Vulkan glue (GLFW owns these; the renderer calls through here) ---
     // Instance extensions GLFW requires to present to this window's surface.
     std::vector<const char*> RequiredInstanceExtensions() const;

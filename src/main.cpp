@@ -8,10 +8,14 @@
 //                  `path` (default build/emit_test.sql). Validates SQL generation
 //                  offline, with no database. Exits 0 on success.
 
+#include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -24,7 +28,40 @@
 
 #include "clientdata/ClientData.h"
 #include "clientdata/DbcStore.h"
+#include "clientdata/EditableDbc.h"
+#include "clientdata/DbcOverlay.h"
 #include "clientdata/BlpDecoder.h"
+#include "editors/achievement/AchievementSchema.h"
+#include "editors/achievement/AchievementRepository.h"
+#include "editors/title/CharTitlesSchema.h"
+#include "editors/spell/SpellSchema.h"
+#include "editors/spell/SpellRepository.h"
+#include "editors/spell/SpellTablesModule.h"
+#include "editors/item/ItemTablesModule.h"
+#include "editors/talent/TalentSchema.h"
+#include "editors/skill/SkillSchema.h"
+#include "editors/zone/ZoneTablesModule.h"
+#include "editors/worlddb/WorldDbTablesModule.h"
+#include "editors/gameevent/GameEventModule.h"
+#include "editors/conditions/ConditionsRepository.h"
+#include "editors/miscdbc/MiscDbcModule.h"
+#include "editors/refdbc/RefDbcModule.h"
+#include "editors/generic/RuntimeSchema.h"
+#include "clientdata/DbdParser.h"
+#include "editors/generic/DbcDefRegistry.h"
+#include "StormLib.h"
+#include "editors/worlddb/WorldDbCompositeModule.h"
+#include "editors/loot/LootModule.h"
+#include "editors/creaturetext/CreatureTextModule.h"
+#include "editors/gossip/GossipModule.h"
+#include "editors/pagetext/PageTextModule.h"
+#include "editors/poi/PointsOfInterestModule.h"
+#include "editors/npctext/NpcTextModule.h"
+#include "editors/smartai/SmartScriptRepository.h"
+#include "editors/common/DbDocument.h"
+#include "editors/common/DbcDocument.h"
+#include "editors/common/DbTableSchema.h"
+#include "editors/common/DbTableRepository.h"
 #include "model/M2Loader.h"
 #include "model/M2Animator.h"
 #include "model/M2EffectSystem.h"
@@ -33,8 +70,12 @@
 #include "wmo/WmoUploadBuild.h"
 #include "adt/AdtLoader.h"
 #include "adt/AdtUploadBuild.h"
+#include "adt/AdtStreamer.h"
 #include "util/ByteReader.h"
 #include "viewer/ViewportCamera.h"
+
+#include <chrono>
+#include <thread>
 
 #include <memory>
 #include "imgui.h"
@@ -115,6 +156,456 @@ int EmitSql(const std::string& path)
         return 1;
     }
     std::printf("EMIT SQL OK -> %s\n", path.c_str());
+    return 0;
+}
+// Verify achievement_reward / achievement_criteria_data SQL generation through the real
+// AchievementRepository against SqlExportDatabase (no live DB). Usage:
+// --emit-ach-sql [path]
+int EmitAchSql(const std::string& path)
+{
+    we::AchievementReward reward;
+    reward.titleA = 178;   // sample CharTitles ids
+    reward.titleH = 178;
+    reward.itemId = 49426;
+    reward.sender = 15252;
+    reward.subject = "Congratulations!";
+    reward.body = "You've earned it. O'Rly? Ya'Rly.";
+    reward.mailTemplateId = 0;
+    reward.locales.push_back({"deDE", "Glückwunsch!", "Gut gemacht."});
+
+    std::vector<we::AchievementCriteriaData> critData = {{1u, 5u, 0u, "example_script"}};
+
+    // Each Save is its own transaction; SqlExportDatabase::Commit truncates the file, so
+    // emit each to a separate file (matches the app: one save = one export write).
+    we::AchievementRepository repo;
+    we::SqlExportDatabase rdb;
+    rdb.SetOutputPath(path);
+    we::DbError e = repo.SaveReward(rdb, 12345, reward);
+    const std::string critPath = path + ".criteria.sql";
+    we::SqlExportDatabase cdb;
+    cdb.SetOutputPath(critPath);
+    if (e.ok)
+        e = repo.SaveCriteriaData(cdb, 67890, critData);
+    if (!e.ok)
+    {
+        std::fprintf(stderr, "emit-ach-sql FAILED: %s\n", e.message.c_str());
+        return 1;
+    }
+    std::printf("EMIT ACH SQL OK -> %s and %s\n", path.c_str(), critPath.c_str());
+    return 0;
+}
+// Verify the GENERIC DbTableRepository::Save through SqlExportDatabase (no live DB): builds a
+// representative broadcast_text record (with a locale row) and emits the upsert + locale SQL.
+// Usage: --emit-broadcast-sql [path]
+int EmitBroadcastSql(const std::string& path)
+{
+    we::DbTableSchema s;
+    s.table = "broadcast_text";
+    s.pk = "ID";
+    s.cols = {
+        {"LanguageID", we::DbColType::U32, "Language"},
+        {"Text", we::DbColType::Multiline, "Text"},
+        {"Text1", we::DbColType::Multiline, "Text1"},
+        {"EmoteID1", we::DbColType::U32, "Emote1"},
+        {"Flags", we::DbColType::U32, "Flags"},
+        {"VerifiedBuild", we::DbColType::U32, "VerifiedBuild"},
+    };
+    s.localeTable = "broadcast_text_locale";
+    s.localeKey = "ID";
+    s.localeCol = "locale";
+    s.localizedCols = {"Text", "Text1"};
+
+    we::DbRecord rec;
+    rec.id = 25000;
+    rec.cells["LanguageID"] = "7";
+    rec.cells["Text"] = "Hello, $n! Don't move.";
+    rec.cells["Text1"] = "Hello, lady $n!";
+    rec.cells["EmoteID1"] = "1";
+    rec.cells["Flags"] = "0";
+    rec.cells["VerifiedBuild"] = "12340";  // must be forced to 0 on save
+    rec.locales.push_back({"deDE", {{"Text", "Hallo, $n!"}, {"Text1", ""}}});
+
+    we::SqlExportDatabase db;
+    db.SetOutputPath(path);
+    we::DbTableRepository repo;
+    we::DbError e = repo.Save(db, s, rec);
+    if (!e.ok)
+    {
+        std::fprintf(stderr, "emit-broadcast-sql FAILED: %s\n", e.message.c_str());
+        return 1;
+    }
+    std::printf("EMIT BROADCAST SQL OK -> %s\n", path.c_str());
+    return 0;
+}
+
+// Verify the world-DB grab-bag schemas produce valid SQL through the generic DbTableRepository
+// + SqlExportDatabase (no live DB): emits an upsert for every table, catching any column-name
+// typo against the DDL. Usage: --emit-worlddb-sql [path]
+int EmitWorldDbSql(const std::string& path)
+{
+    we::DbTableRepository repo;
+    we::DbError e;
+    int n = 0;
+    for (const we::DbTableSchema* s : we::WorldDbTableDefs())
+    {
+        we::DbRecord rec;
+        rec.id = 25000;
+        rec.cells[s->pk] = "25000";
+        for (const we::DbColumn& c : s->cols)
+            rec.cells[c.name] = (c.type == we::DbColType::Text || c.type == we::DbColType::Multiline)
+                                    ? "x"
+                                    : "1";
+        we::SqlExportDatabase db;
+        db.SetOutputPath(path + "." + s->table + ".sql");
+        e = repo.Save(db, *s, rec);
+        if (!e.ok)
+            break;
+        ++n;
+    }
+    if (!e.ok) { std::fprintf(stderr, "emit-worlddb-sql FAILED: %s\n", e.message.c_str()); return 1; }
+    std::printf("EMIT WORLDDB SQL OK (%d tables)\n", n);
+    return 0;
+}
+
+// Verify the composite-PK world-DB editor's writes through SqlExportDatabase (no live DB):
+// CompositeDbRepository::Save emits DELETE-by-key + INSERT for every table, catching any
+// column-name typo against the DDL. Usage: --emit-worlddb-composite-sql [path]
+int EmitWorldDbCompositeSql(const std::string& path)
+{
+    we::CompositeDbRepository repo;
+    we::DbError e;
+    int n = 0;
+    for (const we::CompositeDbTableSchema* s : we::WorldDbCompositeTableDefs())
+    {
+        we::DbRecord rec;
+        for (const we::DbColumn& c : s->cols)
+            rec.cells[c.name] = (c.type == we::DbColType::Text || c.type == we::DbColType::Multiline)
+                                    ? "x"
+                                    : "1";
+        std::vector<std::string> origKey(s->keyCols.size(), "1");
+        we::SqlExportDatabase db;
+        db.SetOutputPath(path + "." + s->table + ".sql");
+        e = repo.Save(db, *s, origKey, rec);
+        if (!e.ok)
+            break;
+        ++n;
+    }
+    if (!e.ok) { std::fprintf(stderr, "emit-worlddb-composite-sql FAILED: %s\n", e.message.c_str()); return 1; }
+    std::printf("EMIT WORLDDB COMPOSITE SQL OK (%d tables)\n", n);
+    return 0;
+}
+
+// Verify the Game Event editor's writes through SqlExportDatabase (no live DB): the primary
+// game_event upsert + a ReplaceChildren for every child table, catching any column-name typo
+// against the DDL. Usage: --emit-gameevent-sql [path]
+int EmitGameEventSql(const std::string& path)
+{
+    we::DbTableRepository repo;
+    we::DbError e;
+
+    // 1) Primary game_event row.
+    {
+        const we::DbTableSchema& s = we::GameEventSchema();
+        we::DbRecord rec;
+        rec.id = 200;
+        rec.cells[s.pk] = "200";
+        for (const we::DbColumn& c : s.cols)
+            rec.cells[c.name] = (c.type == we::DbColType::Text || c.type == we::DbColType::Multiline)
+                                    ? "x"
+                                    : "1";
+        we::SqlExportDatabase db;
+        db.SetOutputPath(path + ".game_event.sql");
+        e = repo.Save(db, s, rec);
+    }
+
+    // 2) A two-row list for every child table.
+    int n = 0;
+    for (const we::GameEventChild& spec : we::GameEventAllChildren())
+    {
+        if (!e.ok) break;
+        std::vector<we::DbRecord> rows(2);
+        for (int i = 0; i < 2; ++i)
+            for (const we::DbColumn& c : spec.cols)
+                rows[i].cells[c.name] =
+                    std::string(c.name) == spec.parentCol ? "200"
+                    : (c.type == we::DbColType::Text || c.type == we::DbColType::Multiline) ? "x"
+                                                                                            : std::to_string(i + 1);
+        we::SqlExportDatabase db;
+        db.SetOutputPath(path + "." + spec.table + ".sql");
+        e = repo.ReplaceChildren(db, spec.table, spec.parentCol, "200", spec.cols, rows);
+        ++n;
+    }
+
+    if (!e.ok) { std::fprintf(stderr, "emit-gameevent-sql FAILED: %s\n", e.message.c_str()); return 1; }
+    std::printf("EMIT GAMEEVENT SQL OK (game_event + %d child tables)\n", n);
+    return 0;
+}
+
+// Verify the Conditions editor's source-scoped save through SqlExportDatabase (no live DB):
+// ConditionsRepository::SaveSource emits DELETE-by-source + one INSERT per row over the 15
+// conditions columns, catching any column-name typo against the DDL. Usage: --emit-conditions-sql [path]
+int EmitConditionsSql(const std::string& path)
+{
+    we::ConditionsRepository repo;
+    std::vector<we::DbRecord> rows(2);
+    for (int i = 0; i < 2; ++i)
+    {
+        for (const char* c : we::ConditionsRepository::Columns())
+            rows[i].cells[c] = "0";
+        rows[i].cells["ScriptName"] = "";
+        rows[i].cells["Comment"] = i == 0 ? "quest 100 rewarded" : "quest 101 active";
+        rows[i].cells["ConditionTypeOrReference"] = i == 0 ? "8" : "9";
+        rows[i].cells["ConditionValue1"] = i == 0 ? "100" : "101";
+    }
+    const we::ConditionSourceKey key{19, 0, 500};
+    we::SqlExportDatabase db;
+    db.SetOutputPath(path);
+    we::DbError e = repo.SaveSource(db, key, key, rows);
+    if (!e.ok) { std::fprintf(stderr, "emit-conditions-sql FAILED: %s\n", e.message.c_str()); return 1; }
+    std::printf("EMIT CONDITIONS SQL OK -> %s\n", path.c_str());
+    return 0;
+}
+
+// Verify the Loot workbench's save through SqlExportDatabase (no live DB): ReplaceChildren
+// (delete-by-Entry + INSERT per drop over the shared 10 loot columns) for every loot table,
+// catching any column-name typo against the DDL. Usage: --emit-loot-sql [path]
+int EmitLootSql(const std::string& path)
+{
+    we::DbTableRepository repo;
+    we::DbError e;
+    int n = 0;
+    for (const we::LootTableDef& t : we::LootTableList())
+    {
+        std::vector<we::DbRecord> rows(2);
+        for (int i = 0; i < 2; ++i)
+        {
+            for (const we::DbColumn& c : we::LootColumns())
+                rows[i].cells[c.name] = (c.type == we::DbColType::Text) ? "x" : "1";
+            rows[i].cells["Entry"] = "700";
+            rows[i].cells["Item"] = i == 0 ? "6948" : "0";
+            rows[i].cells["Reference"] = i == 0 ? "0" : "34567";
+        }
+        we::SqlExportDatabase db;
+        db.SetOutputPath(path + "." + t.table + ".sql");
+        e = repo.ReplaceChildren(db, t.table, "Entry", "700", we::LootColumns(), rows);
+        if (!e.ok)
+            break;
+        ++n;
+    }
+    if (!e.ok) { std::fprintf(stderr, "emit-loot-sql FAILED: %s\n", e.message.c_str()); return 1; }
+    std::printf("EMIT LOOT SQL OK (%d loot tables)\n", n);
+    return 0;
+}
+
+// Verify the Creature Text editor's save through SqlExportDatabase (no live DB): ReplaceChildren
+// (delete-by-CreatureID + INSERT per line) for creature_text and creature_text_locale, catching
+// any column-name typo against the DDL. Usage: --emit-creaturetext-sql [path]
+int EmitCreatureTextSql(const std::string& path)
+{
+    we::DbTableRepository repo;
+    std::vector<we::DbRecord> lines(2);
+    for (int i = 0; i < 2; ++i)
+    {
+        for (const we::DbColumn& c : we::CreatureTextColumns())
+            lines[i].cells[c.name] =
+                (c.type == we::DbColType::Text || c.type == we::DbColType::Multiline) ? "hi" : "0";
+        lines[i].cells["CreatureID"] = "448";
+        lines[i].cells["ID"] = std::to_string(i);
+    }
+    std::vector<we::DbRecord> locs(1);
+    locs[0].cells["CreatureID"] = "448";
+    locs[0].cells["GroupID"] = "0";
+    locs[0].cells["ID"] = "0";
+    locs[0].cells["Locale"] = "deDE";
+    locs[0].cells["Text"] = "hallo";
+
+    we::SqlExportDatabase db;
+    db.SetOutputPath(path + ".creature_text.sql");
+    we::DbError e = repo.ReplaceChildren(db, "creature_text", "CreatureID", "448",
+                                         we::CreatureTextColumns(), lines);
+    if (e.ok)
+    {
+        we::SqlExportDatabase db2;
+        db2.SetOutputPath(path + ".creature_text_locale.sql");
+        e = repo.ReplaceChildren(db2, "creature_text_locale", "CreatureID", "448",
+                                 we::CreatureTextLocaleColumns(), locs);
+    }
+    if (!e.ok) { std::fprintf(stderr, "emit-creaturetext-sql FAILED: %s\n", e.message.c_str()); return 1; }
+    std::printf("EMIT CREATURETEXT SQL OK -> %s (+ .creature_text_locale.sql)\n", path.c_str());
+    return 0;
+}
+
+// Verify the Gossip editor's save through SqlExportDatabase (no live DB): ReplaceChildren
+// (delete-by-MenuID + INSERT) for gossip_menu, gossip_menu_option and _locale, catching any
+// column-name typo against the DDL. Usage: --emit-gossip-sql [path]
+int EmitGossipSql(const std::string& path)
+{
+    we::DbTableRepository repo;
+    auto fill = [](we::DbRecord& r, const std::vector<we::DbColumn>& cols) {
+        for (const we::DbColumn& c : cols)
+            r.cells[c.name] = (c.type == we::DbColType::Text || c.type == we::DbColType::Multiline) ? "x" : "1";
+    };
+
+    std::vector<we::DbRecord> links(1);
+    fill(links[0], we::GossipMenuColumns());
+    links[0].cells["MenuID"] = "60";
+
+    std::vector<we::DbRecord> opts(2);
+    for (int i = 0; i < 2; ++i)
+    {
+        fill(opts[i], we::GossipOptionColumns());
+        opts[i].cells["MenuID"] = "60";
+        opts[i].cells["OptionID"] = std::to_string(i);
+    }
+    std::vector<we::DbRecord> locs(1);
+    fill(locs[0], we::GossipOptionLocaleColumns());
+    locs[0].cells["MenuID"] = "60";
+    locs[0].cells["OptionID"] = "0";
+    locs[0].cells["Locale"] = "deDE";
+
+    we::SqlExportDatabase db1; db1.SetOutputPath(path + ".gossip_menu.sql");
+    we::DbError e = repo.ReplaceChildren(db1, "gossip_menu", "MenuID", "60", we::GossipMenuColumns(), links);
+    if (e.ok) { we::SqlExportDatabase db2; db2.SetOutputPath(path + ".gossip_menu_option.sql");
+        e = repo.ReplaceChildren(db2, "gossip_menu_option", "MenuID", "60", we::GossipOptionColumns(), opts); }
+    if (e.ok) { we::SqlExportDatabase db3; db3.SetOutputPath(path + ".gossip_menu_option_locale.sql");
+        e = repo.ReplaceChildren(db3, "gossip_menu_option_locale", "MenuID", "60", we::GossipOptionLocaleColumns(), locs); }
+    if (!e.ok) { std::fprintf(stderr, "emit-gossip-sql FAILED: %s\n", e.message.c_str()); return 1; }
+    std::printf("EMIT GOSSIP SQL OK -> %s (+ option, option_locale)\n", path.c_str());
+    return 0;
+}
+
+// Verify the Page Text + POI editors' save (primary upsert + locale delete/insert) through
+// SqlExportDatabase (no live DB), catching any column-name typo against the DDL.
+// Usage: --emit-pagepoi-sql [path]
+int EmitPagePoiSql(const std::string& path)
+{
+    we::DbTableRepository repo;
+    we::DbError e;
+    for (const we::DbTableSchema* s : {&we::PageTextSchema(), &we::PointsOfInterestSchema()})
+    {
+        we::DbRecord rec;
+        rec.id = 5000;
+        rec.cells[s->pk] = "5000";
+        for (const we::DbColumn& c : s->cols)
+            rec.cells[c.name] =
+                (c.type == we::DbColType::Text || c.type == we::DbColType::Multiline) ? "x" : "1";
+        we::DbLocaleRow loc;
+        loc.locale = "deDE";
+        for (const char* lc : s->localizedCols)
+            loc.cells[lc] = "uebersetzt";
+        rec.locales.push_back(loc);
+
+        we::SqlExportDatabase db;
+        db.SetOutputPath(path + "." + s->table + ".sql");
+        e = repo.Save(db, *s, rec);
+        if (!e.ok)
+            break;
+    }
+    if (!e.ok) { std::fprintf(stderr, "emit-pagepoi-sql FAILED: %s\n", e.message.c_str()); return 1; }
+    std::printf("EMIT PAGE/POI SQL OK (page_text + points_of_interest)\n");
+    return 0;
+}
+
+// Verify the NPC Text editor's save (90-column upsert + 16-column locale delete/insert) through
+// SqlExportDatabase (no live DB), catching any column-name typo against the DDL.
+// Usage: --emit-npctext-sql [out.sql]
+int EmitNpcTextSql(const std::string& path)
+{
+    const we::DbTableSchema& s = we::NpcTextSchema();
+    we::DbRecord rec;
+    rec.id = 60;
+    rec.cells[s.pk] = "60";
+    for (const we::DbColumn& c : s.cols)
+        rec.cells[c.name] =
+            (c.type == we::DbColType::Text || c.type == we::DbColType::Multiline) ? "greeting" : "1";
+    we::DbLocaleRow loc;
+    loc.locale = "deDE";
+    for (const char* lc : s.localizedCols)
+        loc.cells[lc] = "gruss";
+    rec.locales.push_back(loc);
+
+    we::SqlExportDatabase db;
+    db.SetOutputPath(path);
+    we::DbTableRepository repo;
+    we::DbError e = repo.Save(db, s, rec);
+    if (!e.ok) { std::fprintf(stderr, "emit-npctext-sql FAILED: %s\n", e.message.c_str()); return 1; }
+    std::printf("EMIT NPCTEXT SQL OK -> %s\n", path.c_str());
+    return 0;
+}
+
+// Verify the SmartAI editor's save through SqlExportDatabase (no live DB): SmartScriptRepository::
+// SaveScript emits DELETE-by-scope (entryorguid, source_type) + one INSERT per row over the 30
+// smart_scripts columns, catching any column-name typo against the DDL. Usage: --emit-smartai-sql [out.sql]
+int EmitSmartAiSql(const std::string& path)
+{
+    we::SmartScriptRepository repo;
+    std::vector<we::DbRecord> rows(2);
+    for (int i = 0; i < 2; ++i)
+    {
+        for (const we::DbColumn& c : we::SmartScriptRepository::Columns())
+            rows[i].cells[c.name] = (c.type == we::DbColType::Text) ? "on aggro - cast" : "0";
+        rows[i].cells["id"] = std::to_string(i);
+        rows[i].cells["link"] = i == 0 ? "1" : "0";      // row 0 links to row 1
+        rows[i].cells["event_type"] = i == 0 ? "4" : "61";  // AGGRO / LINK
+        rows[i].cells["action_type"] = "11";              // CAST
+        rows[i].cells["target_x"] = "1.5";
+    }
+    we::SqlExportDatabase db;
+    db.SetOutputPath(path);
+    we::DbError e = repo.SaveScript(db, 12345, 0, rows);
+    if (!e.ok) { std::fprintf(stderr, "emit-smartai-sql FAILED: %s\n", e.message.c_str()); return 1; }
+    std::printf("EMIT SMARTAI SQL OK -> %s\n", path.c_str());
+    return 0;
+}
+
+// Verify the Spell editor's server writes through SqlExportDatabase (no live DB): the
+// DBC->spell_dbc projection of a real Spell.dbc row + a sample spell_proc + spell_required.
+// Usage: --emit-spell-sql <clientRoot> [path]
+int EmitSpellSql(const std::string& clientRoot, const std::string& path)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    we::DbcDocument doc;
+    doc.Init(&we::SpellSchema(), "DBFilesClient\\Spell.dbc");
+    if (!doc.Load(cd)) { std::fprintf(stderr, "Spell.dbc load failed\n"); return 1; }
+
+    // 1) DBC -> spell_dbc projection of row 0 (spell id 1).
+    we::SpellRepository repo;
+    we::SqlExportDatabase db1;
+    db1.SetOutputPath(path);
+    we::DbError e = repo.SaveSpellDbc(db1, doc, 0);
+
+    // 2) A 1:1 augmentation row (spell_proc).
+    const std::string procPath = path + ".proc.sql";
+    if (e.ok)
+    {
+        we::DbRecord proc;
+        proc.id = 25000;
+        proc.cells["ProcFlags"] = "16384";
+        proc.cells["Chance"] = "10.5";
+        proc.cells["Charges"] = "1";
+        we::SqlExportDatabase db2;
+        db2.SetOutputPath(procPath);
+        we::DbTableRepository dbr;
+        e = dbr.Save(db2, we::SpellRepository::ProcSchema(), proc);
+    }
+
+    // 3) A child list (spell_required).
+    const std::string reqPath = path + ".required.sql";
+    if (e.ok)
+    {
+        std::vector<we::DbRecord> reqs(2);
+        reqs[0].cells["spell_id"] = "25000"; reqs[0].cells["req_spell"] = "100";
+        reqs[1].cells["spell_id"] = "25000"; reqs[1].cells["req_spell"] = "200";
+        we::SqlExportDatabase db3;
+        db3.SetOutputPath(reqPath);
+        we::DbTableRepository dbr;
+        const we::SpellChildSpec& s = we::SpellRepository::Required();
+        e = dbr.ReplaceChildren(db3, s.table, s.parentCol, "25000", s.cols, reqs);
+    }
+
+    if (!e.ok) { std::fprintf(stderr, "emit-spell-sql FAILED: %s\n", e.message.c_str()); return 1; }
+    std::printf("EMIT SPELL SQL OK -> %s (+ .proc.sql, .required.sql)\n", path.c_str());
     return 0;
 }
 } // namespace
@@ -506,6 +997,555 @@ int DbcMap(const std::string& clientRoot)
     return 0;
 }
 
+// Dev tool: dump any DBC's WDBC header + the first rows, each field shown as uint and
+// (when it resolves to a printable string) as text — used to confirm a DBC's field layout
+// before hand-writing its schema. Usage: --dbc-dump <clientRoot> <DBFilesClient\Name.dbc> [rows]
+int DbcDump(const std::string& clientRoot, const std::string& dbcPath, int maxRows)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    std::vector<uint8_t> bytes = cd.ReadFile(dbcPath);
+    if (bytes.empty()) { std::fprintf(stderr, "read failed: %s\n", dbcPath.c_str()); return 1; }
+    we::Dbc dbc;
+    if (!dbc.Load(bytes)) { std::fprintf(stderr, "not a WDBC blob: %s\n", dbcPath.c_str()); return 1; }
+    std::printf("%s\n  records=%u fields=%u recordSize=%u\n", dbcPath.c_str(),
+                dbc.RecordCount(), dbc.FieldCount(), dbc.RecordSize());
+    const uint32_t rows = dbc.RecordCount() < static_cast<uint32_t>(maxRows)
+                              ? dbc.RecordCount()
+                              : static_cast<uint32_t>(maxRows);
+    for (uint32_t r = 0; r < rows; ++r)
+    {
+        std::printf("  [rec %u]\n", r);
+        for (uint32_t f = 0; f < dbc.FieldCount(); ++f)
+        {
+            uint32_t u = dbc.GetUInt(r, f);
+            std::string s = dbc.GetString(r, f);
+            bool nameLike = !s.empty() && s.size() <= 100;
+            for (unsigned char c : s)
+                if (c < 0x20 && c != '\t') { nameLike = false; break; }
+            if (nameLike)
+                std::printf("    f%-2u = %-11u  \"%s\"\n", f, u, s.c_str());
+            else
+                std::printf("    f%-2u = %-11u\n", f, u);
+        }
+    }
+    return 0;
+}
+
+// Load a DBC through EditableDbc under `schema`, Serialize() it, reload the output, and
+// confirm counts + a sample of ids/strings survive. Proves the WDBC serializer is faithful.
+// `strCols` are physical string columns to compare (nullptr-terminated). Returns true on OK.
+bool RoundtripOne(we::ClientData& cd, const char* path, const we::DbcSchema& schema,
+                  const std::vector<uint32_t>& strCols)
+{
+    std::vector<uint8_t> bytes = cd.ReadFile(path);
+    if (bytes.empty()) { std::fprintf(stderr, "%s: not found\n", path); return false; }
+    we::EditableDbc ed;
+    if (!ed.Load(bytes, schema))
+    {
+        std::fprintf(stderr, "%s: EditableDbc.Load rejected (layout mismatch)\n", path);
+        return false;
+    }
+    std::vector<uint8_t> out = ed.Serialize();
+    we::Dbc a, b;
+    if (!a.Load(bytes) || !b.Load(out)) { std::fprintf(stderr, "%s: reload failed\n", path); return false; }
+    if (a.RecordCount() != b.RecordCount() || a.FieldCount() != b.FieldCount() ||
+        a.RecordSize() != b.RecordSize())
+    {
+        std::fprintf(stderr, "%s: FAIL header mismatch\n", path);
+        return false;
+    }
+    uint32_t mismatches = 0;
+    for (uint32_t r = 0; r < a.RecordCount(); ++r)
+    {
+        bool diff = a.GetUInt(r, 0) != b.GetUInt(r, 0);
+        for (uint32_t c : strCols)
+            if (a.GetString(r, c) != b.GetString(r, c))
+                diff = true;
+        if (diff)
+            ++mismatches;
+    }
+    if (mismatches) { std::fprintf(stderr, "%s: FAIL %u/%u records differ\n", path, mismatches, a.RecordCount()); return false; }
+    std::printf("  %-34s OK  (%u records, %u fields, %zu bytes)\n", path, a.RecordCount(),
+                a.FieldCount(), out.size());
+    return true;
+}
+
+// Full round-trip of one DBC under a .dbd-derived schema, through the real edit path
+// (EditableDbc). Validates the header against the schema (physical field count + byte-accurate
+// record size, so packed sub-4-byte DBCs are covered), then load -> serialize -> reload and
+// compares every cell (strings by value, scalars by raw). Returns "" on success, else a reason.
+// Uses EditableDbc rather than the read-only Dbc, which rejects recordSize < 4 (the packed DBCs).
+static std::string DbdRoundtripOne(we::ClientData& cd, const std::string& path,
+                                   const we::DbcSchema& schema)
+{
+    std::vector<uint8_t> bytes = cd.ReadFile(path);
+    if (bytes.size() < 20)
+        return "not present in client";
+    if (!(bytes[0] == 'W' && bytes[1] == 'D' && bytes[2] == 'B' && bytes[3] == 'C'))
+        return "not a WDBC blob";
+    auto rd = [&](size_t o) {
+        return static_cast<uint32_t>(bytes[o]) | (static_cast<uint32_t>(bytes[o + 1]) << 8) |
+               (static_cast<uint32_t>(bytes[o + 2]) << 16) |
+               (static_cast<uint32_t>(bytes[o + 3]) << 24);
+    };
+    const uint32_t hdrFields = rd(8), hdrRecSize = rd(12);
+    if (schema.FieldCount() != hdrFields)
+    {
+        std::ostringstream os;
+        os << "field-count mismatch (def " << schema.FieldCount() << " vs dbc " << hdrFields << ")";
+        return os.str();
+    }
+    if (schema.RecordByteSize() != hdrRecSize)
+    {
+        std::ostringstream os;
+        os << "record-size mismatch (def " << schema.RecordByteSize() << "B vs dbc " << hdrRecSize
+           << "B)";
+        return os.str();
+    }
+
+    we::EditableDbc a;
+    if (!a.Load(bytes, schema))
+        return "EditableDbc.Load rejected";
+    std::vector<uint8_t> out = a.Serialize();
+    we::EditableDbc b;
+    if (!b.Load(out, schema))
+        return "reload rejected";
+    if (a.RecordCount() != b.RecordCount())
+        return "record-count mismatch after serialize";
+
+    const uint32_t cols = schema.FieldCount();
+    for (uint32_t r = 0; r < a.RecordCount(); ++r)
+        for (uint32_t c = 0; c < cols; ++c)
+        {
+            if (a.ColumnIsString(c))
+            {
+                if (a.GetStr(r, c) != b.GetStr(r, c))
+                {
+                    std::ostringstream os;
+                    os << "string diff at r" << r << " c" << c;
+                    return os.str();
+                }
+            }
+            else if (a.GetU32(r, c) != b.GetU32(r, c))
+            {
+                std::ostringstream os;
+                os << "scalar diff at r" << r << " c" << c;
+                return os.str();
+            }
+        }
+    return {};
+}
+
+// Exercise the generic DBC editor's open logic (registry lookup -> validate vs header -> raw
+// fallback / unsupported) against real client files, without the GUI. Usage:
+// --dbc-registry-test <clientRoot>
+int DbcRegistryTest(const std::string& clientRoot)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    we::DbcDefRegistry reg;
+    std::printf("definitions dir: %s\n", reg.DefinitionsDir().c_str());
+
+    // Representative mix: normal .dbd, packed .dbd, delete-marker file, and a made-up custom name.
+    const char* names[] = {"Item",          "Map",          "PowerDisplay", "CharVariations",
+                           "SpellItemEnchantmentCondition", "MyCustomTable"};
+    for (const char* name : names)
+    {
+        const std::string archivePath = std::string("DBFilesClient\\") + name + ".dbc";
+        std::vector<uint8_t> bytes = cd.ReadFile(archivePath);
+        if (bytes.size() < 20 || bytes[0] != 'W' || bytes[1] != 'D' || bytes[2] != 'B' ||
+            bytes[3] != 'C')
+        {
+            std::printf("  %-30s not present\n", name);
+            continue;
+        }
+        auto rd = [&](size_t o) {
+            return (uint32_t)bytes[o] | ((uint32_t)bytes[o + 1] << 8) |
+                   ((uint32_t)bytes[o + 2] << 16) | ((uint32_t)bytes[o + 3] << 24);
+        };
+        const uint32_t hdrFields = rd(8), hdrRecSize = rd(12);
+        const we::DbcSchema* schema = reg.Lookup(name);
+        const char* source = "";
+        if (schema && schema->FieldCount() == hdrFields && schema->RecordByteSize() == hdrRecSize)
+            source = reg.Source(name);
+        else if (hdrRecSize == hdrFields * 4)
+            source = "raw";
+        else
+            source = "unsupported";
+
+        std::string loaded = "-";
+        if (schema && std::string(source) != "unsupported")
+        {
+            we::EditableDbc ed;
+            loaded = ed.Load(bytes, *schema) ? std::to_string(ed.RecordCount()) + " rows"
+                                             : "LOAD FAIL";
+        }
+        else if (std::string(source) == "raw")
+        {
+            loaded = "(raw grid)";
+        }
+        std::printf("  %-30s source=%-11s fields=%u recBytes=%u  %s\n", name, source, hdrFields,
+                    hdrRecSize, loaded.c_str());
+    }
+    return 0;
+}
+
+// Dev/verify tool: parse every vendored .dbd, build the 3.3.5.12340 schema, and round-trip it
+// against the matching client DBC (all columns, bit-exact for scalars, by-value for strings).
+// This is the strongest proof that every generated layout is correct.
+// Usage: --dbd-check <clientRoot> [defsDir]  (defsDir default: third_party/wowdbdefs/definitions)
+int DbdCheck(const std::string& clientRoot, const std::string& defsDirArg)
+{
+    namespace fs = std::filesystem;
+    std::string defsDir = defsDirArg.empty() ? "third_party/wowdbdefs/definitions" : defsDirArg;
+    if (!fs::is_directory(defsDir))
+    {
+        std::fprintf(stderr, "defs dir not found: %s\n", defsDir.c_str());
+        return 1;
+    }
+    we::ClientData cd;
+    if (!cd.Open(clientRoot))
+    {
+        std::fprintf(stderr, "open failed: %s\n", clientRoot.c_str());
+        return 1;
+    }
+
+    std::vector<std::string> dbds;
+    for (const auto& e : fs::directory_iterator(defsDir))
+        if (e.is_regular_file() && e.path().extension() == ".dbd")
+            dbds.push_back(e.path().string());
+    std::sort(dbds.begin(), dbds.end());
+
+    uint32_t okCount = 0, failCount = 0, absentCount = 0, noDefCount = 0;
+    std::vector<std::string> failures;
+    for (const std::string& dbdPath : dbds)
+    {
+        std::string name = fs::path(dbdPath).stem().string();  // e.g. "Item"
+        std::string dbcPath = "DBFilesClient\\" + name + ".dbc";
+        if (cd.ReadFile(dbcPath).empty())
+        {
+            ++absentCount;
+            continue;
+        }
+        std::ifstream f(dbdPath, std::ios::binary);
+        std::ostringstream ss;
+        ss << f.rdbuf();
+        auto parsed = we::ParseDbdFor12340(ss.str());
+        if (!parsed || !parsed->ok)
+        {
+            ++noDefCount;
+            std::printf("  %-34s no 3.3.5.12340 layout\n", name.c_str());
+            continue;
+        }
+        std::string err = DbdRoundtripOne(cd, dbcPath, parsed->schema);
+        if (err.empty())
+        {
+            ++okCount;
+            std::printf("  %-34s OK  (%u fields)\n", name.c_str(), parsed->schema.FieldCount());
+        }
+        else
+        {
+            ++failCount;
+            std::printf("  %-34s FAIL: %s\n", name.c_str(), err.c_str());
+            failures.push_back(name + ": " + err);
+        }
+    }
+
+    std::printf("\nDBD-CHECK: %u OK, %u FAIL, %u no-def, %u absent-in-client (of %zu defs)\n",
+                okCount, failCount, noDefCount, absentCount, dbds.size());
+    if (!failures.empty())
+    {
+        std::printf("Failures:\n");
+        for (const auto& s : failures)
+            std::printf("  - %s\n", s.c_str());
+    }
+    return failCount == 0 ? 0 : 1;
+}
+
+// Dev/verify tool: round-trip Achievement.dbc + Achievement_Criteria.dbc +
+// Achievement_Category.dbc through EditableDbc. Usage: --ach-roundtrip <clientRoot>
+int AchRoundtrip(const std::string& clientRoot)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    bool ok = true;
+    ok &= RoundtripOne(cd, "DBFilesClient\\Achievement.dbc", we::AchievementSchema(),
+                       {we::ach::TitleLoc0, we::ach::DescLoc0, we::ach::RewardLoc0});
+    ok &= RoundtripOne(cd, "DBFilesClient\\Achievement_Criteria.dbc",
+                       we::AchievementCriteriaSchema(), {we::ach::crit::DescLoc0});
+    ok &= RoundtripOne(cd, "DBFilesClient\\Achievement_Category.dbc",
+                       we::AchievementCategorySchema(), {we::ach::cat::NameLoc0});
+    if (!ok)
+        return 1;
+    std::printf("ROUNDTRIP OK (all achievement DBCs)\n");
+    return 0;
+}
+
+// Open a SINGLE .MPQ standalone (no patch chain) and report whether it directly contains a file
+// and that file's stored size. Distinguishes "file removed by a patch delete-marker in the chain"
+// from "file genuinely absent". Usage: --mpq-probe <mpqPath> <internalFile>
+int MpqProbe(const std::string& mpqPath, const std::string& internalFile);
+
+// Probe whether the client exposes a given archive file, and (for a .dbc) its header.
+// Usage: --has-file <clientRoot> <archivePath>
+int HasFileProbe(const std::string& clientRoot, const std::string& archivePath)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    bool has = cd.HasFile(archivePath);
+    std::vector<uint8_t> bytes = cd.ReadFile(archivePath);
+    std::printf("HasFile(%s) = %s ; ReadFile -> %zu bytes\n", archivePath.c_str(),
+                has ? "true" : "false", bytes.size());
+    if (bytes.size() >= 20 && bytes[0] == 'W' && bytes[1] == 'D' && bytes[2] == 'B' &&
+        bytes[3] == 'C')
+    {
+        auto rd = [&](size_t o) {
+            return static_cast<uint32_t>(bytes[o]) | (static_cast<uint32_t>(bytes[o + 1]) << 8) |
+                   (static_cast<uint32_t>(bytes[o + 2]) << 16) |
+                   (static_cast<uint32_t>(bytes[o + 3]) << 24);
+        };
+        std::printf("  WDBC: records=%u fields=%u recordSize=%u stringSize=%u\n", rd(4), rd(8),
+                    rd(12), rd(16));
+    }
+    return has ? 0 : 2;
+}
+
+int MpqProbe(const std::string& mpqPath, const std::string& internalFile)
+{
+    std::wstring wpath(mpqPath.begin(), mpqPath.end());
+    HANDLE mpq = nullptr;
+    if (!SFileOpenArchive(wpath.c_str(), 0, MPQ_OPEN_READ_ONLY, &mpq) || !mpq)
+    {
+        std::printf("open failed: %s\n", mpqPath.c_str());
+        return 1;
+    }
+    bool has = SFileHasFile(mpq, internalFile.c_str()) != 0;
+    std::printf("%-28s HasFile(%s) = %s", mpqPath.c_str(), internalFile.c_str(),
+                has ? "true" : "false");
+    if (has)
+    {
+        HANDLE f = nullptr;
+        if (SFileOpenFileEx(mpq, internalFile.c_str(), 0, &f) && f)
+        {
+            DWORD hi = 0, sz = SFileGetFileSize(f, &hi);
+            std::printf("  size=%lu", static_cast<unsigned long>(sz));
+            SFileCloseFile(f);
+        }
+    }
+    std::printf("\n");
+    SFileCloseArchive(mpq);
+    return has ? 0 : 2;
+}
+
+// Round-trip CharTitles.dbc through EditableDbc. Usage: --title-roundtrip <clientRoot>
+int TitleRoundtrip(const std::string& clientRoot)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    if (!RoundtripOne(cd, "DBFilesClient\\CharTitles.dbc", we::CharTitlesSchema(),
+                      {we::title::NameMaleLoc0, we::title::NameFemaleLoc0}))
+        return 1;
+    std::printf("ROUNDTRIP OK (CharTitles.dbc)\n");
+    return 0;
+}
+
+// Round-trip Spell.dbc (234 fields, 49839 rows) — validates the SpellSchema field count and
+// the four LangString blocks. Usage: --spell-roundtrip <clientRoot>
+int SpellRoundtrip(const std::string& clientRoot)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    if (!RoundtripOne(cd, "DBFilesClient\\Spell.dbc", we::SpellSchema(),
+                      {we::spell::SpellName, we::spell::Rank, we::spell::Description, we::spell::ToolTip}))
+        return 1;
+    std::printf("ROUNDTRIP OK (Spell.dbc)\n");
+    return 0;
+}
+
+// Round-trip all 10 spell-reference DBCs — validates each SpellTablesModule schema's field
+// count. Usage: --spelltables-roundtrip <clientRoot>
+int SpellTablesRoundtrip(const std::string& clientRoot)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    bool ok = true;
+    for (const we::DbcTableDef& d : we::SpellTableDefs())
+        ok &= RoundtripOne(cd, d.archivePath, *d.schema, {});
+    if (!ok)
+        return 1;
+    std::printf("ROUNDTRIP OK (all spell-reference DBCs)\n");
+    return 0;
+}
+
+// Round-trip all 10 item DBCs — validates every ItemTablesModule schema's field count.
+// Usage: --itemtables-roundtrip <clientRoot>
+int ItemTablesRoundtrip(const std::string& clientRoot)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    bool ok = true;
+    for (const we::DbcTableDef& d : we::ItemTableDefs())
+        ok &= RoundtripOne(cd, d.archivePath, *d.schema, {});
+    if (!ok)
+        return 1;
+    std::printf("ROUNDTRIP OK (all item-reference DBCs)\n");
+    return 0;
+}
+
+// Round-trip Talent.dbc + TalentTab.dbc — validates the TalentSchema field counts.
+// Usage: --talent-roundtrip <clientRoot>
+int TalentRoundtrip(const std::string& clientRoot)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    bool ok = RoundtripOne(cd, "DBFilesClient\\Talent.dbc", we::TalentSchema(), {});
+    ok &= RoundtripOne(cd, "DBFilesClient\\TalentTab.dbc", we::TalentTabSchema(),
+                       {we::talenttab::Name});
+    if (!ok)
+        return 1;
+    std::printf("ROUNDTRIP OK (Talent.dbc + TalentTab.dbc)\n");
+    return 0;
+}
+
+// Round-trip SkillLineAbility.dbc + SkillLine.dbc. Usage: --skill-roundtrip <clientRoot>
+int SkillRoundtrip(const std::string& clientRoot)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    bool ok = RoundtripOne(cd, "DBFilesClient\\SkillLineAbility.dbc", we::SkillLineAbilitySchema(), {});
+    ok &= RoundtripOne(cd, "DBFilesClient\\SkillLine.dbc", we::SkillLineSchema(),
+                       {we::skillline::Name, we::skillline::Description});
+    if (!ok)
+        return 1;
+    std::printf("ROUNDTRIP OK (SkillLineAbility.dbc + SkillLine.dbc)\n");
+    return 0;
+}
+
+// Round-trip all zone/world DBCs — validates every ZoneTablesModule schema. Usage:
+// --zonetables-roundtrip <clientRoot>
+int ZoneTablesRoundtrip(const std::string& clientRoot)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    bool ok = true;
+    for (const we::DbcTableDef& d : we::ZoneTableDefs())
+        ok &= RoundtripOne(cd, d.archivePath, *d.schema, {});
+    if (!ok)
+        return 1;
+    std::printf("ROUNDTRIP OK (all zone/world DBCs)\n");
+    return 0;
+}
+
+// Round-trip all misc grab-bag DBCs — validates every MiscDbcModule schema (EditableDbc::Load
+// refuses a wrong field count). Usage: --miscdbc-roundtrip <clientRoot>
+int MiscDbcRoundtrip(const std::string& clientRoot)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    bool ok = true;
+    for (const we::DbcTableDef& d : we::MiscDbcTableDefs())
+        ok &= RoundtripOne(cd, d.archivePath, *d.schema, {});
+    if (!ok)
+        return 1;
+    std::printf("ROUNDTRIP OK (all misc DBCs)\n");
+    return 0;
+}
+
+// Round-trip the reference DBCs — validates every RefDbcModule schema (field count + string
+// positions; EditableDbc::Load refuses a wrong field count). Usage: --refdbc-roundtrip <clientRoot>
+int RefDbcRoundtrip(const std::string& clientRoot)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+    bool ok = true;
+    for (const we::DbcTableDef& d : we::RefDbcTableDefs())
+        ok &= RoundtripOne(cd, d.archivePath, *d.schema, {});
+    if (!ok)
+        return 1;
+    std::printf("ROUNDTRIP OK (all reference DBCs)\n");
+    return 0;
+}
+
+// Headless check of the generic DB editor's runtime-schema logic (no live DB): SQL-type mapping +
+// single-PK vs composite pathing from fake introspected columns. Usage: --runtime-schema-test
+int RuntimeSchemaTest()
+{
+    const char* types[] = {"int(10) unsigned", "int(11)", "smallint(5) unsigned", "smallint(6)",
+                           "tinyint(3) unsigned", "tinyint(4)", "float", "double", "varchar(255)",
+                           "char(64)", "mediumtext", "longtext", "bigint(20) unsigned"};
+    std::printf("Type map (0=U32 1=I32 2=U16 3=U8 4=Float 5=Text 6=Multiline):\n");
+    for (const char* t : types)
+        std::printf("  %-22s -> %d\n", t, static_cast<int>(we::SqlTypeToDbColType(t)));
+
+    auto show = [](const char* name, std::vector<we::IntrospectedColumn> cols) {
+        we::RuntimeTableSchema rt;
+        rt.Build(name, cols);
+        if (!rt.ok()) { std::printf("\n%s: BUILD FAILED\n", name); return; }
+        if (!rt.composite())
+            std::printf("\n%s: SINGLE-PK  pk=%s  cols=%zu  browser=%zu\n", name, rt.single().pk,
+                        rt.single().cols.size(), rt.single().browserCols.size());
+        else
+            std::printf("\n%s: COMPOSITE  keyCols=%zu  cols=%zu  browser=%zu\n", name,
+                        rt.compositeSchema().keyCols.size(), rt.compositeSchema().cols.size(),
+                        rt.compositeSchema().browserCols.size());
+    };
+    show("broadcast_text", {{"ID", "int(10) unsigned", true}, {"LanguageID", "int(10) unsigned", false},
+                            {"Text", "longtext", false}});
+    show("graveyard_zone", {{"ID", "int(10) unsigned", true}, {"GhostZone", "int(10) unsigned", true},
+                            {"Faction", "smallint(5) unsigned", false}, {"Comment", "mediumtext", false}});
+    show("event_scripts", {{"id", "int(10) unsigned", false}, {"delay", "int(10) unsigned", false},
+                           {"command", "int(10) unsigned", false}});
+    std::printf("\nRUNTIME SCHEMA TEST OK\n");
+    return 0;
+}
+
+// Verify the edit-overlay round-trip: read Achievement.dbc (from MPQ), edit a title,
+// write it as a loose file under <editRoot>, then confirm ClientData reads the edited copy
+// back in preference to the MPQ (the "custom wins" overlay). Usage:
+// --overlay-test <clientRoot> <editRoot>
+int OverlayTest(const std::string& clientRoot, const std::string& editRoot)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed\n"); return 1; }
+
+    const char* path = "DBFilesClient\\Achievement.dbc";
+    we::EditableDbc ed;
+    if (!ed.Load(cd.ReadFile(path), we::AchievementSchema()))
+    {
+        std::fprintf(stderr, "load failed\n");
+        return 1;
+    }
+    std::string before = ed.GetStr(0, we::ach::TitleLoc0);
+    const std::string edited = before + " [EDITED]";
+    ed.SetStr(0, we::ach::TitleLoc0, edited);
+
+    std::string err;
+    if (!we::WriteLooseFile(editRoot, path, ed.Serialize(), err))
+    {
+        std::fprintf(stderr, "write failed: %s\n", err.c_str());
+        return 1;
+    }
+
+    // Point the reader at the edit folder; the loose file must now shadow the MPQ.
+    cd.SetEditOverlay(editRoot);
+    we::EditableDbc reread;
+    if (!reread.Load(cd.ReadFile(path), we::AchievementSchema()))
+    {
+        std::fprintf(stderr, "reread failed\n");
+        return 1;
+    }
+    std::string after = reread.GetStr(0, we::ach::TitleLoc0);
+    std::printf("before overlay: \"%s\"\nafter  overlay: \"%s\"\n", before.c_str(), after.c_str());
+    if (after != edited)
+    {
+        std::fprintf(stderr, "FAIL: overlay did not win\n");
+        return 1;
+    }
+    std::printf("OVERLAY OK (edited loose file shadows the MPQ copy)\n");
+    return 0;
+}
+
 // Usage: --wmo-test <clientRoot> <wmoPath>
 int WmoTest(const std::string& clientRoot, const std::string& wmoPath)
 {
@@ -595,7 +1635,8 @@ int AdtTest(const std::string& clientRoot, const std::string& adtPath)
 }
 
 // Usage: --adt-shot <clientRoot> <adtPath> <outBmp>  (terrain via the dedicated terrain pipeline)
-int AdtShot(const std::string& clientRoot, const std::string& adtPath, const std::string& outBmp)
+int AdtShot(const std::string& clientRoot, const std::string& adtPath, const std::string& outBmp,
+            int radius)
 {
     we::ClientData cd;
     if (!cd.Open(clientRoot))
@@ -605,9 +1646,28 @@ int AdtShot(const std::string& clientRoot, const std::string& adtPath, const std
     }
     we::DbcStore dbc;
     we::adt::LiquidTypeTable liquids = dbc.LoadLiquidTypes(cd);
+
+    // Parse "World\Maps\<dir>\<dir>_<x>_<y>.adt" into (dir, x, y) for LoadNeighborhood.
+    std::string norm = adtPath;
+    for (char& ch : norm) if (ch == '/') ch = '\\';
+    size_t lastSlash = norm.find_last_of('\\');
+    std::string file = lastSlash == std::string::npos ? norm : norm.substr(lastSlash + 1);
+    std::string before = lastSlash == std::string::npos ? std::string() : norm.substr(0, lastSlash);
+    size_t s2 = before.find_last_of('\\');
+    std::string dir = s2 == std::string::npos ? before : before.substr(s2 + 1);
+    std::string stem = (file.size() > 4) ? file.substr(0, file.size() - 4) : file;   // drop .adt
+    size_t u2 = stem.find_last_of('_');
+    size_t u1 = (u2 != std::string::npos && u2 > 0) ? stem.find_last_of('_', u2 - 1) : std::string::npos;
+    int tx = 0, ty = 0;
+    if (u1 != std::string::npos && u2 != std::string::npos)
+    {
+        tx = std::atoi(stem.substr(u1 + 1, u2 - u1 - 1).c_str());
+        ty = std::atoi(stem.substr(u2 + 1).c_str());
+    }
+
     we::adt::AdtTile tile;
     std::string err;
-    if (!we::adt::Load(cd, adtPath, tile, {}, &liquids, &err))
+    if (!we::adt::LoadNeighborhood(cd, dir, tx, ty, radius, tile, {}, &liquids, &err))
     {
         std::fprintf(stderr, "ADT load FAILED (%s): %s\n", adtPath.c_str(), err.c_str());
         return 1;
@@ -744,7 +1804,7 @@ int AdtShot(const std::string& clientRoot, const std::string& adtPath, const std
 
     const float gc[3] = {c.x, c.y, c.z - r};
     renderer->SetGrid(true, gc, r * 2.2f, std::max(r * 2.2f / 20.0f, 1e-4f));
-    renderer->RenderWorld(th, scene.data(), (int)scene.size(), &view[0][0], &proj[0][0], W, H);
+    renderer->RenderWorld(&th, 1, nullptr, 0, scene.data(), (int)scene.size(), &view[0][0], &proj[0][0], W, H);
     std::vector<uint8_t> rgba;
     int rw = 0, rh = 0;
     if (!renderer->CaptureModelTarget(rgba, rw, rh)) { std::fprintf(stderr, "capture failed\n"); return 1; }
@@ -756,6 +1816,89 @@ int AdtShot(const std::string& clientRoot, const std::string& adtPath, const std
     std::printf("ADTSHOT OK -> %s (%dx%d, %zu chunks, %zu placements / %zu models, %d culled, %zu liquidTiles)\n",
                 outBmp.c_str(), rw, rh, up.submeshes.size(), insts.size(), uniq.size(), culled,
                 (size_t)tile.liquidTileCount);
+    return 0;
+}
+
+// Usage: --adt-region <clientRoot> <mapDir> <cx> <cy> <radius> <out.bmp>
+// Streams a (2r+1)^2 tile region through the async streamer, drains to completion, and renders —
+// verifies the worker pipeline, multi-terrain rendering, and uniqueId object dedup.
+int AdtRegion(const std::string& clientRoot, const std::string& mapDir, int cx, int cy, int radius,
+              const std::string& outBmp)
+{
+    we::ClientData cd;
+    if (!cd.Open(clientRoot)) { std::fprintf(stderr, "open failed: %s\n", cd.SourceDescription().c_str()); return 1; }
+    we::DbcStore dbc;
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    we::Window window;
+    if (!window.Create(700, 700, "adt-region", false)) { std::fprintf(stderr, "window failed\n"); return 1; }
+    auto renderer = std::make_unique<we::VulkanRenderer>();
+    if (!renderer->Init(window, true)) { std::fprintf(stderr, "renderer init failed\n"); return 1; }
+
+    we::AdtStreamer streamer;
+    streamer.Init(&cd, &dbc, renderer.get(), 3);
+    if (!streamer.OpenMap(mapDir)) { std::fprintf(stderr, "OpenMap failed: %s\n", mapDir.c_str()); return 1; }
+
+    if (streamer.wmoOnly())
+        std::printf("map is WMO-only (global WMO)\n");
+
+    // Camera at tile (cx,cy) in the shared frame, then pump Update until the region is loaded.
+    const glm::vec2 cw = {(31.5f - cy) * we::adt::kTileSize, (31.5f - cx) * we::adt::kTileSize};
+    glm::vec3 camPos(cw.x - streamer.origin().x, cw.y - streamer.origin().y, 200.0f);
+
+    int desired = 0;
+    for (const auto& t : streamer.world().tiles)
+        if (std::max(std::abs(t.first - cx), std::abs(t.second - cy)) <= radius) ++desired;
+
+    we::adt::AdtLoadOptions opt;
+    if (!streamer.wmoOnly())
+        for (int iter = 0; iter < 4000; ++iter)
+        {
+            streamer.Update(camPos, radius, opt);
+            if (streamer.loadedTiles() >= desired && streamer.pendingTiles() == 0)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        }
+
+    std::printf("region loaded=%d/%d tiles, objects=%d, models=%d, uniqueGroundTextures=%d\n",
+                streamer.loadedTiles(), desired, streamer.objectCount(), streamer.modelCount(),
+                streamer.terrainTextureCount());
+
+    const int W = 700, H = 700;
+    const glm::vec3 c = streamer.wmoOnly() ? streamer.startPos() : camPos;
+    const float r = streamer.wmoOnly() ? streamer.startRadius() : (radius + 1) * we::adt::kTileSize;
+    const glm::vec3 eye = c + glm::normalize(glm::vec3(0.4f, -0.7f, 0.9f)) * (r * 1.6f);
+    glm::mat4 view = glm::lookAt(eye, c, glm::vec3(0.0f, 0.0f, 1.0f));
+    glm::mat4 proj = glm::perspective(glm::radians(50.0f), float(W) / H, r * 0.01f, r * 8.0f);
+    proj[1][1] *= -1.0f;
+
+    std::vector<we::TerrainHandle> terrains;
+    std::vector<we::InstancedGroup> groups;
+    std::vector<we::SceneInstanceGpu> scene;
+    streamer.BuildFrame(view, proj, eye, 16.0f, terrains, groups, scene);
+    size_t instTotal = 0;
+    for (const auto& g : groups) instTotal += g.instanceCount;
+    std::printf("instanced: %zu groups covering %zu objects; %zu non-instanced (liquid + effects)\n",
+                groups.size(), instTotal, scene.size());
+    const float gc[3] = {c.x, c.y, c.z - r};
+    renderer->SetGrid(true, gc, r * 2.0f, std::max(r * 2.0f / 20.0f, 1e-4f));
+    renderer->RenderWorld(terrains.data(), (int)terrains.size(), groups.data(), (int)groups.size(),
+                          scene.data(), (int)scene.size(), &view[0][0], &proj[0][0], W, H);
+    std::vector<uint8_t> rgba;
+    int rw = 0, rh = 0;
+    if (!renderer->CaptureModelTarget(rgba, rw, rh)) { std::fprintf(stderr, "capture failed\n"); return 1; }
+    WriteBmp(rgba, rw, rh, outBmp);
+    const we::RenderStats& rstats = renderer->renderStats();
+    std::printf("ADTREGION OK -> %s (%dx%d, %zu terrains, %zu instances)\n", outBmp.c_str(), rw, rh,
+                terrains.size(), scene.size());
+    std::printf("stats: drawCalls=%d gpuMs=%.2f (terrainTiles=%d groups=%d instances=%d nonInst=%d)\n",
+                rstats.drawCalls, rstats.gpuMs, rstats.terrainTiles, rstats.instancedGroups,
+                rstats.instances, rstats.nonInstanced);
+    std::printf("wdl low-detail tiles loaded=%d\n", streamer.lowTileCount());
+    streamer.Shutdown();
+    renderer->Shutdown();
+    ImGui::DestroyContext();
     return 0;
 }
 
@@ -1180,6 +2323,7 @@ int main(int argc, char** argv)
     int shotTab = 7;   // POI tab by default
     std::string clientPath;
     std::string editorId;   // --editor <id> selects the startup editor module
+    std::string loadProject;   // --load-project <folder>: auto-open a project at startup
 
     for (int i = 1; i < argc; ++i)
     {
@@ -1232,6 +2376,140 @@ int main(int argc, char** argv)
         {
             return DbcMap(argv[i + 1]);
         }
+        else if (std::strcmp(argv[i], "--dbc-dump") == 0 && i + 2 < argc)
+        {
+            int rows = (i + 3 < argc && argv[i + 3][0] != '-') ? std::atoi(argv[i + 3]) : 3;
+            return DbcDump(argv[i + 1], argv[i + 2], rows);
+        }
+        else if (std::strcmp(argv[i], "--ach-roundtrip") == 0 && i + 1 < argc)
+        {
+            return AchRoundtrip(argv[i + 1]);
+        }
+        else if (std::strcmp(argv[i], "--title-roundtrip") == 0 && i + 1 < argc)
+        {
+            return TitleRoundtrip(argv[i + 1]);
+        }
+        else if (std::strcmp(argv[i], "--spell-roundtrip") == 0 && i + 1 < argc)
+        {
+            return SpellRoundtrip(argv[i + 1]);
+        }
+        else if (std::strcmp(argv[i], "--spelltables-roundtrip") == 0 && i + 1 < argc)
+        {
+            return SpellTablesRoundtrip(argv[i + 1]);
+        }
+        else if (std::strcmp(argv[i], "--itemtables-roundtrip") == 0 && i + 1 < argc)
+        {
+            return ItemTablesRoundtrip(argv[i + 1]);
+        }
+        else if (std::strcmp(argv[i], "--talent-roundtrip") == 0 && i + 1 < argc)
+        {
+            return TalentRoundtrip(argv[i + 1]);
+        }
+        else if (std::strcmp(argv[i], "--skill-roundtrip") == 0 && i + 1 < argc)
+        {
+            return SkillRoundtrip(argv[i + 1]);
+        }
+        else if (std::strcmp(argv[i], "--miscdbc-roundtrip") == 0 && i + 1 < argc)
+        {
+            return MiscDbcRoundtrip(argv[i + 1]);
+        }
+        else if (std::strcmp(argv[i], "--refdbc-roundtrip") == 0 && i + 1 < argc)
+        {
+            return RefDbcRoundtrip(argv[i + 1]);
+        }
+        else if (std::strcmp(argv[i], "--runtime-schema-test") == 0)
+        {
+            return RuntimeSchemaTest();
+        }
+        else if (std::strcmp(argv[i], "--dbd-check") == 0 && i + 1 < argc)
+        {
+            return DbdCheck(argv[i + 1], i + 2 < argc ? argv[i + 2] : "");
+        }
+        else if (std::strcmp(argv[i], "--has-file") == 0 && i + 2 < argc)
+        {
+            return HasFileProbe(argv[i + 1], argv[i + 2]);
+        }
+        else if (std::strcmp(argv[i], "--mpq-probe") == 0 && i + 2 < argc)
+        {
+            return MpqProbe(argv[i + 1], argv[i + 2]);
+        }
+        else if (std::strcmp(argv[i], "--dbc-registry-test") == 0 && i + 1 < argc)
+        {
+            return DbcRegistryTest(argv[i + 1]);
+        }
+        else if (std::strcmp(argv[i], "--zonetables-roundtrip") == 0 && i + 1 < argc)
+        {
+            return ZoneTablesRoundtrip(argv[i + 1]);
+        }
+        else if (std::strcmp(argv[i], "--emit-spell-sql") == 0 && i + 1 < argc)
+        {
+            std::string p = (i + 2 < argc && argv[i + 2][0] != '-') ? argv[i + 2] : "build\\spell_emit.sql";
+            return EmitSpellSql(argv[i + 1], p);
+        }
+        else if (std::strcmp(argv[i], "--overlay-test") == 0 && i + 2 < argc)
+        {
+            return OverlayTest(argv[i + 1], argv[i + 2]);
+        }
+        else if (std::strcmp(argv[i], "--emit-ach-sql") == 0)
+        {
+            std::string p = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "build\\ach_emit.sql";
+            return EmitAchSql(p);
+        }
+        else if (std::strcmp(argv[i], "--emit-broadcast-sql") == 0)
+        {
+            std::string p = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "build\\bt_emit.sql";
+            return EmitBroadcastSql(p);
+        }
+        else if (std::strcmp(argv[i], "--emit-gameevent-sql") == 0)
+        {
+            std::string p = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "build\\gameevent_emit";
+            return EmitGameEventSql(p);
+        }
+        else if (std::strcmp(argv[i], "--emit-conditions-sql") == 0)
+        {
+            std::string p = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "build\\conditions_emit.sql";
+            return EmitConditionsSql(p);
+        }
+        else if (std::strcmp(argv[i], "--emit-loot-sql") == 0)
+        {
+            std::string p = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "build\\loot_emit";
+            return EmitLootSql(p);
+        }
+        else if (std::strcmp(argv[i], "--emit-creaturetext-sql") == 0)
+        {
+            std::string p = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "build\\creaturetext_emit";
+            return EmitCreatureTextSql(p);
+        }
+        else if (std::strcmp(argv[i], "--emit-gossip-sql") == 0)
+        {
+            std::string p = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "build\\gossip_emit";
+            return EmitGossipSql(p);
+        }
+        else if (std::strcmp(argv[i], "--emit-pagepoi-sql") == 0)
+        {
+            std::string p = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "build\\pagepoi_emit";
+            return EmitPagePoiSql(p);
+        }
+        else if (std::strcmp(argv[i], "--emit-npctext-sql") == 0)
+        {
+            std::string p = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "build\\npctext_emit.sql";
+            return EmitNpcTextSql(p);
+        }
+        else if (std::strcmp(argv[i], "--emit-smartai-sql") == 0)
+        {
+            std::string p = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "build\\smartai_emit.sql";
+            return EmitSmartAiSql(p);
+        }
+        else if (std::strcmp(argv[i], "--emit-worlddb-composite-sql") == 0)
+        {
+            std::string p = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "build\\worlddb_composite_emit";
+            return EmitWorldDbCompositeSql(p);
+        }
+        else if (std::strcmp(argv[i], "--emit-worlddb-sql") == 0)
+        {
+            std::string p = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : "build\\worlddb_emit";
+            return EmitWorldDbSql(p);
+        }
         else if (std::strcmp(argv[i], "--wmo-list") == 0 && i + 1 < argc)
         {
             int max = (i + 2 < argc) ? std::atoi(argv[i + 2]) : 40;
@@ -1247,7 +2525,13 @@ int main(int argc, char** argv)
         }
         else if (std::strcmp(argv[i], "--adt-shot") == 0 && i + 3 < argc)
         {
-            return AdtShot(argv[i + 1], argv[i + 2], argv[i + 3]);
+            int radius = (i + 4 < argc) ? std::atoi(argv[i + 4]) : 0;
+            return AdtShot(argv[i + 1], argv[i + 2], argv[i + 3], radius);
+        }
+        else if (std::strcmp(argv[i], "--adt-region") == 0 && i + 6 < argc)
+        {
+            return AdtRegion(argv[i + 1], argv[i + 2], std::atoi(argv[i + 3]), std::atoi(argv[i + 4]),
+                             std::atoi(argv[i + 5]), argv[i + 6]);
         }
         else if (std::strcmp(argv[i], "--m2-shot") == 0 && i + 3 < argc)
         {
@@ -1287,6 +2571,10 @@ int main(int argc, char** argv)
         {
             editorId = argv[++i];
         }
+        else if (std::strcmp(argv[i], "--load-project") == 0 && i + 1 < argc)
+        {
+            loadProject = argv[++i];
+        }
     }
 
     if (emitSql)
@@ -1301,5 +2589,7 @@ int main(int argc, char** argv)
         app.SetForcedClientPath(clientPath);
     if (!editorId.empty())
         app.SetEditor(editorId);
+    if (!loadProject.empty())
+        app.SetStartupProject(loadProject);
     return app.Run(selftest, demo);
 }

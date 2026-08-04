@@ -4,6 +4,8 @@
 
 #include "clientdata/ClientData.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 
 namespace we
@@ -368,6 +370,120 @@ DbcStore::LoadCreatureDisplays(const ClientData& cd) const
         d.skins[2] = dbc.GetString(r, 8);
         out[dbc.GetUInt(r, 0)] = std::move(d);
     }
+    return out;
+}
+
+std::unordered_map<uint32_t, std::string> DbcStore::LoadGameObjectModelPaths(const ClientData& cd) const
+{
+    // GameObjectDisplayInfo.dbc: id=0, ModelName (path) = field 1. The path may be an .mdx/.mdl
+    // (M2) model or a .wmo. Normalize M2 extensions to .m2; keep .wmo unchanged.
+    std::unordered_map<uint32_t, std::string> out;
+    Dbc dbc;
+    if (!dbc.Load(cd.ReadFile("DBFilesClient\\GameObjectDisplayInfo.dbc")) || dbc.FieldCount() <= 1)
+        return out;
+    for (uint32_t r = 0; r < dbc.RecordCount(); ++r)
+    {
+        std::string path = dbc.GetString(r, 1);
+        if (path.empty())
+            continue;
+        // Case-insensitive ".wmo" test.
+        bool isWmo = false;
+        if (path.size() >= 4)
+        {
+            std::string ext = path.substr(path.size() - 4);
+            for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            isWmo = (ext == ".wmo");
+        }
+        if (!isWmo)
+        {
+            size_t dot = path.find_last_of('.');
+            if (dot != std::string::npos)
+                path = path.substr(0, dot);
+            path += ".m2";
+        }
+        out[dbc.GetUInt(r, 0)] = std::move(path);
+    }
+    return out;
+}
+
+std::unordered_map<uint32_t, std::vector<DbcStore::TransportPosKey>>
+DbcStore::LoadTransportAnimation(const ClientData& cd) const
+{
+    // TransportAnimation.dbc: id=0, TransportEntry=1, TimeIndex=2, PosX=3, PosY=4, PosZ=5.
+    std::unordered_map<uint32_t, std::vector<TransportPosKey>> out;
+    Dbc dbc;
+    if (!dbc.Load(cd.ReadFile("DBFilesClient\\TransportAnimation.dbc")) || dbc.FieldCount() <= 5)
+        return out;
+    for (uint32_t r = 0; r < dbc.RecordCount(); ++r)
+    {
+        uint32_t entry = dbc.GetUInt(r, 1);
+        if (entry == 0)
+            continue;
+        TransportPosKey k;
+        k.timeMs = dbc.GetUInt(r, 2);
+        k.x = dbc.GetFloat(r, 3);
+        k.y = dbc.GetFloat(r, 4);
+        k.z = dbc.GetFloat(r, 5);
+        out[entry].push_back(k);
+    }
+    for (auto& kv : out)
+        std::sort(kv.second.begin(), kv.second.end(),
+                  [](const TransportPosKey& a, const TransportPosKey& b) { return a.timeMs < b.timeMs; });
+    return out;
+}
+
+std::unordered_map<uint32_t, std::vector<DbcStore::TransportRotKey>>
+DbcStore::LoadTransportRotation(const ClientData& cd) const
+{
+    // TransportRotation.dbc: id=0, GameObjectsId=1, TimeIndex=2, Rot0..3=3,4,5,6.
+    std::unordered_map<uint32_t, std::vector<TransportRotKey>> out;
+    Dbc dbc;
+    if (!dbc.Load(cd.ReadFile("DBFilesClient\\TransportRotation.dbc")) || dbc.FieldCount() <= 6)
+        return out;
+    for (uint32_t r = 0; r < dbc.RecordCount(); ++r)
+    {
+        uint32_t entry = dbc.GetUInt(r, 1);
+        if (entry == 0)
+            continue;
+        TransportRotKey k;
+        k.timeMs = dbc.GetUInt(r, 2);
+        k.rot[0] = dbc.GetFloat(r, 3);
+        k.rot[1] = dbc.GetFloat(r, 4);
+        k.rot[2] = dbc.GetFloat(r, 5);
+        k.rot[3] = dbc.GetFloat(r, 6);
+        out[entry].push_back(k);
+    }
+    for (auto& kv : out)
+        std::sort(kv.second.begin(), kv.second.end(),
+                  [](const TransportRotKey& a, const TransportRotKey& b) { return a.timeMs < b.timeMs; });
+    return out;
+}
+
+std::unordered_map<uint32_t, std::vector<DbcStore::TaxiNode>>
+DbcStore::LoadTaxiPathNodes(const ClientData& cd) const
+{
+    // TaxiPathNode.dbc: id=0, PathID=1, NodeIndex=2, MapID=3, LocX=4, LocY=5, LocZ=6, Flags=7, Delay=8.
+    std::unordered_map<uint32_t, std::vector<TaxiNode>> out;
+    Dbc dbc;
+    if (!dbc.Load(cd.ReadFile("DBFilesClient\\TaxiPathNode.dbc")) || dbc.FieldCount() <= 6)
+        return out;
+    for (uint32_t r = 0; r < dbc.RecordCount(); ++r)
+    {
+        uint32_t pathId = dbc.GetUInt(r, 1);
+        if (pathId == 0)
+            continue;
+        TaxiNode n;
+        n.nodeIndex = dbc.GetUInt(r, 2);
+        n.mapId = dbc.GetUInt(r, 3);
+        n.x = dbc.GetFloat(r, 4);
+        n.y = dbc.GetFloat(r, 5);
+        n.z = dbc.GetFloat(r, 6);
+        n.delay = dbc.FieldCount() > 8 ? dbc.GetUInt(r, 8) : 0;
+        out[pathId].push_back(n);
+    }
+    for (auto& kv : out)
+        std::sort(kv.second.begin(), kv.second.end(),
+                  [](const TaxiNode& a, const TaxiNode& b) { return a.nodeIndex < b.nodeIndex; });
     return out;
 }
 

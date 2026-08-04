@@ -98,6 +98,14 @@ struct VulkanRenderer::Impl
     uint32_t minImageCount = 2;
     bool swapChainRebuild = false;
 
+    // Present-wait (render-complete) semaphores, one PER SWAPCHAIN IMAGE, indexed by the
+    // acquired image index. A semaphore waited by vkQueuePresentKHR for image N can only be
+    // reused after image N is re-acquired, so it must NOT be indexed by a frame counter
+    // (ImGui's default) — doing so triggers VUID-vkQueueSubmit-pSignalSemaphores-00067.
+    std::vector<VkSemaphore> presentSemaphores_;
+    void RecreatePresentSemaphores();
+    void DestroyPresentSemaphores();
+
     VkCommandPool uploadPool = VK_NULL_HANDLE;   // one-shot transfers (textures, capture)
 
     ModelPipeline modelPipeline;   // offscreen 3D model rendering (M2 viewer)
@@ -220,8 +228,25 @@ bool VulkanRenderer::Impl::CreateInstanceAndDevice()
     qci.queueCount = 1;
     qci.pQueuePriorities = &priority;
 
+    // independentBlend: OIT writes two color attachments with different blend states.
+    // descriptorIndexing: the terrain pipeline binds a bindless, update-after-bind array of ground
+    // textures indexed non-uniformly per fragment, so a whole tile draws in one call.
+    VkPhysicalDeviceVulkan12Features vk12 = {};
+    vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    vk12.runtimeDescriptorArray = VK_TRUE;
+    vk12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    vk12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+    vk12.descriptorBindingPartiallyBound = VK_TRUE;
+    vk12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+
+    VkPhysicalDeviceFeatures2 features2 = {};
+    features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features2.pNext = &vk12;
+    features2.features.independentBlend = VK_TRUE;
+
     VkDeviceCreateInfo dci = {};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    dci.pNext = &features2;   // features supplied via Features2 chain (not pEnabledFeatures)
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
     dci.enabledExtensionCount = 1;
@@ -280,6 +305,28 @@ void VulkanRenderer::Impl::CreateSwapchain(VkSurfaceKHR surface, int w, int h)
     ImGui_ImplVulkanH_CreateOrResizeWindow(instance, physicalDevice, device, &wd, queueFamily,
                                            allocator, w, h, minImageCount,
                                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    RecreatePresentSemaphores();
+}
+
+// One present-wait semaphore per swapchain image. Recreated whenever the swapchain is
+// (re)created; the ImGui helper waits the device idle inside CreateOrResizeWindow, so the
+// old semaphores are guaranteed free to destroy here.
+void VulkanRenderer::Impl::RecreatePresentSemaphores()
+{
+    DestroyPresentSemaphores();
+    presentSemaphores_.assign(wd.ImageCount, VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo sci = {};
+    sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    for (uint32_t i = 0; i < wd.ImageCount; ++i)
+        CheckVk(vkCreateSemaphore(device, &sci, allocator, &presentSemaphores_[i]));
+}
+
+void VulkanRenderer::Impl::DestroyPresentSemaphores()
+{
+    for (VkSemaphore s : presentSemaphores_)
+        if (s)
+            vkDestroySemaphore(device, s, allocator);
+    presentSemaphores_.clear();
 }
 
 void VulkanRenderer::Impl::RebuildSwapchainIfNeeded()
@@ -294,6 +341,7 @@ void VulkanRenderer::Impl::RebuildSwapchainIfNeeded()
     ImGui_ImplVulkanH_CreateOrResizeWindow(instance, physicalDevice, device, &wd, queueFamily,
                                            allocator, w, h, minImageCount,
                                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    RecreatePresentSemaphores();
     wd.FrameIndex = 0;
     swapChainRebuild = false;
 }
@@ -377,6 +425,7 @@ void VulkanRenderer::Shutdown()
 
     if (d->uploadPool)
         vkDestroyCommandPool(d->device, d->uploadPool, d->allocator);
+    d->DestroyPresentSemaphores();
     ImGui_ImplVulkanH_DestroyWindow(d->instance, d->device, &d->wd, d->allocator);
     if (d->wd.Surface)
         vkDestroySurfaceKHR(d->instance, d->wd.Surface, d->allocator);
@@ -411,10 +460,29 @@ void VulkanRenderer::EndFrame(ImDrawData* drawData)
 {
     ImGui_ImplVulkanH_Window* wd = &d->wd;
 
+    // If an offscreen 3D pass ran this frame it signaled a semaphore that the swapchain submit must
+    // wait on. On any path that skips that submit, drain the signal with an empty wait-only submit so
+    // it isn't double-signaled next frame.
+    VkSemaphore offscreen = d->modelPipeline.ConsumeOffscreenSemaphore();
+    auto drainOffscreen = [&]() {
+        if (!offscreen) return;
+        VkPipelineStageFlags stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        VkSubmitInfo s = {};
+        s.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        s.waitSemaphoreCount = 1;
+        s.pWaitSemaphores = &offscreen;
+        s.pWaitDstStageMask = &stage;
+        vkQueueSubmit(d->queue, 1, &s, VK_NULL_HANDLE);
+        offscreen = VK_NULL_HANDLE;
+    };
+
     const bool minimized = !drawData || drawData->DisplaySize.x <= 0.0f ||
                            drawData->DisplaySize.y <= 0.0f || wd->Width <= 0 || wd->Height <= 0;
     if (minimized)
+    {
+        drainOffscreen();
         return;
+    }
 
     wd->ClearValue.color.float32[0] = 0.10f;
     wd->ClearValue.color.float32[1] = 0.10f;
@@ -422,16 +490,23 @@ void VulkanRenderer::EndFrame(ImDrawData* drawData)
     wd->ClearValue.color.float32[3] = 1.00f;
 
     // --- FrameRender ---
+    // The image-acquired semaphore rotates by SemaphoreIndex (we don't know the image yet).
     VkSemaphore acquired = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
-    VkSemaphore complete = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
     VkResult err = vkAcquireNextImageKHR(d->device, wd->Swapchain, UINT64_MAX, acquired,
                                          VK_NULL_HANDLE, &wd->FrameIndex);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR)
         d->swapChainRebuild = true;
     if (err == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        drainOffscreen();
         return;
+    }
     if (err != VK_SUBOPTIMAL_KHR)
         CheckVk(err);
+
+    // The present-wait (render-complete) semaphore is indexed by the ACQUIRED IMAGE, so it is
+    // only reused after that image is re-acquired (present of it has finished).
+    VkSemaphore complete = d->presentSemaphores_[wd->FrameIndex];
 
     ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
     CheckVk(vkWaitForFences(d->device, 1, &fd->Fence, VK_TRUE, UINT64_MAX));
@@ -457,12 +532,18 @@ void VulkanRenderer::EndFrame(ImDrawData* drawData)
 
     vkCmdEndRenderPass(fd->CommandBuffer);
 
-    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    // Wait on the swapchain acquire AND (if an offscreen 3D pass ran this frame) its completion
+    // semaphore, so ImGui's sampling of the offscreen target happens after it finished rendering.
+    VkSemaphore waitSems[2] = {acquired, VK_NULL_HANDLE};
+    VkPipelineStageFlags waitStages[2] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT};
+    uint32_t waitCount = 1;
+    if (offscreen) { waitSems[1] = offscreen; waitCount = 2; }
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.waitSemaphoreCount = 1;
-    si.pWaitSemaphores = &acquired;
-    si.pWaitDstStageMask = &waitStage;
+    si.waitSemaphoreCount = waitCount;
+    si.pWaitSemaphores = waitSems;
+    si.pWaitDstStageMask = waitStages;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &fd->CommandBuffer;
     si.signalSemaphoreCount = 1;
@@ -718,11 +799,19 @@ void VulkanRenderer::DestroyTerrain(TerrainHandle handle)
     d->modelPipeline.DestroyTerrain(handle);
 }
 
-ImTextureID VulkanRenderer::RenderWorld(TerrainHandle terrain, const SceneInstanceGpu* instances,
-                                        int count, const float view[16], const float proj[16],
+void VulkanRenderer::ClearTerrainTextureCache()
+{
+    d->modelPipeline.ClearTerrainTextureCache();
+}
+
+ImTextureID VulkanRenderer::RenderWorld(const TerrainHandle* terrains, int terrainCount,
+                                        const InstancedGroup* groups, int groupCount,
+                                        const SceneInstanceGpu* instances, int count,
+                                        const float view[16], const float proj[16],
                                         int width, int height)
 {
-    return d->modelPipeline.RenderWorld(terrain, instances, count, view, proj, width, height);
+    return d->modelPipeline.RenderWorld(terrains, terrainCount, groups, groupCount, instances, count,
+                                        view, proj, width, height);
 }
 
 void VulkanRenderer::SetGrid(bool enabled, const float center[3], float extent, float spacing)
@@ -733,5 +822,10 @@ void VulkanRenderer::SetGrid(bool enabled, const float center[3], float extent, 
 bool VulkanRenderer::CaptureModelTarget(std::vector<uint8_t>& outRgba, int& outW, int& outH)
 {
     return d->modelPipeline.CaptureTarget(outRgba, outW, outH);
+}
+
+const RenderStats& VulkanRenderer::renderStats() const
+{
+    return d->modelPipeline.stats();
 }
 } // namespace we

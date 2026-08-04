@@ -66,6 +66,11 @@ project "TrinityCoreStudio"
         -- Dear ImGui backends (GLFW + Vulkan)
         "third_party/imgui/backends/imgui_impl_glfw.cpp",
         "third_party/imgui/backends/imgui_impl_vulkan.cpp",
+        -- imgui-node-editor (thedmd) — draws via ImDrawList, no renderer changes
+        "third_party/imgui-node-editor/crude_json.cpp",
+        "third_party/imgui-node-editor/imgui_canvas.cpp",
+        "third_party/imgui-node-editor/imgui_node_editor.cpp",
+        "third_party/imgui-node-editor/imgui_node_editor_api.cpp",
         -- volk: dynamic Vulkan entry-point loader (dlopens vulkan-1.dll at runtime)
         "third_party/volk/volk.c",
     }
@@ -74,6 +79,7 @@ project "TrinityCoreStudio"
         "src",
         "third_party/imgui",
         "third_party/imgui/backends",
+        "third_party/imgui-node-editor",
         "third_party/glfw/include",
         "third_party/mysql/include",
         "third_party/json",
