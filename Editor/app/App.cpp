@@ -691,7 +691,7 @@ void App::DrawSharedPanels()
             ImGui::TextUnformatted("TrinityCore Studio");
             ImGui::TextUnformatted("A multi-editor toolkit for TrinityCore 3.3.5a world data.");
             ImGui::TextUnformatted("Dear ImGui (docking) + GLFW + Vulkan");
-            ImGui::TextDisabled("Editors: Quests, Items, Creatures, GameObjects.");
+            ImGui::TextDisabled("Editors: records, scripting, reference data, models, and the 3D World Editor.");
         }
         ImGui::End();
     }

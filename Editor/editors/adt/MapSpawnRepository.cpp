@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <limits>
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "data/SqlBuild.h"
@@ -94,17 +96,19 @@ DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
 {
     out.clear();
 
-    // One row per spawn, joined to its template (model ids / scale / walk speed) and the
-    // optional template addon (waypoint path id). LEFT JOIN so spawns without an addon
-    // row still load. `map` is an integer, so no escaping is needed.
+    // One row per spawn, joined to its template (model ids / scale / speeds), the optional
+    // template addon, and the optional creature_addon row. TrinityCore prefers a creature_addon
+    // row wholesale, so we select ca.guid as well as ca.path_id: path_id=0 on an existing row means
+    // no route, it is not a fallback to creature_template_addon.path_id.
     const std::string sql =
         "SELECT c.guid, c.id, c.position_x, c.position_y, c.position_z, c.orientation, "
         "c.MovementType, c.wander_distance, c.modelid, "
-        "ct.modelid1, ct.modelid2, ct.modelid3, ct.modelid4, ct.scale, ct.speed_walk, "
-        "cta.path_id, c.phaseMask, c.spawnMask "
+        "ct.modelid1, ct.modelid2, ct.modelid3, ct.modelid4, ct.scale, ct.speed_walk, ct.speed_run, "
+        "cta.path_id, ca.guid, ca.path_id, c.phaseMask, c.spawnMask "
         "FROM creature c "
         "JOIN creature_template ct ON ct.entry = c.id "
         "LEFT JOIN creature_template_addon cta ON cta.entry = c.id "
+        "LEFT JOIN creature_addon ca ON ca.guid = c.guid "
         "WHERE c.map = " + std::to_string(mapId);
 
     DbError err;
@@ -142,11 +146,17 @@ DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
         s.speedWalk = rs->GetFloat(14);
         if (s.speedWalk <= 0.0f)
             s.speedWalk = 1.0f;
-        s.pathId = rs->GetUInt32(15);
-        s.phaseMask = rs->GetUInt32(16);
+        s.speedRun = rs->GetFloat(15);
+        if (s.speedRun <= 0.0f)
+            s.speedRun = 1.14286f;
+        s.templatePathId = rs->GetUInt32(16);
+        s.hasSpawnAddon = !rs->IsNull(17);
+        s.spawnPathId = rs->GetUInt32(18);
+        s.pathId = s.hasSpawnAddon ? s.spawnPathId : s.templatePathId;
+        s.phaseMask = rs->GetUInt32(19);
         if (s.phaseMask == 0)
             s.phaseMask = 1;
-        s.spawnMask = rs->GetUInt32(17);
+        s.spawnMask = rs->GetUInt32(20);
         if (s.spawnMask == 0)
             s.spawnMask = 1;
 
@@ -199,7 +209,8 @@ DbError MapSpawnRepository::LoadWaypointPath(IDatabase& db, uint32_t pathId, Way
         return DbError{};
 
     const std::string sql =
-        "SELECT point, position_x, position_y, position_z, orientation, delay, move_type "
+        "SELECT point, position_x, position_y, position_z, orientation, delay, move_type, "
+        "move_event, action, action_chance, wpguid "
         "FROM waypoint_data WHERE id = " + std::to_string(pathId) + " ORDER BY point";
 
     DbError err;
@@ -217,9 +228,340 @@ DbError MapSpawnRepository::LoadWaypointPath(IDatabase& db, uint32_t pathId, Way
         p.o = rs->GetFloat(4);
         p.delay = rs->GetUInt32(5);
         p.moveType = static_cast<uint8_t>(rs->GetUInt32(6));
+        p.moveEvent = static_cast<uint8_t>(rs->GetUInt32(7));
+        p.action = rs->GetUInt32(8);
+        p.actionChance = static_cast<uint8_t>(rs->GetUInt32(9));
+        p.waypointGuid = rs->GetUInt32(10);
+        p.sourcePoint = p.point;
+        p.sourceExists = true;
         out.points.push_back(std::move(p));
     }
     return DbError{};
+}
+
+namespace
+{
+// Standard `waypoint_data` column list for 3.3.5a. Existing rows are never REPLACEd: the
+// visual editor moves them through temporary point numbers and updates them in place, retaining
+// any project-specific columns that this build does not know about.
+const std::vector<std::string>& WaypointCols()
+{
+    static const std::vector<std::string> cols = sql::SplitCols(
+        "id, point, position_x, position_y, position_z, orientation, delay, move_type, "
+        "move_event, action, action_chance, wpguid");
+    return cols;
+}
+
+bool HasWaypointColumn(const std::set<std::string>& cols, const char* col)
+{
+    return cols.empty() || cols.count(col) != 0;
+}
+
+void SetWaypointSaveError(DbError& err, const std::string& message)
+{
+    err.ok = false;
+    err.message = message;
+}
+
+bool ExecuteWaypointStep(IDatabase& db, const std::string& sqlText, DbError& err)
+{
+    db.Execute(sqlText, err);
+    return err.ok;
+}
+
+// Emit a targeted update for a row that was temporarily moved from `temporaryPoint`. All modeled
+// standard fields are written, but custom fields are intentionally left untouched.
+bool UpdateWaypointRow(IDatabase& db, uint32_t pathId, uint32_t temporaryPoint,
+                       const WaypointPoint& p, const std::set<std::string>& existingCols,
+                       DbError& err)
+{
+    std::string set = "point=" + std::to_string(p.point);
+    auto add = [&](const char* col, const std::string& value) {
+        if (!HasWaypointColumn(existingCols, col))
+            return;
+        set += ", ";
+        set += col;
+        set += "=";
+        set += value;
+    };
+    add("position_x", sql::FmtFloat(p.x));
+    add("position_y", sql::FmtFloat(p.y));
+    add("position_z", sql::FmtFloat(p.z));
+    add("orientation", sql::FmtFloat(p.o));
+    add("delay", std::to_string(p.delay));
+    add("move_type", std::to_string(p.moveType));
+    add("move_event", std::to_string(p.moveEvent));
+    add("action", std::to_string(p.action));
+    add("action_chance", std::to_string(p.actionChance));
+    add("wpguid", std::to_string(p.waypointGuid));
+    return ExecuteWaypointStep(db, "UPDATE waypoint_data SET " + set + " WHERE id=" +
+                                   std::to_string(pathId) + " AND point=" +
+                                   std::to_string(temporaryPoint), err);
+}
+
+bool InsertWaypointRow(IDatabase& db, uint32_t pathId, const WaypointPoint& p,
+                       const std::set<std::string>& existingCols, DbError& err)
+{
+    sql::ValueList values(db);
+    values.UInt(pathId);
+    values.UInt(p.point);
+    values.Float(p.x);
+    values.Float(p.y);
+    values.Float(p.z);
+    values.Float(p.o);
+    values.UInt(p.delay);
+    values.UInt(p.moveType);
+    values.UInt(p.moveEvent);
+    values.UInt(p.action);
+    values.UInt(p.actionChance);
+    values.UInt(p.waypointGuid);
+    return ExecuteWaypointStep(db, sql::FilteredInsert("INSERT", "waypoint_data", WaypointCols(),
+                                                        values.tokens, existingCols), err);
+}
+
+// Called inside a transaction by SaveWaypointPath and SaveWaypointPathAndBindCreature.
+bool SaveWaypointPathInTransaction(IDatabase& db, const WaypointPath& path, DbError& err)
+{
+    if (path.id == 0)
+    {
+        SetWaypointSaveError(err, "Waypoint path id must be non-zero.");
+        return false;
+    }
+    // An empty route leaves no waypoint_data row, which makes MAX(id)+1 allocation ambiguous and
+    // is not a useful WaypointMotionGenerator route anyway. Users can clear a spawn override instead.
+    if (path.points.empty())
+    {
+        SetWaypointSaveError(err, "A waypoint path must contain at least one point.");
+        return false;
+    }
+
+    // Validate final primary keys before changing anything. Point order in the vector is the
+    // desired route order, but `point` remains explicit so imports and advanced workflows round-trip.
+    std::unordered_set<uint32_t> finalPoints;
+    std::unordered_set<uint32_t> sourcePoints;
+    uint64_t highPoint = 0;
+    for (const WaypointPoint& p : path.points)
+    {
+        if (!finalPoints.insert(p.point).second)
+        {
+            SetWaypointSaveError(err, "Waypoint path contains duplicate point #" +
+                                       std::to_string(p.point) + ". Renumber it before saving.");
+            return false;
+        }
+        if (p.actionChance > 100)
+        {
+            SetWaypointSaveError(err, "Waypoint point #" + std::to_string(p.point) +
+                                       " has an action chance above 100%.");
+            return false;
+        }
+        if (p.sourceExists && !sourcePoints.insert(p.sourcePoint).second)
+        {
+            SetWaypointSaveError(err, "Waypoint path has two edits for source point #" +
+                                       std::to_string(p.sourcePoint) + ". Duplicate points must be new rows.");
+            return false;
+        }
+        highPoint = std::max<uint64_t>(highPoint, p.point);
+    }
+
+    // Read just the current primary keys. This gives saves an up-to-date picture even if a path was
+    // changed after it was loaded, and lets unknown/custom row columns survive any reordering.
+    std::vector<uint32_t> existingPoints;
+    std::unordered_set<uint32_t> existingSet;
+    DbError readErr;
+    auto rows = db.Query("SELECT point FROM waypoint_data WHERE id=" + std::to_string(path.id) +
+                         " ORDER BY point", readErr);
+    if (!rows)
+    {
+        err = readErr;
+        if (err.ok)
+            SetWaypointSaveError(err, "Could not read waypoint_data for path " + std::to_string(path.id) + ".");
+        return false;
+    }
+    while (rows->Next())
+    {
+        const uint32_t point = rows->GetUInt32(0);
+        existingPoints.push_back(point);
+        existingSet.insert(point);
+        highPoint = std::max<uint64_t>(highPoint, point);
+    }
+    // A loaded row disappearing underneath an edit is a concurrency conflict, not a new point.
+    // Failing safely avoids accidentally deleting/replacing a route another author just changed.
+    for (const WaypointPoint& p : path.points)
+        if (p.sourceExists && existingSet.count(p.sourcePoint) == 0)
+        {
+            SetWaypointSaveError(err, "Waypoint source point #" + std::to_string(p.sourcePoint) +
+                                       " changed outside the editor. Reload the path before saving.");
+            return false;
+        }
+
+    // Pick a block above every old and desired point. Each old row is moved there first, preventing
+    // (id, point) primary-key collisions while routes are reordered or renumbered.
+    const uint64_t temporaryFirst = highPoint + 1u;
+    if (temporaryFirst + existingPoints.size() > std::numeric_limits<uint32_t>::max())
+    {
+        SetWaypointSaveError(err, "Waypoint point values are too large to renumber safely.");
+        return false;
+    }
+
+    std::unordered_map<uint32_t, uint32_t> temporaryBySource;
+    temporaryBySource.reserve(existingPoints.size());
+    for (size_t i = 0; i < existingPoints.size(); ++i)
+    {
+        const uint32_t oldPoint = existingPoints[i];
+        const uint32_t temporaryPoint = static_cast<uint32_t>(temporaryFirst + i);
+        temporaryBySource.emplace(oldPoint, temporaryPoint);
+        if (!ExecuteWaypointStep(db, "UPDATE waypoint_data SET point=" + std::to_string(temporaryPoint) +
+                                     " WHERE id=" + std::to_string(path.id) + " AND point=" +
+                                     std::to_string(oldPoint), err))
+            return false;
+    }
+
+    const std::set<std::string> existingCols = sql::ExistingCols(db, "waypoint_data");
+    std::unordered_set<uint32_t> consumedSources;
+    for (const WaypointPoint& p : path.points)
+    {
+        const auto source = p.sourceExists ? temporaryBySource.find(p.sourcePoint)
+                                            : temporaryBySource.end();
+        if (source != temporaryBySource.end())
+        {
+            consumedSources.insert(p.sourcePoint);
+            if (!UpdateWaypointRow(db, path.id, source->second, p, existingCols, err))
+                return false;
+        }
+        else if (!InsertWaypointRow(db, path.id, p, existingCols, err))
+            return false;
+    }
+
+    // Any original row not represented by a current point was deleted in the visual editor.
+    for (const auto& source : temporaryBySource)
+        if (consumedSources.count(source.first) == 0 &&
+            !ExecuteWaypointStep(db, "DELETE FROM waypoint_data WHERE id=" + std::to_string(path.id) +
+                                     " AND point=" + std::to_string(source.second), err))
+            return false;
+    return true;
+}
+
+bool BindCreatureWaypointPathInTransaction(IDatabase& db, uint32_t guid, uint32_t entry,
+                                            uint32_t pathId, bool enableWaypointMotion, DbError& err)
+{
+    if (guid == 0 || entry == 0 || pathId == 0)
+    {
+        SetWaypointSaveError(err, "A creature guid, entry, and non-zero waypoint path id are required.");
+        return false;
+    }
+    // ON DUPLICATE KEY UPDATE changes only path_id on an existing spawn addon. For a fresh row,
+    // SELECT ... LEFT JOIN copies every standard template-addon visual field first. TrinityCore uses
+    // a creature_addon row wholesale (rather than merging it field-by-field), so this copy is vital:
+    // creating a local route must not make a mounted/aura-equipped template NPC lose its appearance.
+    const std::string sql =
+        "INSERT INTO creature_addon (guid, path_id, mount, MountCreatureID, StandState, AnimTier, "
+        "VisFlags, SheathState, PvPFlags, emote, visibilityDistanceType, auras) "
+        "SELECT " + std::to_string(guid) + ", " + std::to_string(pathId) +
+        ", COALESCE(cta.mount,0), COALESCE(cta.MountCreatureID,0), COALESCE(cta.StandState,0), "
+        "COALESCE(cta.AnimTier,0), COALESCE(cta.VisFlags,0), COALESCE(cta.SheathState,1), "
+        "COALESCE(cta.PvPFlags,0), COALESCE(cta.emote,0), COALESCE(cta.visibilityDistanceType,0), "
+        "COALESCE(cta.auras,'') FROM (SELECT 1) AS singleton "
+        "LEFT JOIN creature_template_addon cta ON cta.entry=" + std::to_string(entry) +
+        " ON DUPLICATE KEY UPDATE path_id=VALUES(path_id)";
+    if (!ExecuteWaypointStep(db, sql, err))
+        return false;
+    if (enableWaypointMotion &&
+        !ExecuteWaypointStep(db, "UPDATE creature SET MovementType=2, wander_distance=0 WHERE guid=" +
+                                 std::to_string(guid), err))
+        return false;
+    return true;
+}
+} // namespace
+
+DbError MapSpawnRepository::SaveWaypointPath(IDatabase& db, const WaypointPath& path) const
+{
+    db.BeginTransaction();
+    DbError err;
+    if (!SaveWaypointPathInTransaction(db, path, err))
+    {
+        db.Rollback();
+        return err;
+    }
+    return db.Commit();
+}
+
+DbError MapSpawnRepository::NextWaypointPathId(IDatabase& db, uint32_t& out) const
+{
+    out = 0;
+    DbError err;
+    // A route id can legitimately be referenced by an addon before any waypoint rows are authored.
+    // Include both addon sources so a newly allocated id cannot collide with such a reserved route.
+    auto rows = db.Query("SELECT GREATEST(COALESCE((SELECT MAX(id) FROM waypoint_data),0), "
+                         "COALESCE((SELECT MAX(path_id) FROM creature_addon),0), "
+                         "COALESCE((SELECT MAX(path_id) FROM creature_template_addon),0))+1", err);
+    if (!rows)
+        return err.ok ? DbError{false, "Could not allocate a waypoint path id."} : err;
+    if (!rows->Next())
+        return DbError{false, "Could not allocate a waypoint path id."};
+    out = rows->GetUInt32(0);
+    if (out == 0)
+        return DbError{false, "Waypoint path id range is exhausted."};
+    return DbError{};
+}
+
+DbError MapSpawnRepository::BindCreatureWaypointPath(IDatabase& db, uint32_t guid, uint32_t entry,
+                                                      uint32_t pathId, bool enableWaypointMotion) const
+{
+    db.BeginTransaction();
+    DbError err;
+    if (!BindCreatureWaypointPathInTransaction(db, guid, entry, pathId, enableWaypointMotion, err))
+    {
+        db.Rollback();
+        return err;
+    }
+    return db.Commit();
+}
+
+DbError MapSpawnRepository::EnableCreatureWaypointMotion(IDatabase& db, uint32_t guid) const
+{
+    if (guid == 0)
+        return DbError{false, "A creature guid is required."};
+    db.BeginTransaction();
+    DbError err;
+    db.Execute("UPDATE creature SET MovementType=2, wander_distance=0 WHERE guid=" +
+               std::to_string(guid), err);
+    if (!err.ok)
+    {
+        db.Rollback();
+        return err;
+    }
+    return db.Commit();
+}
+
+DbError MapSpawnRepository::ClearCreatureWaypointPath(IDatabase& db, uint32_t guid) const
+{
+    if (guid == 0)
+        return DbError{false, "A creature guid is required."};
+    db.BeginTransaction();
+    DbError err;
+    // Do not DELETE the addon row: it may carry appearance/auras/emotes unrelated to movement.
+    db.Execute("UPDATE creature_addon SET path_id=0 WHERE guid=" + std::to_string(guid), err);
+    if (!err.ok)
+    {
+        db.Rollback();
+        return err;
+    }
+    return db.Commit();
+}
+
+DbError MapSpawnRepository::SaveWaypointPathAndBindCreature(IDatabase& db, const WaypointPath& path,
+                                                             uint32_t guid, uint32_t entry,
+                                                             bool enableWaypointMotion) const
+{
+    db.BeginTransaction();
+    DbError err;
+    if (!SaveWaypointPathInTransaction(db, path, err) ||
+        !BindCreatureWaypointPathInTransaction(db, guid, entry, path.id, enableWaypointMotion, err))
+    {
+        db.Rollback();
+        return err;
+    }
+    return db.Commit();
 }
 
 DbError MapSpawnRepository::LoadGameObjectsForMap(IDatabase& db, uint32_t mapId,

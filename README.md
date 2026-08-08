@@ -1,11 +1,11 @@
 # TrinityCore Studio
 
-A desktop GUI for browsing and editing World of Warcraft world data in a
-**TrinityCore 3.3.5a (build 12340)** *world* database. It hosts four editors -
-**Quests, Items, Creatures, and GameObjects** - selectable from a left rail, edits
-each record across every related table, resolves item / creature / gameobject /
-faction / spell IDs to names, and can either write changes **live** (transactional)
-or **export a reviewable `.sql` file** - selectable per session.
+A desktop world-building toolkit for browsing and editing World of Warcraft data in a
+**TrinityCore 3.3.5a (build 12340)** *world* database. It combines record editors for
+quests, items, creatures, gameobjects, scripting, conditions, loot, and reference tables
+with a streamed **3D World Editor**. It resolves item / creature / gameobject / faction /
+spell IDs to names and can either write changes **live** (transactional) or **export a
+reviewable `.sql` file** - selectable per session.
 
 Built with Dear ImGui (docking) + GLFW + Vulkan 1.4. Optional World of Warcraft client
 data (MPQ/DBC) adds icons, zone maps, name resolution, and a Blizzard-styled theme.
@@ -32,6 +32,37 @@ panel + log across the bottom.
   generic `Data0..23` columns are labeled per the selected type (a Door's `Data1` is
   a Lock id; a Chest's `Data1` is a loot id) with id-name pickers where a field
   references another table - plus addon, locales, quest items, loot, and spawns.
+- **World Editor** - streams whole ADT maps from client data, renders terrain, doodads,
+  WMOs, NPCs, GameObjects, transports, phases/events/pools, and provides click selection,
+  a transform gizmo, right-click placement, deletion, undo/redo, spawn-instance forms, and
+  an in-world **waypoint path editor** for NPC routes.
+
+### World Editor workflow
+
+The World Editor needs both client data (for terrain/models) and a project database (for
+spawns). Choose a map in **World Browser**, fly or orbit around the streamed terrain, then
+turn on **Edit**:
+
+1. **Move or place content:** click an NPC/GameObject/doodad to select it, then use the
+   Move/Rotate/Scale gizmo or **Snap to ground**. Right-click terrain to add an NPC,
+   GameObject, M2, or WMO; right-click an existing object for its context menu. DB spawns
+   save transactionally on gizmo release; ADT placements are batched into the project's
+   `edited-client` overlay.
+2. **Edit an NPC route:** select an NPC and open **Waypoint Path**. The panel identifies
+   whether its route comes from the creature template (shared) or its `creature_addon`
+   row (local). Use **Make local copy** before changing a shared route when the change is
+   map/spawn-specific; creating that local addon carries over the template's visual addon
+   settings so mounted/aura-equipped NPCs keep their appearance.
+3. **Author in 3D:** click blue numbered route markers to select a point. Add a point at
+   the NPC home, arm **Place on terrain** and right-click ground to insert a point, or arm
+   **Move selected on terrain** to reposition one. The route overlay, loop line, delays,
+   orientation, walk/run mode, events, actions, chances, and `wpguid` all preview and edit
+   in place. Route-table changes have local Ctrl+Z/Ctrl+Y before Save.
+4. **Save deliberately:** route edits are an unsaved live preview until **Save route**.
+   Existing `waypoint_data` rows are updated transactionally rather than replaced, so
+   project-specific columns survive point moves/reordering. A spawn addon row takes
+   precedence over template addon data in TrinityCore; clearing its `path_id` keeps its
+   other addon fields and intentionally leaves that spawn without a route.
 
 ### Shared features
 
@@ -52,9 +83,10 @@ panel + log across the bottom.
 ### Client data (optional)
 
 Point the app at a WoW 3.3.5a `Data` folder (MPQ archives) to unlock item/spell
-**icons**, quest **POI zone maps**, name resolution for factions / spells / areas /
-skills / titles / faction templates, and the **Blizzard parchment theme** + UI font.
-Everything works without it - you just get IDs instead of names and the dark theme.
+**icons**, quest **POI zone maps**, the streamed 3D **World Editor** (ADT terrain, M2s,
+WMOs, and NPC/GameObject models), name resolution for factions / spells / areas / skills /
+titles / faction templates, and the **Blizzard parchment theme** + UI font. Record editors
+still work without it - you just get IDs instead of names and the dark theme.
 
 ## Build
 

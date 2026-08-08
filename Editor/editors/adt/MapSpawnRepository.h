@@ -1,10 +1,10 @@
 #pragma once
 
-// Cross-cutting DB reader for the ADT map viewer's NPC layer. Unlike the per-record
-// editor repositories, this loads ALL creature spawns for a map at once (plus, on
-// demand, a waypoint path), so the world viewer can place + simulate NPCs on the
-// terrain. Stateless: pass an IDatabase& like the other repositories. Mostly read-only;
-// the two transform writes below persist a single spawn moved with the viewer's gizmo.
+// Cross-cutting DB reader/writer for the World Editor's spawn layers. Unlike the per-record
+// editor repositories, this loads ALL creature/gameobject spawns for a map at once (plus, on
+// demand, a waypoint path), so the visual editor can place, move, simulate, and author world
+// content directly against a TrinityCore world database. Stateless: pass an IDatabase& like the
+// other repositories.
 
 #include <cstdint>
 #include <string>
@@ -64,6 +64,18 @@ struct GameEventInfo
     int32_t id = 0;
     std::string description;
 };
+
+// Which addon supplied a creature's resolved waypoint path. TrinityCore uses a creature_addon row
+// wholesale when one exists (even path_id = 0), otherwise it uses creature_template_addon. Keeping
+// that distinction prevents the World Editor from incorrectly claiming a spawn inherits a template
+// route while its own addon row actually disables it.
+enum class WaypointPathSource : uint8_t
+{
+    None,
+    SpawnAddon,
+    TemplateAddon,
+};
+
 // One creature spawn resolved enough to render + simulate it: position/orientation,
 // movement behaviour, and the CreatureDisplayInfo displayId to turn into an M2 model.
 struct MapSpawn
@@ -75,9 +87,15 @@ struct MapSpawn
     uint8_t  movementType = 0;   // creature.MovementType (0 idle, 1 random, 2 waypoint)
     float    wanderDistance = 0; // creature.wander_distance (random-movement radius)
     uint32_t displayId = 0;      // resolved model: spawn modelid, else first template modelid
-    uint32_t pathId = 0;         // creature_template_addon.path_id (waypoint path, if any)
+    // The resolved path used by this spawn. A creature_addon row (per-spawn) wins as a whole;
+    // path_id = 0 on that row means no waypoint route, rather than a fallback to the template.
+    uint32_t pathId = 0;
+    uint32_t spawnPathId = 0;
+    uint32_t templatePathId = 0;
+    bool     hasSpawnAddon = false;
     float    scale = 1.0f;       // creature_template.scale
     float    speedWalk = 1.0f;   // creature_template.speed_walk (movement speed multiplier)
+    float    speedRun = 1.14286f;// creature_template.speed_run (movement speed multiplier)
     uint32_t phaseMask = 1;      // creature.phaseMask (visibility bitmask)
     uint32_t spawnMask = 1;      // creature.spawnMask (difficulty/spawn-mode bitmask)
     int32_t  eventEntry = 0;     // game_event_creature.eventEntry (signed; 0 = none)
@@ -87,6 +105,13 @@ struct MapSpawn
     // creature.equipment_id -> creature_equip_template -> item_template.displayid. Rendered as
     // attached held models by NpcLayer.
     uint32_t weaponDisplay[3] = {0, 0, 0};
+
+    WaypointPathSource PathSource() const
+    {
+        return hasSpawnAddon ? WaypointPathSource::SpawnAddon
+             : templatePathId != 0 ? WaypointPathSource::TemplateAddon
+                                  : WaypointPathSource::None;
+    }
 };
 
 // One GameObject spawn resolved enough to render + simulate it: position, full 3D
@@ -114,7 +139,7 @@ struct MapGameObject
 struct MoTransportDef
 {
     uint32_t entry = 0;
-    uint32_t displayId = 0;     // gameobject_template.displayId (a WMO model)
+    uint32_t displayId = 0;     // gameobject_template.displayId (GameObjectDisplayInfo.dbc)
     uint32_t taxiPathId = 0;    // gameobject_template.Data0
     float    moveSpeed = 0.0f;  // gameobject_template.Data1 (yards/sec)
     float    size = 1.0f;
@@ -123,12 +148,34 @@ struct MoTransportDef
 class MapSpawnRepository
 {
 public:
-    // Load every creature spawn on `mapId`, joined to its template (model/scale/speed)
-    // and template addon (waypoint path id). `out` is replaced. Never throws.
+    // Load every creature spawn on `mapId`, joined to its template (model/scale/speed), its
+    // template addon, and its optional creature_addon spawn override. `out` is replaced.
     DbError LoadSpawnsForMap(IDatabase& db, uint32_t mapId, std::vector<MapSpawn>& out) const;
 
-    // Load one waypoint path (all waypoint_data rows with id == pathId, ordered by point).
+    // Load one waypoint path (all waypoint_data rows with id == pathId, ordered by point), including
+    // 3.3.5a event/action fields. Newly loaded points retain source identity for safe visual saves.
     DbError LoadWaypointPath(IDatabase& db, uint32_t pathId, WaypointPath& out) const;
+    // Save a path transactionally. Existing rows are temporarily renumbered then updated in place,
+    // so any custom waypoint_data columns survive moves/reorders; only brand-new points use defaults.
+    DbError SaveWaypointPath(IDatabase& db, const WaypointPath& path) const;
+    // Allocate the next free path id from waypoint_data and both addon references. Callers should
+    // immediately save/bind it in the same editing session; a live DB transaction protects the
+    // accompanying write, not allocation.
+    DbError NextWaypointPathId(IDatabase& db, uint32_t& out) const;
+    // Set/clear the per-spawn creature_addon.path_id. When a bind has to create a new spawn addon,
+    // it copies the template addon's mount/auras/visual settings first, then replaces only path_id;
+    // this prevents a local route from silently stripping an NPC's template appearance. Binding can
+    // also set this spawn's MovementType to 2 and clear random-wander radius, without touching the
+    // template. Clearing writes path_id=0 but intentionally keeps other addon fields intact.
+    DbError BindCreatureWaypointPath(IDatabase& db, uint32_t guid, uint32_t entry, uint32_t pathId,
+                                     bool enableWaypointMotion) const;
+    // Set just this spawn's MovementType to waypoint motion (and clear its random radius) without
+    // creating/changing a creature_addon override. Useful when it inherits a template route.
+    DbError EnableCreatureWaypointMotion(IDatabase& db, uint32_t guid) const;
+    DbError ClearCreatureWaypointPath(IDatabase& db, uint32_t guid) const;
+    // Atomic clone/new-path helper: writes `path` and binds it to exactly one creature spawn.
+    DbError SaveWaypointPathAndBindCreature(IDatabase& db, const WaypointPath& path, uint32_t guid,
+                                            uint32_t entry, bool enableWaypointMotion) const;
 
     // Load every GameObject spawn on `mapId`, joined to its template (model/type/scale).
     DbError LoadGameObjectsForMap(IDatabase& db, uint32_t mapId, std::vector<MapGameObject>& out) const;
@@ -139,7 +186,7 @@ public:
     // Load the game_event list for the viewer's event dropdown. Missing table -> empty, ok.
     DbError LoadGameEvents(IDatabase& db, std::vector<GameEventInfo>& out) const;
 
-    // --- writes (ADT viewer gizmo): targeted per-guid transform UPDATEs, one transaction each ---
+    // --- writes (World Editor gizmo): targeted per-guid transform UPDATEs, one transaction each ---
     // Persist a GameObject spawn's transform (position + orientation + rotation0..3 quaternion),
     // keyed by guid. Live executes immediately; SqlExport captures. Never throws.
     DbError UpdateGameObjectTransform(IDatabase& db, uint32_t guid, float x, float y, float z, float o,
@@ -147,7 +194,7 @@ public:
     // Persist a creature spawn's position + orientation, keyed by guid.
     DbError UpdateCreatureTransform(IDatabase& db, uint32_t guid, float x, float y, float z, float o) const;
 
-    // --- full-row spawn instance edit (ADT viewer NPC-instance panel) ---
+    // --- full-row spawn instance edit (World Editor NPC-instance panel) ---
     // Load the complete `creature` row for one guid into a CreatureSpawn (all editable columns;
     // the template `id`/entry is NOT part of CreatureSpawn). Never throws; !ok if the guid is gone.
     DbError LoadCreatureSpawn(IDatabase& db, uint32_t guid, CreatureSpawn& out) const;

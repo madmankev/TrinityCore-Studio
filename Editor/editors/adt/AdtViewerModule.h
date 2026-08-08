@@ -26,23 +26,27 @@
 #include "editors/adt/GameObjectLayer.h"
 #include "editors/adt/AdtEditStore.h"
 #include "editors/common/CommandStack.h"
+#include "editors/common/SnapshotStack.h"
 
 namespace we
 {
 class AdtViewerModule final : public IEditorModule
 {
 public:
-    const char* Id() const override { return "adt"; }
-    const char* DisplayName() const override { return "ADT Viewer"; }
-    const char* RailGlyph() const override { return "5"; }
+    const char* Id() const override { return "adt"; }  // stable settings/layout key from earlier releases
+    const char* DisplayName() const override { return "World Editor"; }
+    const char* RailGlyph() const override { return "W"; }
     void Init(EditorServices* services) override { svc_ = services; }
 
     std::vector<PanelDesc> Panels() const override
     {
-        return {{"ADT Browser", DockSlot::Left, true},
+        // Keep the pre-v0.5 ImGui IDs after ### so existing users retain their saved docking layout
+        // while the visible product language moves from "ADT Viewer" to "World Editor".
+        return {{"World Browser###ADT Browser", DockSlot::Left, true},
                 {"NPC Instance", DockSlot::Left, true},
                 {"GameObject Instance", DockSlot::Left, true},
-                {"ADT Viewer", DockSlot::Center, true}};
+                {"Waypoint Path", DockSlot::Bottom, true},
+                {"World Editor###ADT Viewer", DockSlot::Center, true}};
     }
     void DrawPanels() override;
     void DrawModals() override {}
@@ -51,11 +55,13 @@ public:
     void OnDisconnected() override;
     void OnShutdown() override;
 
-    // Undo/redo of object moves — this editor's own stack (see Undo/Redo section below).
-    bool CanUndo() const override { return undo_.CanUndo(); }
-    bool CanRedo() const override { return undo_.CanRedo(); }
-    void Undo() override { undo_.Undo(); }
-    void Redo() override { undo_.Redo(); }
+    // Undo/redo of object moves and the currently-authored waypoint route. While a route has
+    // unsaved edits, Ctrl+Z/Ctrl+Y naturally targets its local snapshots; otherwise it targets the
+    // persistent object command stack.
+    bool CanUndo() const override { return (waypointDirty_ && waypointUndo_.CanUndo()) || undo_.CanUndo(); }
+    bool CanRedo() const override { return (waypointDirty_ && waypointUndo_.CanRedo()) || undo_.CanRedo(); }
+    void Undo() override;
+    void Redo() override;
 
     bool HasRecord() const override { return !loadedName_.empty(); }
     std::string RecordSummary() const override { return loadedName_; }
@@ -77,6 +83,7 @@ private:
                                  const glm::vec3& focus, const SpawnFilter& filter);
     void RunGizmo(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0, int w, int h);
     void ApplyGizmoEdit();              // push gizmoMatrix_ back into the selected object
+    void SnapSelectionToGround();       // terrain raycast + persist/undo for NPC/GO/doodad placement
     void CommitSelectionToDb();         // save the moved DB spawn (called on gizmo release)
     void ApplySelectionOutline();       // drive the selected object's inverted-hull outline (per source)
     void ClearSelection();
@@ -152,6 +159,27 @@ private:
     void ApplyAndPersistGoSpawn(const GameObjectSpawn& s);
     void ApplyRenderFromGoSpawn(const GameObjectSpawn& s);  // push edit-affected fields into GameObjectLayer
     void SyncGoPanelTransform(uint32_t guid);               // gizmo -> panel (reads live spawn)
+
+    // --- visual waypoint-path editor (docked "Waypoint Path" panel + viewport overlay) ---
+    // Keeps an editable working copy for the selected NPC. Paths can be shared by a creature template
+    // or overridden per spawn; the UI makes the source explicit and can clone a shared route locally.
+    enum class WaypointPlacementMode { None, Add, MoveSelected };
+    void DrawWaypointPathPanel();
+    void SyncWaypointPathToSelection(bool discardCurrent = false);
+    void ResetWaypointPathEditor();
+    void MarkWaypointPathDirty();
+    void ReindexWaypointPoints();
+    void AddWaypointAt(const glm::vec3& world);
+    void MoveSelectedWaypointTo(const glm::vec3& world);
+    void SaveWaypointPathEdit();
+    void CreateOrCloneLocalWaypointPath(bool cloneCurrent);
+    void BindExistingWaypointPath(uint32_t pathId);
+    void ClearLocalWaypointPath();
+    void EnableSelectedNpcWaypointMotion();
+    bool TrySelectWaypointOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
+                                  int w, int h, bool viewportHovered);
+    void DrawWaypointOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
+                             int w, int h);
 
     EditorServices* svc_ = nullptr;
     AdtStreamer streamer_;
@@ -232,6 +260,24 @@ private:
     uint32_t        goEditGuid_ = 0;
     bool            goEditDirty_ = false;
     std::string     goEditStatus_;
+
+    // Waypoint path working copy. `waypointEditGuid_` is the NPC this route is previewed on;
+    // it intentionally remains pinned while dirty even if the user selects another NPC, preventing
+    // accidental loss of unsaved route work. source describes whether the loaded route is shared.
+    WaypointPath         waypointEdit_;
+    WaypointPath         waypointEditOrig_;
+    SnapshotStack<WaypointPath> waypointUndo_;  // in-memory route edit history (cleared on load/save)
+    uint32_t             waypointEditGuid_ = 0;
+    uint32_t             waypointEditEntry_ = 0;
+    uint32_t             waypointBindId_ = 0;
+    int                  waypointSelected_ = -1;
+    WaypointPathSource   waypointSource_ = WaypointPathSource::None;
+    WaypointPlacementMode waypointPlacementMode_ = WaypointPlacementMode::None;
+    bool                 waypointLoaded_ = false;
+    bool                 waypointDirty_ = false;
+    bool                 showWaypointOverlay_ = true;
+    bool                 enableWaypointMotionOnBind_ = true;
+    std::string          waypointStatus_;
 
     // Pending ADT placement edits (moved doodads/WMOs), flushed to the overlay by "Save ADT edits".
     AdtEditStore adtEdits_;

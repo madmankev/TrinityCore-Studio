@@ -80,6 +80,13 @@ public:
     // its simulation. Build re-resolves the model from spawn.displayId each frame, so a display change
     // takes effect automatically. Returns false if the guid is gone.
     bool UpdateSpawnEditable(uint32_t guid, const MapSpawn& fields);
+    // Update the resolved path source/binding after a visual path is assigned or cleared. This only
+    // changes the in-memory World Editor state; the repository performs the matching DB transaction.
+    bool SetSpawnPathBinding(uint32_t guid, uint32_t pathId, uint32_t spawnPathId,
+                             uint32_t templatePathId, bool hasSpawnAddon, uint8_t movementType);
+    // Push a working waypoint path into one NPC's simulator, so edits preview immediately before Save.
+    // The next map reload still reads the canonical rows from the database.
+    bool SetWaypointPath(uint32_t guid, const WaypointPath& path);
     // Highlight one guid (hover tint) on the next Build (guid 0 / alpha 0 clears it).
     void SetHighlight(uint32_t guid, const glm::vec4& color) { highlightGuid_ = guid; highlightColor_ = color; }
     // Selection outline for one guid: rgb color + width in .a (guid 0 / width 0 clears).
@@ -133,7 +140,9 @@ private:
         // waypoint path (loaded lazily when first simulated with a DB available)
         bool pathTried = false;
         std::vector<glm::vec3> path;
-        std::vector<float>     pathDelay;   // ms, parallel to path
+        std::vector<float>     pathDelay;       // ms, parallel to path
+        std::vector<float>     pathOrientation; // radians; 0 = keep movement-facing
+        std::vector<uint8_t>   pathMoveType;    // 0 walk, 1 run, 2 land, 3 take off
         int   pathIdx = 0;
         std::vector<glm::mat4> palette;     // per-frame folded palette (SceneInstanceGpu points here)
         // Held weapons (resolved once when first drawn from spawn.weaponDisplay).

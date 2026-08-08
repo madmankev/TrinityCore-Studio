@@ -306,11 +306,12 @@ void NpcLayer::Simulate(Npc& n, float dtMs, IDatabase* db)
         return;
     }
 
-    const float speed = kBaseWalkSpeed * (n.spawn.speedWalk > 0.0f ? n.spawn.speedWalk : 1.0f);
-    const float step = speed * dtMs / 1000.0f;
+    const float walkStep = kBaseWalkSpeed * (n.spawn.speedWalk > 0.0f ? n.spawn.speedWalk : 1.0f) *
+                           dtMs / 1000.0f;
 
-    // Move toward `tgt` (XY); returns true on arrival. Faces the movement direction.
-    auto moveToward = [&](const glm::vec3& tgt) -> bool
+    // Move toward `tgt` (XY); returns true on arrival. Faces the movement direction. The caller
+    // supplies the step so a waypoint's move_type=Run previews at the template run multiplier.
+    auto moveToward = [&](const glm::vec3& tgt, float step) -> bool
     {
         glm::vec2 cur(n.pos.x, n.pos.y);
         glm::vec2 to(tgt.x - cur.x, tgt.y - cur.y);
@@ -341,7 +342,7 @@ void NpcLayer::Simulate(Npc& n, float dtMs, IDatabase* db)
             n.target = glm::vec3(n.spawn.x + std::cos(ang) * r, n.spawn.y + std::sin(ang) * r, n.spawn.z);
             n.hasTarget = true;
         }
-        if (moveToward(n.target))
+        if (moveToward(n.target, walkStep))
         {
             n.hasTarget = false;
             n.pauseMs = 1500.0f + NextRand(n.rng) * 2500.0f;   // rest 1.5–4s
@@ -366,10 +367,14 @@ void NpcLayer::Simulate(Npc& n, float dtMs, IDatabase* db)
                 repo.LoadWaypointPath(*db, n.spawn.pathId, wp);
                 n.path.reserve(wp.points.size());
                 n.pathDelay.reserve(wp.points.size());
+                n.pathOrientation.reserve(wp.points.size());
+                n.pathMoveType.reserve(wp.points.size());
                 for (const WaypointPoint& p : wp.points)
                 {
                     n.path.emplace_back(p.x, p.y, p.z);
                     n.pathDelay.push_back(static_cast<float>(p.delay));
+                    n.pathOrientation.push_back(p.o);
+                    n.pathMoveType.push_back(p.moveType);
                 }
             }
         }
@@ -381,9 +386,22 @@ void NpcLayer::Simulate(Npc& n, float dtMs, IDatabase* db)
         }
         if (n.pathIdx >= static_cast<int>(n.path.size()))
             n.pathIdx = 0;
-        if (moveToward(n.path[n.pathIdx]))
+        const uint8_t pointMove = n.pathIdx < static_cast<int>(n.pathMoveType.size())
+                                      ? n.pathMoveType[n.pathIdx]
+                                      : 0;
+        const float speedMultiplier = (pointMove == 1 && n.spawn.speedRun > 0.0f)
+                                          ? n.spawn.speedRun
+                                          : (n.spawn.speedWalk > 0.0f ? n.spawn.speedWalk : 1.0f);
+        const float pathStep = kBaseWalkSpeed * speedMultiplier * dtMs / 1000.0f;
+        if (moveToward(n.path[n.pathIdx], pathStep))
         {
             n.pauseMs = n.pathDelay[n.pathIdx];
+            // In TrinityCore a zero waypoint orientation means "do not force facing". A non-zero
+            // orientation is applied once the actor reaches the point, which also makes the World
+            // Editor preview reflect orientation edits instead of only storing them.
+            if (n.pathIdx < static_cast<int>(n.pathOrientation.size()) &&
+                std::fabs(n.pathOrientation[n.pathIdx]) > 1e-6f)
+                n.heading = n.pathOrientation[n.pathIdx];
             n.pathIdx = (n.pathIdx + 1) % static_cast<int>(n.path.size());
         }
         return;
@@ -428,7 +446,7 @@ const NpcLayer::HeldModel* NpcLayer::EnsureHeldModel(const std::string& path, co
     return &res.first->second;
 }
 
-void NpcLayer::EnsureAttachments(Npc& n, const NpcModel& parent)
+void NpcLayer::EnsureAttachments(Npc& n, const NpcModel& /*parent*/)
 {
     if (n.attachTried || !dresser_)
         return;
@@ -694,10 +712,77 @@ bool NpcLayer::UpdateSpawnEditable(uint32_t guid, const MapSpawn& fields)
             n.pathTried = false;   // re-evaluate the waypoint path for the (possibly new) MovementType
             n.path.clear();
             n.pathDelay.clear();
+            n.pathOrientation.clear();
+            n.pathMoveType.clear();
             n.pathIdx = 0;
         }
         return true;
     }
     return false;
 }
+
+bool NpcLayer::SetSpawnPathBinding(uint32_t guid, uint32_t pathId, uint32_t spawnPathId,
+                                   uint32_t templatePathId, bool hasSpawnAddon, uint8_t movementType)
+{
+    for (Npc& n : npcs_)
+    {
+        if (n.spawn.guid != guid)
+            continue;
+        n.spawn.pathId = pathId;
+        n.spawn.spawnPathId = spawnPathId;
+        n.spawn.templatePathId = templatePathId;
+        n.spawn.hasSpawnAddon = hasSpawnAddon;
+        n.spawn.movementType = movementType;
+        // A path assignment/clear must invalidate the lazy DB cache immediately. Keep the actor at
+        // its home until a preview path is supplied or Build lazily reloads the new binding.
+        n.pathTried = false;
+        n.path.clear();
+        n.pathDelay.clear();
+        n.pathOrientation.clear();
+        n.pathMoveType.clear();
+        n.pathIdx = 0;
+        n.pauseMs = 0.0f;
+        n.hasTarget = false;
+        n.pos = glm::vec3(n.spawn.x, n.spawn.y, n.spawn.z);
+        n.heading = n.spawn.o;
+        n.moving = false;
+        return true;
+    }
+    return false;
+}
+
+bool NpcLayer::SetWaypointPath(uint32_t guid, const WaypointPath& path)
+{
+    for (Npc& n : npcs_)
+    {
+        if (n.spawn.guid != guid)
+            continue;
+        n.spawn.pathId = path.id;
+        n.path.clear();
+        n.pathDelay.clear();
+        n.pathOrientation.clear();
+        n.pathMoveType.clear();
+        n.path.reserve(path.points.size());
+        n.pathDelay.reserve(path.points.size());
+        n.pathOrientation.reserve(path.points.size());
+        n.pathMoveType.reserve(path.points.size());
+        for (const WaypointPoint& p : path.points)
+        {
+            n.path.emplace_back(p.x, p.y, p.z);
+            n.pathDelay.push_back(static_cast<float>(p.delay));
+            n.pathOrientation.push_back(p.o);
+            n.pathMoveType.push_back(p.moveType);
+        }
+        n.pathTried = true;  // this working copy is authoritative until the next binding change/reload
+        n.pathIdx = 0;
+        n.pauseMs = 0.0f;
+        n.hasTarget = false;
+        n.pos = glm::vec3(n.spawn.x, n.spawn.y, n.spawn.z);
+        n.heading = n.spawn.o;
+        n.moving = false;
+        return true;
+    }
+    return false;
+}
+
 } // namespace we

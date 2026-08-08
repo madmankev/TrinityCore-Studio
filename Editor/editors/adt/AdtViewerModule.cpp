@@ -43,6 +43,33 @@ void DecomposeTRS(const glm::mat4& m, glm::vec3& t, glm::quat& r, glm::vec3& s)
                         glm::vec3(m[2]) / (s.z > 1e-6f ? s.z : 1.0f));
     r = glm::normalize(glm::quat_cast(rot));
 }
+
+// Project a TrinityCore world point into the World Editor's render target. The camera projection
+// already has Vulkan's Y flip, so its NDC Y maps directly to the top-left ImGui viewport convention
+// used by MakePickRay (top = -1, bottom = +1).
+bool ProjectWorldPoint(const glm::vec3& world, const glm::vec3& origin, const glm::mat4& view,
+                       const glm::mat4& proj, const ImVec2& p0, int w, int h, ImVec2& screen)
+{
+    const glm::vec4 clip = proj * view * glm::vec4(world.x - origin.x, world.y - origin.y, world.z, 1.0f);
+    if (clip.w <= 1e-5f)
+        return false;
+    const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+    if (ndc.z < -0.01f || ndc.z > 1.01f)
+        return false;
+    screen.x = p0.x + (ndc.x * 0.5f + 0.5f) * static_cast<float>(w);
+    screen.y = p0.y + (ndc.y * 0.5f + 0.5f) * static_cast<float>(h);
+    return true;
+}
+
+const char* WaypointSourceLabel(WaypointPathSource source)
+{
+    switch (source)
+    {
+        case WaypointPathSource::SpawnAddon:    return "Spawn addon (local)";
+        case WaypointPathSource::TemplateAddon: return "Template default (shared)";
+        default:                                return "No route assigned";
+    }
+}
 } // namespace
 
 void AdtViewerModule::OnClientDataLoaded()
@@ -76,6 +103,36 @@ void AdtViewerModule::OnShutdown()
     npcLayer_.Clear();      // free NPC/GO models while the renderer is still alive
     goLayer_.Clear();
     streamer_.Shutdown();   // join workers + free GPU while the renderer/client data are still alive
+}
+
+void AdtViewerModule::Undo()
+{
+    if (waypointDirty_ && waypointUndo_.CanUndo())
+    {
+        waypointEdit_ = waypointUndo_.Undo(waypointEdit_);
+        waypointSelected_ = waypointEdit_.points.empty() ? -1 :
+                             std::clamp(waypointSelected_, 0,
+                                        static_cast<int>(waypointEdit_.points.size()) - 1);
+        npcLayer_.SetWaypointPath(waypointEditGuid_, waypointEdit_);
+        waypointStatus_ = "Undid waypoint edit (unsaved preview).";
+        return;
+    }
+    undo_.Undo();
+}
+
+void AdtViewerModule::Redo()
+{
+    if (waypointDirty_ && waypointUndo_.CanRedo())
+    {
+        waypointEdit_ = waypointUndo_.Redo(waypointEdit_);
+        waypointSelected_ = waypointEdit_.points.empty() ? -1 :
+                             std::clamp(waypointSelected_, 0,
+                                        static_cast<int>(waypointEdit_.points.size()) - 1);
+        npcLayer_.SetWaypointPath(waypointEditGuid_, waypointEdit_);
+        waypointStatus_ = "Redid waypoint edit (unsaved preview).";
+        return;
+    }
+    undo_.Redo();
 }
 
 void AdtViewerModule::LoadNpcSpawns()
@@ -170,12 +227,13 @@ void AdtViewerModule::DrawPanels()
     DrawBrowserPanel();
     DrawNpcInstancePanel();
     DrawGoInstancePanel();
+    DrawWaypointPathPanel();
     DrawViewportPanel();
 }
 
 void AdtViewerModule::DrawBrowserPanel()
 {
-    if (!ImGui::Begin("ADT Browser"))
+    if (!ImGui::Begin("World Browser###ADT Browser"))
     {
         ImGui::End();
         return;
@@ -246,14 +304,14 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
 
 void AdtViewerModule::DrawViewportPanel()
 {
-    if (!ImGui::Begin("ADT Viewer"))
+    if (!ImGui::Begin("World Editor###ADT Viewer"))
     {
         ImGui::End();
         return;
     }
     if (!streamerInit_ || loadedName_.empty())
     {
-        ImGui::TextDisabled("No map loaded. Pick a map in the ADT Browser, then fly (Fly camera).");
+        ImGui::TextDisabled("No map loaded. Pick a map in the World Browser, then fly (Fly camera).");
         ImGui::End();
         return;
     }
@@ -420,9 +478,16 @@ void AdtViewerModule::DrawViewportPanel()
         npcLayer_.SetOutline(0, glm::vec4(0.0f));
     }
 
-    // Right-click on terrain (no drag) opens the "add object here" popup.
+    // Right-click on terrain (no drag) opens the "add object here" popup, or places/moves an armed
+    // waypoint. Escape cancels the active terrain waypoint tool without changing the working route.
     if (editMode_)
         HandleRightClickAdd(view, proj, p0, w, h, hovered, focus, filter);
+    if (editMode_ && hovered && waypointPlacementMode_ != WaypointPlacementMode::None &&
+        ImGui::IsKeyPressed(ImGuiKey_Escape))
+    {
+        waypointPlacementMode_ = WaypointPlacementMode::None;
+        waypointStatus_ = "Terrain waypoint tool cancelled.";
+    }
     // Delete key removes the selected object (undoable).
     if (editMode_ && hovered && selKind_ != SelKind::None && !io.WantTextInput &&
         ImGui::IsKeyPressed(ImGuiKey_Delete))
@@ -468,6 +533,11 @@ void AdtViewerModule::DrawViewportPanel()
                                                   &view[0][0], &proj[0][0], w, h);
     if (tex)
         ImGui::GetWindowDrawList()->AddImage(tex, p0, ImVec2(p0.x + w, p0.y + h));
+
+    // The route overlay is editor UI, not an engine primitive: it remains crisp at every zoom level,
+    // labels the ordered points, and is drawn above the final 3D image but below the transform gizmo.
+    // It stays visible in read-only view mode; point picking/terrain tools still require Edit.
+    DrawWaypointOverlay(view, proj, p0, w, h);
 
     // Transform gizmo: drawn ON TOP of the blitted image, on THIS window's draw list, with the SAME
     // view/proj the scene was rendered with (so it stays locked to the model). Runs before the camera
@@ -723,6 +793,772 @@ void AdtViewerModule::SyncNpcPanelTransform(uint32_t guid, float x, float y, flo
     npcEditOrig_.x = x; npcEditOrig_.y = y; npcEditOrig_.z = z; npcEditOrig_.o = o;
 }
 
+// ---------------------------------------------------------------------------
+// Waypoint Path editor
+// ---------------------------------------------------------------------------
+
+void AdtViewerModule::ResetWaypointPathEditor()
+{
+    waypointEdit_ = WaypointPath{};
+    waypointEditOrig_ = WaypointPath{};
+    waypointUndo_.Clear();
+    waypointEditGuid_ = 0;
+    waypointEditEntry_ = 0;
+    waypointBindId_ = 0;
+    waypointSelected_ = -1;
+    waypointSource_ = WaypointPathSource::None;
+    waypointPlacementMode_ = WaypointPlacementMode::None;
+    waypointLoaded_ = false;
+    waypointDirty_ = false;
+    waypointStatus_.clear();
+}
+
+// Bring the route working copy in sync with the selected NPC. Deliberately do not replace a dirty
+// route just because the user clicked another actor: the panel instead offers an explicit
+// Save/Discard choice, which keeps a terrain-placement click from silently losing authored work.
+void AdtViewerModule::SyncWaypointPathToSelection(bool discardCurrent)
+{
+    if (discardCurrent)
+    {
+        waypointDirty_ = false;
+        waypointPlacementMode_ = WaypointPlacementMode::None;
+    }
+    if (waypointDirty_)
+        return;
+    if (selKind_ != SelKind::Npc)
+    {
+        ResetWaypointPathEditor();
+        return;
+    }
+    const MapSpawn* spawn = npcLayer_.FindSpawn(selGuid_);
+    if (!spawn)
+    {
+        ResetWaypointPathEditor();
+        return;
+    }
+    if (!discardCurrent && waypointEditGuid_ == spawn->guid &&
+        ((waypointLoaded_ && waypointEdit_.id == spawn->pathId) ||
+         (!waypointLoaded_ && spawn->pathId == 0)))
+        return;
+
+    waypointEdit_ = WaypointPath{};
+    waypointEditOrig_ = WaypointPath{};
+    waypointUndo_.Clear();
+    waypointEditGuid_ = spawn->guid;
+    waypointEditEntry_ = spawn->entry;
+    waypointBindId_ = spawn->pathId;
+    waypointSelected_ = -1;
+    waypointSource_ = spawn->PathSource();
+    waypointPlacementMode_ = WaypointPlacementMode::None;
+    waypointLoaded_ = false;
+    waypointDirty_ = false;
+    waypointStatus_.clear();
+
+    if (spawn->pathId == 0)
+    {
+        waypointStatus_ = "No waypoint path is assigned to this spawn.";
+        return;
+    }
+    if (!svc_ || !svc_->connected || !svc_->activeDb)
+    {
+        waypointStatus_ = "Connect a project database to load the waypoint path.";
+        return;
+    }
+    WaypointPath loaded;
+    const DbError e = spawnRepo_.LoadWaypointPath(*svc_->activeDb, spawn->pathId, loaded);
+    if (!e.ok)
+    {
+        waypointStatus_ = "Path load failed: " + e.message;
+        return;
+    }
+    waypointEdit_ = loaded;
+    waypointEditOrig_ = loaded;
+    waypointUndo_.Reset(loaded);
+    waypointLoaded_ = true;
+    if (!loaded.points.empty())
+        waypointSelected_ = 0;
+}
+
+void AdtViewerModule::MarkWaypointPathDirty()
+{
+    if (!waypointLoaded_ || waypointEditGuid_ == 0)
+        return;
+    waypointDirty_ = true;
+    // The NPC layer owns a separate, per-instance simulation cache. Updating it here gives the
+    // artist immediate visual feedback for table edits, terrain placement, and route reordering.
+    npcLayer_.SetWaypointPath(waypointEditGuid_, waypointEdit_);
+}
+
+void AdtViewerModule::ReindexWaypointPoints()
+{
+    for (size_t i = 0; i < waypointEdit_.points.size(); ++i)
+        waypointEdit_.points[i].point = static_cast<uint32_t>(i + 1);  // TC convention: 1-based route points
+    if (waypointSelected_ >= static_cast<int>(waypointEdit_.points.size()))
+        waypointSelected_ = static_cast<int>(waypointEdit_.points.size()) - 1;
+}
+
+void AdtViewerModule::AddWaypointAt(const glm::vec3& world)
+{
+    if (!waypointLoaded_ || waypointEditGuid_ == 0)
+        return;
+    const WaypointPath before = waypointEdit_;
+    WaypointPoint p;
+    p.x = world.x;
+    p.y = world.y;
+    p.z = world.z;
+    p.actionChance = 100;
+    p.sourceExists = false;  // inserted row, even if it was duplicated from another point
+    const int after = std::clamp(waypointSelected_ + 1, 0, static_cast<int>(waypointEdit_.points.size()));
+    waypointEdit_.points.insert(waypointEdit_.points.begin() + after, p);
+    waypointSelected_ = after;
+    ReindexWaypointPoints();
+    waypointUndo_.Push(before);
+    MarkWaypointPathDirty();
+}
+
+void AdtViewerModule::MoveSelectedWaypointTo(const glm::vec3& world)
+{
+    if (!waypointLoaded_ || waypointSelected_ < 0 ||
+        waypointSelected_ >= static_cast<int>(waypointEdit_.points.size()))
+        return;
+    const WaypointPath before = waypointEdit_;
+    WaypointPoint& p = waypointEdit_.points[waypointSelected_];
+    p.x = world.x;
+    p.y = world.y;
+    p.z = world.z;
+    waypointUndo_.Push(before);
+    MarkWaypointPathDirty();
+}
+
+void AdtViewerModule::SaveWaypointPathEdit()
+{
+    if (!svc_ || !svc_->connected || !svc_->activeDb || !waypointLoaded_ || waypointEdit_.id == 0)
+        return;
+    const DbError e = spawnRepo_.SaveWaypointPath(*svc_->activeDb, waypointEdit_);
+    if (!e.ok)
+    {
+        waypointStatus_ = "Save failed: " + e.message;
+        return;
+    }
+    // The saved route has a fresh identity baseline. On a later reorder the repository will update
+    // these exact rows in place, retaining custom waypoint_data columns.
+    for (WaypointPoint& p : waypointEdit_.points)
+    {
+        p.sourcePoint = p.point;
+        p.sourceExists = true;
+    }
+    waypointEditOrig_ = waypointEdit_;
+    waypointUndo_.Reset(waypointEdit_);
+    waypointDirty_ = false;
+    npcLayer_.SetWaypointPath(waypointEditGuid_, waypointEdit_);
+    waypointStatus_ = "Saved path " + std::to_string(waypointEdit_.id) + " (" +
+                      std::to_string(waypointEdit_.points.size()) + " points).";
+    saveStatus_ = waypointStatus_;
+    if (svc_->setStatus)
+        svc_->setStatus(waypointStatus_);
+}
+
+// Allocate a path and bind it to this one creature. A new empty route starts with a point at the
+// spawn home; that makes it immediately visible and ensures the allocated id has a waypoint_data row.
+void AdtViewerModule::CreateOrCloneLocalWaypointPath(bool cloneCurrent)
+{
+    if (!svc_ || !svc_->connected || !svc_->activeDb || selKind_ != SelKind::Npc)
+        return;
+    const MapSpawn* spawn = npcLayer_.FindSpawn(selGuid_);
+    if (!spawn)
+        return;
+    uint32_t id = 0;
+    const DbError idResult = spawnRepo_.NextWaypointPathId(*svc_->activeDb, id);
+    if (!idResult.ok)
+    {
+        waypointStatus_ = "Could not allocate path: " + idResult.message;
+        return;
+    }
+
+    WaypointPath created;
+    if (cloneCurrent && waypointLoaded_)
+        created = waypointEdit_;
+    else
+    {
+        WaypointPoint home;
+        home.point = 1;
+        home.x = spawn->x;
+        home.y = spawn->y;
+        home.z = spawn->z;
+        home.actionChance = 100;
+        created.points.push_back(home);
+    }
+    created.id = id;
+    if (created.points.empty())  // defensive: routes must have at least one point to reserve their id
+    {
+        WaypointPoint home;
+        home.point = 1;
+        home.x = spawn->x;
+        home.y = spawn->y;
+        home.z = spawn->z;
+        home.actionChance = 100;
+        created.points.push_back(home);
+    }
+    for (WaypointPoint& p : created.points)
+    {
+        // `sourcePoint` is meaningful only for rows under created.id. The repository sees no rows
+        // for a new id and inserts them, then we establish a new source baseline after success.
+        p.sourceExists = false;
+        p.sourcePoint = 0;
+    }
+    for (size_t i = 0; i < created.points.size(); ++i)
+        created.points[i].point = static_cast<uint32_t>(i + 1);
+
+    const DbError e = spawnRepo_.SaveWaypointPathAndBindCreature(*svc_->activeDb, created, spawn->guid,
+                                                                   spawn->entry, enableWaypointMotionOnBind_);
+    if (!e.ok)
+    {
+        waypointStatus_ = "Create local path failed: " + e.message;
+        return;
+    }
+    for (WaypointPoint& p : created.points)
+    {
+        p.sourcePoint = p.point;
+        p.sourceExists = true;
+    }
+    const uint8_t movement = enableWaypointMotionOnBind_ ? 2 : spawn->movementType;
+    npcLayer_.SetSpawnPathBinding(spawn->guid, created.id, created.id, spawn->templatePathId, true, movement);
+    npcLayer_.SetWaypointPath(spawn->guid, created);
+    if (npcEditGuid_ == spawn->guid && enableWaypointMotionOnBind_)
+    {
+        npcEdit_.movementType = 2;
+        npcEdit_.wanderDistance = 0.0f;
+        npcEditOrig_ = npcEdit_;
+        npcEditDirty_ = false;
+    }
+    waypointEdit_ = created;
+    waypointEditOrig_ = created;
+    waypointUndo_.Reset(created);
+    waypointEditGuid_ = spawn->guid;
+    waypointEditEntry_ = spawn->entry;
+    waypointBindId_ = created.id;
+    waypointSource_ = WaypointPathSource::SpawnAddon;
+    waypointLoaded_ = true;
+    waypointDirty_ = false;
+    waypointSelected_ = created.points.empty() ? -1 : 0;
+    waypointPlacementMode_ = WaypointPlacementMode::None;
+    waypointStatus_ = "Created local path " + std::to_string(created.id) + ".";
+    saveStatus_ = waypointStatus_;
+    if (svc_->setStatus)
+        svc_->setStatus(waypointStatus_);
+}
+
+void AdtViewerModule::BindExistingWaypointPath(uint32_t pathId)
+{
+    if (!svc_ || !svc_->connected || !svc_->activeDb || selKind_ != SelKind::Npc || pathId == 0)
+        return;
+    const MapSpawn* spawn = npcLayer_.FindSpawn(selGuid_);
+    if (!spawn)
+        return;
+    const DbError e = spawnRepo_.BindCreatureWaypointPath(*svc_->activeDb, spawn->guid, spawn->entry,
+                                                            pathId, enableWaypointMotionOnBind_);
+    if (!e.ok)
+    {
+        waypointStatus_ = "Assign path failed: " + e.message;
+        return;
+    }
+    const uint8_t movement = enableWaypointMotionOnBind_ ? 2 : spawn->movementType;
+    npcLayer_.SetSpawnPathBinding(spawn->guid, pathId, pathId, spawn->templatePathId, true, movement);
+    if (npcEditGuid_ == spawn->guid && enableWaypointMotionOnBind_)
+    {
+        npcEdit_.movementType = 2;
+        npcEdit_.wanderDistance = 0.0f;
+        npcEditOrig_ = npcEdit_;
+        npcEditDirty_ = false;
+    }
+    waypointDirty_ = false;
+    waypointEditGuid_ = 0;  // force a fresh read of the assigned path below
+    SyncWaypointPathToSelection(true);
+    waypointStatus_ = "Assigned local path " + std::to_string(pathId) + ".";
+    saveStatus_ = waypointStatus_;
+    if (svc_->setStatus)
+        svc_->setStatus(waypointStatus_);
+}
+
+void AdtViewerModule::ClearLocalWaypointPath()
+{
+    if (!svc_ || !svc_->connected || !svc_->activeDb || selKind_ != SelKind::Npc)
+        return;
+    const MapSpawn* spawn = npcLayer_.FindSpawn(selGuid_);
+    if (!spawn || !spawn->hasSpawnAddon || spawn->spawnPathId == 0)
+        return;
+    const uint32_t templatePath = spawn->templatePathId;
+    const uint8_t movement = spawn->movementType;
+    const DbError e = spawnRepo_.ClearCreatureWaypointPath(*svc_->activeDb, spawn->guid);
+    if (!e.ok)
+    {
+        waypointStatus_ = "Clear local path failed: " + e.message;
+        return;
+    }
+    // Preserve the creature_addon row (it may carry mounts/auras/emotes). TrinityCore chooses that
+    // row as a whole, so path_id=0 means this spawn has no route rather than inheriting the template.
+    npcLayer_.SetSpawnPathBinding(spawn->guid, 0, 0, templatePath, true, movement);
+    waypointDirty_ = false;
+    waypointEditGuid_ = 0;
+    SyncWaypointPathToSelection(true);
+    waypointStatus_ = templatePath ? "Cleared the local path (the existing spawn addon prevents template-path fallback)."
+                                   : "Cleared the local waypoint path.";
+    saveStatus_ = waypointStatus_;
+    if (svc_->setStatus)
+        svc_->setStatus(waypointStatus_);
+}
+
+void AdtViewerModule::EnableSelectedNpcWaypointMotion()
+{
+    if (!svc_ || !svc_->connected || !svc_->activeDb || selKind_ != SelKind::Npc)
+        return;
+    const MapSpawn* spawn = npcLayer_.FindSpawn(selGuid_);
+    if (!spawn || spawn->pathId == 0)
+        return;
+    const DbError e = spawnRepo_.EnableCreatureWaypointMotion(*svc_->activeDb, spawn->guid);
+    if (!e.ok)
+    {
+        waypointStatus_ = "Enable waypoint motion failed: " + e.message;
+        return;
+    }
+    // Preserve the live cached route while changing only the movement generator.
+    npcLayer_.SetSpawnPathBinding(spawn->guid, spawn->pathId, spawn->spawnPathId,
+                                  spawn->templatePathId, spawn->hasSpawnAddon, 2);
+    if (waypointLoaded_ && waypointEditGuid_ == spawn->guid)
+        npcLayer_.SetWaypointPath(spawn->guid, waypointEdit_);
+    if (npcEditGuid_ == spawn->guid)
+    {
+        npcEdit_.movementType = 2;
+        npcEdit_.wanderDistance = 0.0f;
+        npcEditOrig_ = npcEdit_;
+        npcEditDirty_ = false;
+    }
+    waypointStatus_ = "Waypoint movement enabled for guid " + std::to_string(spawn->guid) + ".";
+    saveStatus_ = waypointStatus_;
+    if (svc_->setStatus)
+        svc_->setStatus(waypointStatus_);
+}
+
+bool AdtViewerModule::TrySelectWaypointOverlay(const glm::mat4& view, const glm::mat4& proj,
+                                                const ImVec2& p0, int w, int h,
+                                                bool viewportHovered)
+{
+    if (!viewportHovered || !showWaypointOverlay_ || !waypointLoaded_ ||
+        waypointEditGuid_ == 0 || waypointEditGuid_ != selGuid_ ||
+        !ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+        return false;
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const glm::vec3 origin = streamer_.origin();
+    int best = -1;
+    float bestD2 = 13.0f * 13.0f;
+    for (int i = 0; i < static_cast<int>(waypointEdit_.points.size()); ++i)
+    {
+        const WaypointPoint& p = waypointEdit_.points[i];
+        ImVec2 at;
+        if (!ProjectWorldPoint(glm::vec3(p.x, p.y, p.z), origin, view, proj, p0, w, h, at))
+            continue;
+        const float dx = at.x - mouse.x;
+        const float dy = at.y - mouse.y;
+        const float d2 = dx * dx + dy * dy;
+        if (d2 < bestD2)
+        {
+            bestD2 = d2;
+            best = i;
+        }
+    }
+    if (best < 0)
+        return false;
+    waypointSelected_ = best;
+    return true;
+}
+
+void AdtViewerModule::DrawWaypointOverlay(const glm::mat4& view, const glm::mat4& proj,
+                                          const ImVec2& p0, int w, int h)
+{
+    if (!showWaypointOverlay_ || !waypointLoaded_ || waypointEditGuid_ == 0 ||
+        waypointEditGuid_ != selGuid_ || waypointEdit_.points.empty())
+        return;
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const glm::vec3 origin = streamer_.origin();
+    std::vector<ImVec2> projected(waypointEdit_.points.size());
+    std::vector<uint8_t> visible(waypointEdit_.points.size(), 0);
+    for (size_t i = 0; i < waypointEdit_.points.size(); ++i)
+        visible[i] = ProjectWorldPoint(glm::vec3(waypointEdit_.points[i].x, waypointEdit_.points[i].y,
+                                                  waypointEdit_.points[i].z),
+                                       origin, view, proj, p0, w, h, projected[i]) ? 1u : 0u;
+
+    const ImU32 line = IM_COL32(84, 207, 255, 220);
+    for (size_t i = 1; i < projected.size(); ++i)
+        if (visible[i - 1] && visible[i])
+            draw->AddLine(projected[i - 1], projected[i], line, 2.0f);
+    // Waypoint motion loops by default. A dim return segment makes that behavior clear without
+    // confusing the ordered forward path.
+    if (projected.size() > 2 && visible.front() && visible.back())
+        draw->AddLine(projected.back(), projected.front(), IM_COL32(84, 207, 255, 105), 1.0f);
+
+    for (size_t i = 0; i < projected.size(); ++i)
+    {
+        if (!visible[i])
+            continue;
+        const bool selected = static_cast<int>(i) == waypointSelected_;
+        const ImU32 fill = selected ? IM_COL32(255, 193, 68, 255) : IM_COL32(35, 141, 228, 245);
+        const ImU32 outline = selected ? IM_COL32(255, 244, 205, 255) : IM_COL32(220, 246, 255, 230);
+        draw->AddCircleFilled(projected[i], selected ? 7.0f : 5.5f, fill, 12);
+        draw->AddCircle(projected[i], selected ? 7.0f : 5.5f, outline, 12, 1.5f);
+        const std::string label = std::to_string(waypointEdit_.points[i].point);
+        draw->AddText(ImVec2(projected[i].x + 8.0f, projected[i].y - 8.0f), IM_COL32(255, 255, 255, 245),
+                      label.c_str());
+    }
+}
+
+void AdtViewerModule::DrawWaypointPathPanel()
+{
+    if (!ImGui::Begin("Waypoint Path"))
+    {
+        ImGui::End();
+        return;
+    }
+    if (selKind_ != SelKind::Npc)
+    {
+        if (waypointDirty_)
+        {
+            ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.20f, 1.0f),
+                               "Path %u for guid %u still has unsaved edits.", waypointEdit_.id, waypointEditGuid_);
+            if (ImGui::Button("Save current path"))
+                SaveWaypointPathEdit();
+            ImGui::SameLine();
+            if (ImGui::Button("Discard route edits"))
+            {
+                waypointEdit_ = waypointEditOrig_;
+                waypointUndo_.Reset(waypointEdit_);
+                waypointDirty_ = false;
+                waypointPlacementMode_ = WaypointPlacementMode::None;
+                npcLayer_.SetWaypointPath(waypointEditGuid_, waypointEdit_);
+                waypointStatus_ = "Discarded unsaved route edits.";
+            }
+            if (!waypointStatus_.empty())
+                ImGui::TextDisabled("%s", waypointStatus_.c_str());
+        }
+        else
+        {
+            ResetWaypointPathEditor();
+            ImGui::TextWrapped("Select an NPC in the World Editor to view or author its waypoint route.");
+        }
+        ImGui::End();
+        return;
+    }
+    if (!svc_ || !svc_->connected || !svc_->activeDb)
+    {
+        ImGui::TextWrapped("Connect a project DB to load and edit waypoint paths.");
+        ImGui::End();
+        return;
+    }
+
+    // A dirty route remains pinned to its original NPC. Give the user a conscious choice rather
+    // than silently replacing it when a different NPC is selected in the viewport.
+    if (waypointDirty_ && waypointEditGuid_ != selGuid_)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.20f, 1.0f),
+                           "Path %u for guid %u has unsaved edits.", waypointEdit_.id, waypointEditGuid_);
+        ImGui::TextWrapped("Save it, or discard it before loading the newly selected NPC's route.");
+        if (ImGui::Button("Save current path"))
+            SaveWaypointPathEdit();
+        ImGui::SameLine();
+        if (ImGui::Button("Discard and load selected"))
+            SyncWaypointPathToSelection(true);
+        if (!waypointStatus_.empty())
+            ImGui::TextDisabled("%s", waypointStatus_.c_str());
+        ImGui::End();
+        return;
+    }
+
+    SyncWaypointPathToSelection();
+    const MapSpawn* spawn = npcLayer_.FindSpawn(selGuid_);
+    if (!spawn)
+    {
+        ImGui::TextDisabled("The selected NPC is no longer available on this map.");
+        ImGui::End();
+        return;
+    }
+
+    const std::string creature = svc_->lookups ? svc_->lookups->LabelCreature(spawn->entry)
+                                                : ("entry " + std::to_string(spawn->entry));
+    ImGui::TextUnformatted(creature.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("guid %u", spawn->guid);
+    ImGui::Checkbox("Show route in world", &showWaypointOverlay_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Enable motion when assigning", &enableWaypointMotionOnBind_);
+
+    ImGui::Separator();
+    ImGui::Text("Source: %s", WaypointSourceLabel(waypointSource_));
+    if (waypointSource_ == WaypointPathSource::TemplateAddon)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.77f, 0.24f, 1.0f),
+                           "This is shared by the template; saving edits affects every spawn using it.");
+        ImGui::BeginDisabled(!waypointLoaded_);
+        if (ImGui::Button("Make local copy"))
+            CreateOrCloneLocalWaypointPath(true);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled("recommended before map-specific edits");
+    }
+    else if (waypointSource_ == WaypointPathSource::SpawnAddon)
+    {
+        if (spawn->spawnPathId != 0)
+        {
+            if (ImGui::Button("Clear local path"))
+                ClearLocalWaypointPath();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Keep this spawn's addon fields but set path_id to 0. In TrinityCore an existing creature_addon row does not fall back to the template route.");
+        }
+        else
+            ImGui::TextDisabled("This spawn addon has path_id 0, so it currently suppresses the template route.");
+        if (spawn->templatePathId != 0)
+        {
+            ImGui::SameLine();
+            if (ImGui::Button("Use template path ID locally"))
+                BindExistingWaypointPath(spawn->templatePathId);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Copies the template route id into this spawn's existing addon without removing its other addon fields.");
+        }
+    }
+
+    ImGui::SetNextItemWidth(150.0f);
+    InputU32("Path ID", waypointBindId_);
+    ImGui::SameLine();
+    if (ImGui::Button("Assign as local route") && waypointBindId_ != 0)
+        BindExistingWaypointPath(waypointBindId_);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(waypointDirty_);
+    if (ImGui::Button(waypointLoaded_ ? "New local route" : "Create local route"))
+        CreateOrCloneLocalWaypointPath(false);
+    ImGui::EndDisabled();
+    if (waypointDirty_ && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Save or revert the current route first. Use 'Make local copy' to preserve its edits.");
+
+    if (!waypointLoaded_)
+    {
+        if (!waypointStatus_.empty())
+            ImGui::TextDisabled("%s", waypointStatus_.c_str());
+        ImGui::TextWrapped("Assign an existing Path ID, or create a local route. New routes start at the NPC's home position; use \"Place on terrain\" to add more points from the 3D world.");
+        ImGui::End();
+        return;
+    }
+
+    if (spawn->movementType != 2)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.77f, 0.24f, 1.0f),
+                           "This spawn is not using waypoint movement yet.");
+        ImGui::SameLine();
+        if (ImGui::Button("Enable waypoint movement"))
+            EnableSelectedNpcWaypointMotion();
+    }
+
+    ImGui::SeparatorText(("Path " + std::to_string(waypointEdit_.id) + " — " +
+                          std::to_string(waypointEdit_.points.size()) + " points").c_str());
+    ImGui::BeginDisabled(!waypointDirty_);
+    if (ImGui::Button("Save route"))
+        SaveWaypointPathEdit();
+    ImGui::SameLine();
+    if (ImGui::Button("Revert route"))
+    {
+        waypointEdit_ = waypointEditOrig_;
+        waypointUndo_.Reset(waypointEdit_);
+        waypointDirty_ = false;
+        waypointPlacementMode_ = WaypointPlacementMode::None;
+        waypointSelected_ = waypointEdit_.points.empty() ? -1 :
+                             std::min(waypointSelected_, static_cast<int>(waypointEdit_.points.size()) - 1);
+        npcLayer_.SetWaypointPath(waypointEditGuid_, waypointEdit_);
+        waypointStatus_ = "Reverted unsaved route edits.";
+    }
+    ImGui::EndDisabled();
+    if (waypointDirty_)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.20f, 1.0f), "unsaved preview");
+    }
+    if (!waypointStatus_.empty())
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", waypointStatus_.c_str());
+    }
+
+    if (ImGui::Button("Add at NPC home"))
+        AddWaypointAt(glm::vec3(spawn->x, spawn->y, spawn->z));
+    ImGui::SameLine();
+    const bool addMode = waypointPlacementMode_ == WaypointPlacementMode::Add;
+    if (ImGui::Button(addMode ? "Stop placing" : "Place on terrain"))
+        waypointPlacementMode_ = addMode ? WaypointPlacementMode::None : WaypointPlacementMode::Add;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("While active, right-click terrain in the World Editor to append a waypoint after the selected point.");
+    ImGui::SameLine();
+    const bool canMove = waypointSelected_ >= 0 && waypointSelected_ < static_cast<int>(waypointEdit_.points.size());
+    ImGui::BeginDisabled(!canMove);
+    const bool moveMode = waypointPlacementMode_ == WaypointPlacementMode::MoveSelected;
+    if (ImGui::Button(moveMode ? "Stop moving point" : "Move selected on terrain"))
+        waypointPlacementMode_ = moveMode ? WaypointPlacementMode::None : WaypointPlacementMode::MoveSelected;
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Renumber 1..N"))
+    {
+        const WaypointPath before = waypointEdit_;
+        ReindexWaypointPoints();
+        waypointUndo_.Push(before);
+        MarkWaypointPathDirty();
+    }
+    if (waypointPlacementMode_ != WaypointPlacementMode::None)
+        ImGui::TextColored(ImVec4(0.35f, 0.78f, 1.0f, 1.0f), "Terrain tool active — right-click the ground in the World Editor.");
+
+    const WaypointPath tableBefore = waypointEdit_;
+    int moveUp = -1, moveDown = -1, erase = -1, duplicate = -1;
+    bool changed = false;
+    ImGui::BeginChild("##waypoint_rows", ImVec2(0, 270), true);
+    if (ImGui::BeginTable("##waypoints", 9, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                               ImGuiTableFlags_ScrollX | ImGuiTableFlags_SizingFixedFit))
+    {
+        ImGui::TableSetupColumn("#");
+        ImGui::TableSetupColumn("Position (X, Y, Z)", ImGuiTableColumnFlags_WidthFixed, 250.0f);
+        ImGui::TableSetupColumn("Facing");
+        ImGui::TableSetupColumn("Delay");
+        ImGui::TableSetupColumn("Move");
+        ImGui::TableSetupColumn("Event");
+        ImGui::TableSetupColumn("Action");
+        ImGui::TableSetupColumn("%");
+        ImGui::TableSetupColumn("Tools");
+        ImGui::TableHeadersRow();
+        static const char* kMoveTypes[] = {"Walk", "Run", "Land", "Take off"};
+        for (int i = 0; i < static_cast<int>(waypointEdit_.points.size()); ++i)
+        {
+            WaypointPoint& p = waypointEdit_.points[i];
+            ImGui::PushID(i);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            if (ImGui::Selectable(std::to_string(p.point).c_str(), i == waypointSelected_))
+                waypointSelected_ = i;
+            ImGui::TableSetColumnIndex(1);
+            float pos[3] = {p.x, p.y, p.z};
+            ImGui::SetNextItemWidth(240.0f);
+            if (ImGui::InputFloat3("##pos", pos, "%.3f"))
+            {
+                p.x = pos[0]; p.y = pos[1]; p.z = pos[2];
+                changed = true;
+            }
+            ImGui::TableSetColumnIndex(2);
+            ImGui::SetNextItemWidth(85.0f);
+            changed |= InputFloatField("##face", p.o);
+            ImGui::TableSetColumnIndex(3);
+            ImGui::SetNextItemWidth(80.0f);
+            changed |= InputU32("##delay", p.delay);
+            ImGui::TableSetColumnIndex(4);
+            int move = std::min<int>(p.moveType, IM_ARRAYSIZE(kMoveTypes) - 1);
+            ImGui::SetNextItemWidth(82.0f);
+            if (ImGui::Combo("##move", &move, kMoveTypes, IM_ARRAYSIZE(kMoveTypes)))
+            {
+                p.moveType = static_cast<uint8_t>(move);
+                changed = true;
+            }
+            ImGui::TableSetColumnIndex(5);
+            ImGui::SetNextItemWidth(60.0f);
+            changed |= InputU8("##event", p.moveEvent);
+            ImGui::TableSetColumnIndex(6);
+            ImGui::SetNextItemWidth(86.0f);
+            changed |= InputU32("##action", p.action);
+            ImGui::TableSetColumnIndex(7);
+            ImGui::SetNextItemWidth(52.0f);
+            if (InputU8("##chance", p.actionChance))
+            {
+                p.actionChance = std::min<uint8_t>(100, p.actionChance);
+                changed = true;
+            }
+            ImGui::TableSetColumnIndex(8);
+            if (ImGui::SmallButton("^")) moveUp = i;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("v")) moveDown = i;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("+")) duplicate = i;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) erase = i;
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndChild();
+
+    bool structural = false;
+    if (moveUp > 0)
+    {
+        std::swap(waypointEdit_.points[moveUp], waypointEdit_.points[moveUp - 1]);
+        waypointSelected_ = moveUp - 1;
+        structural = true;
+    }
+    else if (moveDown >= 0 && moveDown + 1 < static_cast<int>(waypointEdit_.points.size()))
+    {
+        std::swap(waypointEdit_.points[moveDown], waypointEdit_.points[moveDown + 1]);
+        waypointSelected_ = moveDown + 1;
+        structural = true;
+    }
+    else if (duplicate >= 0)
+    {
+        WaypointPoint copy = waypointEdit_.points[duplicate];
+        copy.sourceExists = false;
+        copy.sourcePoint = 0;
+        waypointEdit_.points.insert(waypointEdit_.points.begin() + duplicate + 1, copy);
+        waypointSelected_ = duplicate + 1;
+        structural = true;
+    }
+    else if (erase >= 0)
+    {
+        if (waypointEdit_.points.size() <= 1)
+            waypointStatus_ = "A route must keep at least one point. Clear the local path or assign another route instead.";
+        else
+        {
+            waypointEdit_.points.erase(waypointEdit_.points.begin() + erase);
+            waypointSelected_ = std::min(erase, static_cast<int>(waypointEdit_.points.size()) - 1);
+            structural = true;
+        }
+    }
+    if (structural)
+    {
+        ReindexWaypointPoints();
+        changed = true;
+    }
+    if (changed)
+    {
+        waypointUndo_.Push(tableBefore);
+        MarkWaypointPathDirty();
+    }
+
+    if (waypointSelected_ >= 0 && waypointSelected_ < static_cast<int>(waypointEdit_.points.size()) &&
+        ImGui::CollapsingHeader("Selected point details"))
+    {
+        WaypointPoint& point = waypointEdit_.points[waypointSelected_];
+        if (BeginFieldTable("waypointdetail", 170.0f))
+        {
+            FieldRow("Waypoint GUID (wpguid)", "Optional script-facing waypoint identifier. Leave 0 unless a script references it.");
+            const WaypointPath beforeDetail = waypointEdit_;
+            if (InputU32("##wpguid", point.waypointGuid))
+            {
+                waypointUndo_.Push(beforeDetail);
+                MarkWaypointPathDirty();
+            }
+            FieldRow("Source row", "The original point number used to update this row in place. New points have no source row until saved.");
+            ImGui::TextDisabled(point.sourceExists ? ("point " + std::to_string(point.sourcePoint)).c_str()
+                                                    : "new point");
+            EndFieldTable();
+        }
+        if (ImGui::Button("Frame selected point"))
+        {
+            const glm::vec3 origin = streamer_.origin();
+            camera_.Frame(glm::vec3(point.x - origin.x, point.y - origin.y, point.z), 25.0f);
+        }
+    }
+
+    ImGui::TextDisabled("Click a blue route marker in the world to select it. Orientation 0 keeps the creature's movement-facing; non-zero facing is applied on arrival.");
+    ImGui::End();
+}
+
 // Docked panel that reflects the selected GameObject's full `gameobject` row (same working-copy +
 // Save/Revert + undo model as the NPC panel).
 void AdtViewerModule::DrawGoInstancePanel()
@@ -955,6 +1791,11 @@ void AdtViewerModule::DrawSelectionToolbar()
         opButton("Scale", ImGuizmo::SCALE);
     }
     ImGui::SameLine();
+    if (ImGui::Button("Snap to ground"))
+        SnapSelectionToGround();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Raycast terrain below the selected placement, then save it as one undoable transform.");
+    ImGui::SameLine();
     bool world = (gizmoMode_ == ImGuizmo::WORLD);
     if (ImGui::Checkbox("World", &world)) gizmoMode_ = world ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
     ImGui::SameLine();
@@ -1016,6 +1857,11 @@ void AdtViewerModule::UpdateHoverAndSelection(const glm::mat4& view, const glm::
     npcLayer_.SetHighlight(0, glm::vec4(0.0f));
 
     if (!viewportHovered || gizmoBusy)
+        return;
+
+    // Route markers have priority over world-model picking. Otherwise a click on a waypoint sitting
+    // inside an NPC's model would deselect the route instead of selecting its point for terrain moves.
+    if (TrySelectWaypointOverlay(view, proj, p0, w, h, viewportHovered))
         return;
 
     ImGuiIO& io = ImGui::GetIO();
@@ -1102,7 +1948,7 @@ void AdtViewerModule::RunGizmo(const glm::mat4& view, const glm::mat4& proj, con
     // Draw on THIS window's draw list (not the foreground list). ImGuizmo gates all handle
     // hit-testing on IsHoveringWindow(), which resolves the draw list's owner window by name — the
     // foreground list ("##Foreground") matches no window, so the gate fails and the gizmo can never
-    // be grabbed. The window list's owner is "ADT Viewer", so hover works. RunGizmo is called AFTER
+    // be grabbed. The window list belongs to the World Editor (stable ImGui ID "ADT Viewer"), so hover works. RunGizmo is called AFTER
     // the 3D image is blitted (same window draw list), so the gizmo still renders on top.
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     ImGuizmo::SetRect(p0.x, p0.y, (float)w, (float)h);
@@ -1170,6 +2016,93 @@ void AdtViewerModule::ApplyGizmoEdit()
         if (!npcLayer_.SetSpawnHome(selGuid_, t.x + origin.x, t.y + origin.y, t.z, yaw))
             ClearSelection();
     }
+}
+
+// Snap the selected placement's origin to the terrain directly below it. Unlike simply changing
+// Z from a field, this uses the same loaded ADT triangles as right-click placement, works in the
+// streamer's local frame, persists through the normal save path, and records one undoable transform.
+void AdtViewerModule::SnapSelectionToGround()
+{
+    if (selKind_ == SelKind::None)
+        return;
+
+    glm::vec3 local;
+    const glm::vec3 origin = streamer_.origin();
+    if (selKind_ == SelKind::Doodad)
+    {
+        glm::mat4 transform(1.0f);
+        if (!streamer_.ObjectTransform(selUid_, transform))
+        {
+            ClearSelection();
+            return;
+        }
+        local = glm::vec3(transform[3]);
+    }
+    else if (selKind_ == SelKind::GameObject)
+    {
+        const MapGameObject* g = goLayer_.FindSpawn(selGuid_);
+        if (!g)
+        {
+            ClearSelection();
+            return;
+        }
+        local = glm::vec3(g->x - origin.x, g->y - origin.y, g->z);
+    }
+    else
+    {
+        const MapSpawn* n = npcLayer_.FindSpawn(selGuid_);
+        if (!n)
+        {
+            ClearSelection();
+            return;
+        }
+        local = glm::vec3(n->x - origin.x, n->y - origin.y, n->z);
+    }
+
+    glm::vec3 ground;
+    float hitT = -1.0f;
+    int tileX = 0, tileY = 0;
+    // Client terrain is far below this conservative top-of-world start. WMO-only maps have no ADT
+    // ground hit and safely report the explanatory status below.
+    const glm::vec3 rayOrigin(local.x, local.y, 10000.0f);
+    if (!streamer_.GroundHit(rayOrigin, glm::vec3(0.0f, 0.0f, -1.0f), ground, hitT, tileX, tileY))
+    {
+        saveStatus_ = "No loaded terrain below this selection — fly closer to an ADT tile and try again.";
+        return;
+    }
+
+    const AdtXform before = CaptureSelection();
+    if (selKind_ == SelKind::Doodad)
+    {
+        glm::mat4 transform(1.0f);
+        if (!streamer_.ObjectTransform(selUid_, transform))
+            return;
+        transform[3].z = ground.z;
+        streamer_.SetObjectTransform(selUid_, transform);
+    }
+    else if (selKind_ == SelKind::GameObject)
+    {
+        if (MapGameObject* g = goLayer_.FindSpawn(selGuid_))
+            g->z = ground.z;
+    }
+    else if (const MapSpawn* n = npcLayer_.FindSpawn(selGuid_))
+    {
+        npcLayer_.SetSpawnHome(selGuid_, n->x, n->y, ground.z, n->o);
+    }
+
+    const AdtXform after = CaptureSelection();
+    if (after.kind == SelKind::None || SameXform(before, after))
+    {
+        saveStatus_ = "Selection is already on the terrain.";
+        return;
+    }
+    CommitSelectionToDb();
+    undo_.Push(MakeCommand([this, before]() { ApplyAndPersist(before); },
+                           [this, after]() { ApplyAndPersist(after); }, "Snap object to terrain"));
+    const std::string snapped = "Snapped to terrain (tile " + std::to_string(tileX) + ", " +
+                                std::to_string(tileY) + ").";
+    if (saveStatus_.rfind("Save failed:", 0) != 0)
+        saveStatus_ = snapped + " " + saveStatus_;
 }
 
 // Persist the moved DB spawn (called once, on gizmo release). Doodads have no DB row.
@@ -1528,6 +2461,21 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
     int gtx = 0, gty = 0;
     if (!streamer_.GroundHit(ray.origin, ray.dir, gLocal, gT, gtx, gty))
         return;   // no ground under the cursor
+
+    // Waypoint terrain tools intentionally take precedence over object context menus: a route often
+    // runs through its owning NPC/model, and the user explicitly armed this mode in the Waypoint
+    // Path panel. The world hit is converted back to TrinityCore coordinates before it is stored.
+    if (waypointPlacementMode_ != WaypointPlacementMode::None && waypointLoaded_ &&
+        waypointEditGuid_ != 0 && waypointEditGuid_ == selGuid_ && selKind_ == SelKind::Npc)
+    {
+        const glm::vec3 world(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z);
+        if (waypointPlacementMode_ == WaypointPlacementMode::Add)
+            AddWaypointAt(world);
+        else
+            MoveSelectedWaypointTo(world);
+        return;
+    }
+
     // If an object is closer than the ground hit, the right-click was on that object: select it and
     // open a context menu (move/delete) rather than the add-here popup.
     float td = -1.0f, tg = -1.0f, tn = -1.0f;
