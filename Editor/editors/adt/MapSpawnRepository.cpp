@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <limits>
 #include <set>
@@ -199,6 +200,82 @@ DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
         }
     }
     return DbError{};
+}
+
+DbError MapSpawnRepository::LoadCreatureFormationsForMap(
+    IDatabase& db, uint32_t mapId, std::vector<CreatureFormationMember>& out) const
+{
+    out.clear();
+    DbError err;
+    // SELECT cf.* keeps this loader schema-adaptive: older databases simply lack point_1/point_2,
+    // while newer revisions expose them through sql::Row by name.
+    auto rs = db.Query("SELECT cf.* FROM creature_formations cf "
+                       "JOIN creature c ON c.guid = cf.memberGUID WHERE c.map=" +
+                       std::to_string(mapId) + " ORDER BY cf.leaderGUID, cf.memberGUID", err);
+    if (!rs)
+        return err;
+    while (rs->Next())
+    {
+        sql::Row row(*rs);
+        CreatureFormationMember f;
+        f.memberGuid = row.U("memberGUID");
+        f.leaderGuid = row.U("leaderGUID");
+        f.distance = row.F("dist");
+        f.angle = row.F("angle");
+        f.groupAi = static_cast<uint8_t>(row.U("groupAI"));
+        f.point1 = row.Ua({"point_1", "point1"});
+        f.point2 = row.Ua({"point_2", "point2"});
+        if (f.memberGuid != 0)
+            out.push_back(std::move(f));
+    }
+    return DbError{};
+}
+
+DbError MapSpawnRepository::SaveCreatureFormation(IDatabase& db,
+                                                   const CreatureFormationMember& formation) const
+{
+    if (formation.memberGuid == 0 || formation.leaderGuid == 0)
+        return DbError{false, "Formation member and leader guids are required."};
+    if (!std::isfinite(formation.distance) || formation.distance < 0.0f ||
+        !std::isfinite(formation.angle) || formation.angle < 0.0f || formation.angle > 360.0f)
+        return DbError{false, "Formation distance must be non-negative and angle must be between 0 and 360 degrees."};
+
+    static const std::vector<std::string> cols = sql::SplitCols(
+        "memberGUID, leaderGUID, dist, angle, groupAI, point_1, point_2");
+    sql::ValueList values(db);
+    values.UInt(formation.memberGuid);
+    values.UInt(formation.leaderGuid);
+    values.Float(formation.distance);
+    values.Float(formation.angle);
+    values.UInt(formation.groupAi);
+    values.UInt(formation.point1);
+    values.UInt(formation.point2);
+    const std::set<std::string> existing = sql::ExistingCols(db, "creature_formations");
+
+    db.BeginTransaction();
+    DbError err;
+    db.Execute(sql::FilteredUpsert("creature_formations", cols, values.tokens, existing, "memberGUID"), err);
+    if (!err.ok)
+    {
+        db.Rollback();
+        return err;
+    }
+    return db.Commit();
+}
+
+DbError MapSpawnRepository::DeleteCreatureFormation(IDatabase& db, uint32_t memberGuid) const
+{
+    if (memberGuid == 0)
+        return DbError{false, "A formation member guid is required."};
+    db.BeginTransaction();
+    DbError err;
+    db.Execute("DELETE FROM creature_formations WHERE memberGUID=" + std::to_string(memberGuid), err);
+    if (!err.ok)
+    {
+        db.Rollback();
+        return err;
+    }
+    return db.Commit();
 }
 
 DbError MapSpawnRepository::LoadWaypointPath(IDatabase& db, uint32_t pathId, WaypointPath& out) const

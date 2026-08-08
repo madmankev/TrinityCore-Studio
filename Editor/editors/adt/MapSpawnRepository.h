@@ -65,6 +65,20 @@ struct GameEventInfo
     std::string description;
 };
 
+// One creature_formations row. memberGuid is the primary key; a leader commonly has a self-row
+// with distance/angle zero. point1/point2 are supported by newer 3.3.5a schema revisions for
+// path-direction angle swaps and are safely ignored on older tables by schema-adaptive writes.
+struct CreatureFormationMember
+{
+    uint32_t memberGuid = 0;
+    uint32_t leaderGuid = 0;
+    float    distance = 0.0f;
+    float    angle = 0.0f;      // degrees (0..360)
+    uint8_t  groupAi = 0;
+    uint32_t point1 = 0;
+    uint32_t point2 = 0;
+};
+
 // Which addon supplied a creature's resolved waypoint path. TrinityCore uses a creature_addon row
 // wholesale when one exists (even path_id = 0), otherwise it uses creature_template_addon. Keeping
 // that distinction prevents the World Editor from incorrectly claiming a spawn inherits a template
@@ -151,6 +165,14 @@ public:
     // Load every creature spawn on `mapId`, joined to its template (model/scale/speed), its
     // template addon, and its optional creature_addon spawn override. `out` is replaced.
     DbError LoadSpawnsForMap(IDatabase& db, uint32_t mapId, std::vector<MapSpawn>& out) const;
+
+    // Load formations whose member spawn belongs to `mapId`; a missing formation table is reported
+    // to the caller but the core spawn layers remain usable. Save/delete are per-member and safe for
+    // both Live and SQL Export write modes.
+    DbError LoadCreatureFormationsForMap(IDatabase& db, uint32_t mapId,
+                                         std::vector<CreatureFormationMember>& out) const;
+    DbError SaveCreatureFormation(IDatabase& db, const CreatureFormationMember& formation) const;
+    DbError DeleteCreatureFormation(IDatabase& db, uint32_t memberGuid) const;
 
     // Load one waypoint path (all waypoint_data rows with id == pathId, ordered by point), including
     // 3.3.5a event/action fields. Newly loaded points retain source identity for safe visual saves.

@@ -91,6 +91,14 @@ bool GameObjectLayer::RemoveGameObject(uint32_t guid)
     return false;
 }
 
+void GameObjectLayer::SnapshotGameObjects(std::vector<MapGameObject>& out) const
+{
+    out.clear();
+    out.reserve(gos_.size());
+    for (const Go& go : gos_)
+        out.push_back(go.data);
+}
+
 void GameObjectLayer::SetMoTransports(std::vector<MoTransportDef> defs)
 {
     moTransports_.clear();

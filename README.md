@@ -33,9 +33,10 @@ panel + log across the bottom.
   a Lock id; a Chest's `Data1` is a loot id) with id-name pickers where a field
   references another table - plus addon, locales, quest items, loot, and spawns.
 - **World Editor** - streams whole ADT maps from client data, renders terrain, doodads,
-  WMOs, NPCs, GameObjects, transports, phases/events/pools, and provides click selection,
-  a transform gizmo, right-click placement, deletion, undo/redo, spawn-instance forms, and
-  an in-world **waypoint path editor** for NPC routes.
+  WMOs, NPCs, GameObjects, transports, phases/events/pools, and provides a map overview,
+  coordinate bookmarks, a searchable world outliner, precise transforms, rapid spawn brushes,
+  formation links, right-click placement, deletion, undo/redo, spawn-instance forms, and an
+  in-world **waypoint path editor** for NPC routes.
 
 ### World Editor workflow
 
@@ -43,26 +44,38 @@ The World Editor needs both client data (for terrain/models) and a project datab
 spawns). Choose a map in **World Browser**, fly or orbit around the streamed terrain, then
 turn on **Edit**:
 
-1. **Move or place content:** click an NPC/GameObject/doodad to select it, then use the
-   Move/Rotate/Scale gizmo or **Snap to ground**. Right-click terrain to add an NPC,
-   GameObject, M2, or WMO; right-click an existing object for its context menu. DB spawns
-   save transactionally on gizmo release; ADT placements are batched into the project's
-   `edited-client` overlay.
-2. **Edit an NPC route:** select an NPC and open **Waypoint Path**. The panel identifies
-   whether its route comes from the creature template (shared) or its `creature_addon`
-   row (local). Use **Make local copy** before changing a shared route when the change is
-   map/spawn-specific; creating that local addon carries over the template's visual addon
-   settings so mounted/aura-equipped NPCs keep their appearance.
-3. **Author in 3D:** click blue numbered route markers to select a point. Add a point at
+1. **Navigate a real map:** use **Locations** to enter exact TrinityCore X/Y/Z coordinates,
+   click the interactive 64×64 map overview to stream/fly to a tile, or save reusable named
+   bookmarks. The searchable **World Outliner** lists every NPC and GameObject spawn on the
+   map—not only the ones currently within render range—and focusing a row streams it into view
+   (or press **F** to frame the current selection).
+2. **Move or place content:** click an NPC/GameObject/doodad to select it, then use the
+   Move/Rotate/Scale gizmo, **Transform** panel (staged exact coordinates, yaw, copy/paste,
+   nudging), or **Snap to ground**. Right-click terrain to add an NPC, GameObject, M2, or WMO;
+   right-click an existing object for its context menu. DB spawns save transactionally on gizmo
+   release; ADT placements are batched into the project's `edited-client` overlay.
+3. **Dress a map quickly:** choose an NPC or GameObject template in **Spawn Palette**, arm the
+   brush, and right-click terrain repeatedly. The palette retains yaw and has a per-session
+   minimum-spacing guard; each placed spawn remains an ordinary undoable database instance. You
+   can also load the selected NPC/GO template straight into the brush from **Transform**.
+4. **Build formations:** select an NPC and use **Formation** to create a leader/self row, join a
+   leader GUID, set distance/angle/group-AI/path-direction points, or remove membership. Purple
+   world links make leader/member relationships visible and selectable in context.
+5. **Edit an NPC route:** select an NPC and open **Waypoint Path**. The panel identifies whether
+   its route comes from the creature template (shared) or its `creature_addon` row (local). Use
+   **Make local copy** before changing a shared route when the change is map/spawn-specific;
+   creating that local addon carries over the template's visual addon settings so mounted/
+   aura-equipped NPCs keep their appearance.
+6. **Author paths in 3D:** click blue numbered route markers to select a point. Add a point at
    the NPC home, arm **Place on terrain** and right-click ground to insert a point, or arm
    **Move selected on terrain** to reposition one. The route overlay, loop line, delays,
-   orientation, walk/run mode, events, actions, chances, and `wpguid` all preview and edit
-   in place. Route-table changes have local Ctrl+Z/Ctrl+Y before Save.
-4. **Save deliberately:** route edits are an unsaved live preview until **Save route**.
-   Existing `waypoint_data` rows are updated transactionally rather than replaced, so
-   project-specific columns survive point moves/reordering. A spawn addon row takes
-   precedence over template addon data in TrinityCore; clearing its `path_id` keeps its
-   other addon fields and intentionally leaves that spawn without a route.
+   orientation, walk/run mode, events, actions, chances, and `wpguid` all preview and edit in
+   place. Route-table changes have local Ctrl+Z/Ctrl+Y before Save.
+7. **Save deliberately:** route edits are an unsaved live preview until **Save route**. Existing
+   `waypoint_data` rows are updated transactionally rather than replaced, so project-specific
+   columns survive point moves/reordering. A spawn addon row takes precedence over template addon
+   data in TrinityCore; clearing its `path_id` keeps its other addon fields and intentionally
+   leaves that spawn without a route.
 
 ### Shared features
 

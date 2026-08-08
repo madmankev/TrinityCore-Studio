@@ -53,6 +53,10 @@ public:
     int modelCount() const { return static_cast<int>(models_.size()); }
     bool cappedLastFrame() const { return cappedLastFrame_; }
 
+    // Copy canonical map-spawn data for World Editor browsing/search. The returned values are
+    // snapshots; mutations still go through FindSpawn()/the repository so render state stays valid.
+    void SnapshotGameObjects(std::vector<MapGameObject>& out) const;
+
     // --- object selection / manipulation (ADT viewer) ---
     // Ray-pick the nearest visible GameObject (ray + origin in the streamer-local frame). Honors
     // the same visibility filter + cull distance as Build. Returns the spawn's guid + hit distance

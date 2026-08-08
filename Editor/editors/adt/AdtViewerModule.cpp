@@ -84,12 +84,22 @@ void AdtViewerModule::OnClientDataLoaded()
     goLayer_.Clear();
     npcStatus_.clear();
     goStatus_.clear();
+    formations_.clear();
+    formationsAvailable_ = false;
+    formationEdit_ = FormationState{};
+    formationOrig_ = FormationState{};
+    formationEditGuid_ = 0;
+    formationDirty_ = false;
+    brushPlacements_.clear();
+    brushActive_ = false;
+    outlinerDirty_ = true;
 }
 
 void AdtViewerModule::OnConnected()
 {
     LoadNpcSpawns();       // a DB is now available — populate NPCs + GameObjects for the open map
     LoadGameObjects();
+    LoadFormations();
 }
 
 void AdtViewerModule::OnDisconnected()
@@ -103,6 +113,56 @@ void AdtViewerModule::OnShutdown()
     npcLayer_.Clear();      // free NPC/GO models while the renderer is still alive
     goLayer_.Clear();
     streamer_.Shutdown();   // join workers + free GPU while the renderer/client data are still alive
+}
+
+void AdtViewerModule::HandleShortcuts()
+{
+    // Shell already excludes text input before dispatching module shortcuts. F mirrors the common
+    // DCC/world-editor convention: center the streamed world around the current selection.
+    if (ImGui::IsKeyPressed(ImGuiKey_F, false) && selKind_ != SelKind::None)
+        FrameSelection();
+}
+
+void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
+{
+    bookmarks_.clear();
+    try
+    {
+        if (!editorNode.contains("bookmarks") || !editorNode["bookmarks"].is_array())
+            return;
+        for (const nlohmann::json& j : editorNode["bookmarks"])
+        {
+            if (!j.is_object())
+                continue;
+            WorldBookmark b;
+            b.name = j.value("name", std::string());
+            b.mapId = j.value("mapId", 0u);
+            b.mapDir = j.value("mapDir", std::string());
+            b.world.x = j.value("x", 0.0f);
+            b.world.y = j.value("y", 0.0f);
+            b.world.z = j.value("z", 0.0f);
+            b.radius = std::clamp(j.value("radius", 75.0f), 5.0f, 2000.0f);
+            if (b.name.empty() || b.mapDir.empty())
+                continue;
+            bookmarks_.push_back(std::move(b));
+            if (bookmarks_.size() >= 100)  // settings guard; plenty for a project without bloating config
+                break;
+        }
+    }
+    catch (...)
+    {
+        bookmarks_.clear();
+    }
+}
+
+void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
+{
+    nlohmann::json saved = nlohmann::json::array();
+    for (const WorldBookmark& b : bookmarks_)
+        saved.push_back({{"name", b.name}, {"mapId", b.mapId}, {"mapDir", b.mapDir},
+                         {"x", b.world.x}, {"y", b.world.y}, {"z", b.world.z},
+                         {"radius", b.radius}});
+    editorNode["bookmarks"] = std::move(saved);
 }
 
 void AdtViewerModule::Undo()
@@ -147,6 +207,7 @@ void AdtViewerModule::LoadNpcSpawns()
     {
         npcLayer_.SetSpawns({});
         npcStatus_ = "Connect a project's database to see NPCs.";
+        outlinerDirty_ = true;
         return;
     }
     std::vector<MapSpawn> spawns;
@@ -155,11 +216,13 @@ void AdtViewerModule::LoadNpcSpawns()
     {
         npcLayer_.SetSpawns({});
         npcStatus_ = "NPC load failed: " + e.message;
+        outlinerDirty_ = true;
         return;
     }
     const size_t n = spawns.size();
     npcLayer_.SetSpawns(std::move(spawns));
     npcStatus_ = std::to_string(n) + " NPC spawns on this map.";
+    outlinerDirty_ = true;
 }
 
 void AdtViewerModule::LoadGameObjects()
@@ -174,6 +237,7 @@ void AdtViewerModule::LoadGameObjects()
     {
         goLayer_.SetGameObjects({});
         goStatus_ = "Connect a project's database to see GameObjects.";
+        outlinerDirty_ = true;
         return;
     }
     std::vector<MapGameObject> gos;
@@ -182,6 +246,7 @@ void AdtViewerModule::LoadGameObjects()
     {
         goLayer_.SetGameObjects({});
         goStatus_ = "GameObject load failed: " + e.message;
+        outlinerDirty_ = true;
         return;
     }
     const size_t n = gos.size();
@@ -200,6 +265,27 @@ void AdtViewerModule::LoadGameObjects()
         eventSel_ = 0;   // previous selection no longer valid
 
     goStatus_ = std::to_string(n) + " GameObject spawns on this map.";
+    outlinerDirty_ = true;
+}
+
+void AdtViewerModule::LoadFormations()
+{
+    formations_.clear();
+    formationsAvailable_ = false;
+    formationEdit_ = FormationState{};
+    formationOrig_ = FormationState{};
+    formationEditGuid_ = 0;
+    formationDirty_ = false;
+    formationStatus_.clear();
+    if (!svc_ || !svc_->connected || !svc_->activeDb || (currentMapId_ == 0 && selectedMap_ < 0))
+        return;
+    const DbError e = spawnRepo_.LoadCreatureFormationsForMap(*svc_->activeDb, currentMapId_, formations_);
+    // A formation table is optional for older/custom projects. Keep the rest of the World Editor
+    // usable and surface the detail only in the Formation panel instead of failing map load.
+    if (!e.ok)
+        formationStatus_ = "Formation data unavailable: " + e.message;
+    else
+        formationsAvailable_ = true;
 }
 
 void AdtViewerModule::DrawPanels()
@@ -225,6 +311,11 @@ void AdtViewerModule::DrawPanels()
     }
 
     DrawBrowserPanel();
+    DrawOutlinerPanel();
+    DrawSpawnPalettePanel();
+    DrawLocationsPanel();
+    DrawTransformPanel();
+    DrawFormationPanel();
     DrawNpcInstancePanel();
     DrawGoInstancePanel();
     DrawWaypointPathPanel();
@@ -267,8 +358,11 @@ void AdtViewerModule::DrawBrowserPanel()
             OpenMapDir(selectedMapDir_, true);
             npcLayer_.Clear();   // drop the previous map's NPC + GO models
             goLayer_.Clear();
+            brushPlacements_.clear();
+            outlinerDirty_ = true;
             LoadNpcSpawns();     // query this map's spawns (no-op if not connected)
             LoadGameObjects();
+            LoadFormations();
         }
     }
     ImGui::EndChild();
@@ -296,10 +390,1058 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
     }
     error_.clear();
     loadedName_ = dir + (streamer_.wmoOnly() ? "  (WMO)" : "");
-    if (frameCamera)
+    if (pendingLocationFocus_ && pendingLocationMapDir_ == dir)
+    {
+        FrameWorldPosition(pendingLocationWorld_, pendingLocationRadius_);
+        pendingLocationFocus_ = false;
+        pendingLocationMapDir_.clear();
+    }
+    else if (frameCamera)
         camera_.Frame(streamer_.startPos(), streamer_.startRadius());
     if (svc_ && svc_->setStatus)
         svc_->setStatus("Opened map: " + dir);
+}
+
+
+SpawnFilter AdtViewerModule::CurrentSpawnFilter() const
+{
+    SpawnFilter filter;
+    filter.phaseMask = viewPhaseMask_;
+    filter.spawnMask = (diffSel_ == 0) ? 0xFFFFFFFFu : (1u << (diffSel_ - 1));
+    filter.activeEvent = (eventSel_ == 0) ? 0
+                         : (eventSel_ == 1) ? -1
+                         : (eventSel_ - 2 < static_cast<int>(gameEvents_.size())
+                                ? gameEvents_[eventSel_ - 2].id
+                                : 0);
+    filter.respectPools = respectPools_;
+    filter.showManualGroups = showManualGroups_;
+    return filter;
+}
+
+void AdtViewerModule::FrameWorldPosition(const glm::vec3& world, float radius)
+{
+    if (!streamerInit_)
+        return;
+    const glm::vec3 origin = streamer_.origin();
+    camera_.Frame(glm::vec3(world.x - origin.x, world.y - origin.y, world.z),
+                  std::max(radius, 5.0f));
+}
+
+void AdtViewerModule::FrameSelection()
+{
+    if (selKind_ == SelKind::None)
+        return;
+    const glm::vec3 origin = streamer_.origin();
+    if (selKind_ == SelKind::Npc)
+    {
+        if (const MapSpawn* s = npcLayer_.FindSpawn(selGuid_))
+            FrameWorldPosition(glm::vec3(s->x, s->y, s->z), std::max(25.0f, s->scale * 18.0f));
+    }
+    else if (selKind_ == SelKind::GameObject)
+    {
+        if (const MapGameObject* g = goLayer_.FindSpawn(selGuid_))
+            FrameWorldPosition(glm::vec3(g->x, g->y, g->z), std::max(30.0f, g->size * 25.0f));
+    }
+    else
+    {
+        glm::mat4 transform(1.0f);
+        if (streamer_.ObjectTransform(selUid_, transform))
+        {
+            const glm::vec3 local(transform[3]);
+            FrameWorldPosition(glm::vec3(local.x + origin.x, local.y + origin.y, local.z), 40.0f);
+        }
+    }
+}
+
+bool AdtViewerModule::CanBrushPlace(const glm::vec3& world) const
+{
+    if (brushMinSpacing_ <= 0.01f)
+        return true;
+    const float min2 = brushMinSpacing_ * brushMinSpacing_;
+    for (const BrushPlacement& p : brushPlacements_)
+    {
+        if (p.kind != brushKind_ || p.entry != brushEntry_)
+            continue;
+        const glm::vec3 delta = p.world - world;
+        if (glm::dot(delta, delta) < min2)
+            return false;
+    }
+    return true;
+}
+
+void AdtViewerModule::RebuildOutliner()
+{
+    outlinerEntries_.clear();
+    std::vector<MapSpawn> npcs;
+    std::vector<MapGameObject> gos;
+    npcLayer_.SnapshotSpawns(npcs);
+    goLayer_.SnapshotGameObjects(gos);
+    outlinerEntries_.reserve(npcs.size() + gos.size());
+
+    for (const MapSpawn& s : npcs)
+    {
+        OutlinerEntry e;
+        e.kind = SelKind::Npc;
+        e.guid = s.guid;
+        e.entry = s.entry;
+        e.world = glm::vec3(s.x, s.y, s.z);
+        e.phaseMask = s.phaseMask;
+        e.spawnMask = s.spawnMask;
+        e.eventEntry = s.eventEntry;
+        e.poolHidden = s.poolHidden;
+        e.groupManual = s.groupManual;
+        e.label = svc_ && svc_->lookups ? svc_->lookups->LabelCreature(s.entry)
+                                        : ("entry " + std::to_string(s.entry));
+        e.searchKey = Lower(std::to_string(e.guid) + " " + std::to_string(e.entry) + " " + e.label);
+        outlinerEntries_.push_back(std::move(e));
+    }
+    for (const MapGameObject& g : gos)
+    {
+        OutlinerEntry e;
+        e.kind = SelKind::GameObject;
+        e.guid = g.guid;
+        e.entry = g.entry;
+        e.world = glm::vec3(g.x, g.y, g.z);
+        e.phaseMask = g.phaseMask;
+        e.spawnMask = g.spawnMask;
+        e.eventEntry = g.eventEntry;
+        e.poolHidden = g.poolHidden;
+        e.groupManual = g.groupManual;
+        e.label = svc_ && svc_->lookups ? svc_->lookups->LabelGameObject(g.entry)
+                                        : ("entry " + std::to_string(g.entry));
+        e.searchKey = Lower(std::to_string(e.guid) + " " + std::to_string(e.entry) + " " + e.label);
+        outlinerEntries_.push_back(std::move(e));
+    }
+    outlinerDirty_ = false;
+}
+
+void AdtViewerModule::DrawOutlinerPanel()
+{
+    if (!ImGui::Begin("World Outliner"))
+    {
+        ImGui::End();
+        return;
+    }
+    if (loadedName_.empty())
+    {
+        ImGui::TextWrapped("Open a map to browse all of its database spawns. The outliner is not limited by the current draw distance.");
+        ImGui::End();
+        return;
+    }
+    if (outlinerDirty_)
+        RebuildOutliner();
+
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##outlinersearch", "filter by name, entry, or guid", outlinerSearch_,
+                             sizeof(outlinerSearch_));
+    static const char* kKinds[] = {"All", "NPCs", "GameObjects"};
+    ImGui::SetNextItemWidth(130.0f);
+    ImGui::Combo("Type", &outlinerKind_, kKinds, IM_ARRAYSIZE(kKinds));
+    ImGui::SameLine();
+    ImGui::Checkbox("Visible only", &outlinerVisibleOnly_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Nearest first", &outlinerSortByDistance_);
+
+    const SpawnFilter filter = CurrentSpawnFilter();
+    const std::string query = Lower(outlinerSearch_);
+    outlinerFiltered_.clear();
+    outlinerFiltered_.reserve(outlinerEntries_.size());
+    for (int i = 0; i < static_cast<int>(outlinerEntries_.size()); ++i)
+    {
+        const OutlinerEntry& e = outlinerEntries_[i];
+        if (outlinerKind_ == 1 && e.kind != SelKind::Npc)
+            continue;
+        if (outlinerKind_ == 2 && e.kind != SelKind::GameObject)
+            continue;
+        if (outlinerVisibleOnly_ && !filter.Visible(e.phaseMask, e.spawnMask, e.eventEntry,
+                                                    e.poolHidden, e.groupManual))
+            continue;
+        if (!query.empty() && e.searchKey.find(query) == std::string::npos)
+            continue;
+        outlinerFiltered_.push_back(i);
+    }
+
+    const glm::vec3 localFocus = camera_.mode() == ViewportCamera::Mode::Fly ? camera_.Eye()
+                                                                               : camera_.center();
+    const glm::vec3 worldFocus(localFocus.x + streamer_.origin().x,
+                               localFocus.y + streamer_.origin().y, localFocus.z);
+    if (outlinerSortByDistance_)
+        std::sort(outlinerFiltered_.begin(), outlinerFiltered_.end(), [&](int a, int b) {
+            const glm::vec3 da = outlinerEntries_[a].world - worldFocus;
+            const glm::vec3 db = outlinerEntries_[b].world - worldFocus;
+            const float aa = glm::dot(da, da);
+            const float bb = glm::dot(db, db);
+            if (aa != bb)
+                return aa < bb;
+            return outlinerEntries_[a].guid < outlinerEntries_[b].guid;
+        });
+    ImGui::TextDisabled("%d shown / %d total spawns", static_cast<int>(outlinerFiltered_.size()),
+                        static_cast<int>(outlinerEntries_.size()));
+
+    ImGui::BeginChild("##outlinerrows", ImVec2(0, 0), true);
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(outlinerFiltered_.size()));
+    while (clipper.Step())
+        for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
+        {
+            const OutlinerEntry& e = outlinerEntries_[outlinerFiltered_[row]];
+            const bool selected = (selKind_ == e.kind && selGuid_ == e.guid);
+            const char* type = e.kind == SelKind::Npc ? "NPC" : "GO";
+            const std::string line = std::string(type) + "  #" + std::to_string(e.guid) +
+                                     "  " + e.label;
+            const std::string rowId = std::to_string(static_cast<int>(e.kind)) + ":" +
+                                      std::to_string(e.guid);
+            ImGui::PushID(rowId.c_str());
+            if (ImGui::Selectable(line.c_str(), selected))
+            {
+                if (e.kind == SelKind::Npc)
+                    SelectObject(SelKind::Npc, 0, 0, e.guid);
+                else
+                    SelectObject(SelKind::GameObject, 0, e.guid, 0);
+                FrameWorldPosition(e.world, e.kind == SelKind::Npc ? 40.0f : 55.0f);
+            }
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::BeginTooltip();
+                ImGui::Text("guid %u  entry %u", e.guid, e.entry);
+                ImGui::Text("X %.2f  Y %.2f  Z %.2f", e.world.x, e.world.y, e.world.z);
+                ImGui::TextDisabled("phase 0x%X  spawn 0x%X", e.phaseMask, e.spawnMask);
+                if (e.eventEntry)
+                    ImGui::TextDisabled("game event %d", e.eventEntry);
+                if (e.poolHidden)
+                    ImGui::TextDisabled("hidden by current pool simulation");
+                if (e.groupManual)
+                    ImGui::TextDisabled("manual spawn group");
+                ImGui::EndTooltip();
+            }
+            ImGui::PopID();
+        }
+    ImGui::EndChild();
+    ImGui::End();
+}
+
+void AdtViewerModule::DrawSpawnPalettePanel()
+{
+    if (!ImGui::Begin("Spawn Palette"))
+    {
+        ImGui::End();
+        return;
+    }
+    if (!svc_ || !svc_->connected || !svc_->activeDb)
+    {
+        ImGui::TextWrapped("Connect a project database to use rapid NPC/GameObject placement.");
+        ImGui::End();
+        return;
+    }
+    if (loadedName_.empty())
+    {
+        ImGui::TextWrapped("Open a map before arming the placement palette.");
+        ImGui::End();
+        return;
+    }
+
+    if (ImGui::RadioButton("NPC", &brushKind_, 0))
+    {
+        brushEntry_ = 0;
+        brushActive_ = false;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("GameObject", &brushKind_, 1))
+    {
+        brushEntry_ = 0;
+        brushActive_ = false;
+    }
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##brushsearch", "search by name or entry", brushSearch_, sizeof(brushSearch_));
+    ImGui::BeginChild("##brushresults", ImVec2(0, 180), true);
+    if (!svc_->lookups)
+        ImGui::TextDisabled("Template name lookup unavailable.");
+    else
+    {
+        const std::vector<NameEntry> results = brushKind_ == 0
+            ? svc_->lookups->SearchCreatures(brushSearch_, 150)
+            : svc_->lookups->SearchGameObjects(brushSearch_, 150);
+        for (const NameEntry& e : results)
+        {
+            const std::string label = std::to_string(e.id) + "  " + e.name;
+            if (ImGui::Selectable(label.c_str(), brushEntry_ == e.id))
+            {
+                brushEntry_ = e.id;
+                brushStatus_.clear();
+            }
+        }
+        if (results.empty())
+            ImGui::TextDisabled("No matching templates.");
+    }
+    ImGui::EndChild();
+
+    ImGui::SetNextItemWidth(145.0f);
+    InputU32("Entry", brushEntry_);
+    float yawDegrees = glm::degrees(brushYaw_);
+    ImGui::SetNextItemWidth(145.0f);
+    if (ImGui::InputFloat("Yaw (degrees)", &yawDegrees, 1.0f, 15.0f, "%.1f"))
+        brushYaw_ = glm::radians(yawDegrees);
+    ImGui::SetNextItemWidth(180.0f);
+    ImGui::DragFloat("Minimum spacing", &brushMinSpacing_, 0.1f, 0.0f, 100.0f, "%.1f yd");
+    if (ImGui::Button(brushActive_ ? "Stop placement brush" : "Arm placement brush"))
+    {
+        if (brushEntry_ == 0)
+            brushStatus_ = "Choose a template entry before arming the brush.";
+        else
+        {
+            brushActive_ = !brushActive_;
+            brushStatus_ = brushActive_ ? "Brush armed — right-click terrain to place repeatedly. Escape cancels."
+                                        : "Brush stopped.";
+        }
+    }
+    if (brushActive_)
+        ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.42f, 1.0f),
+                           "%s brush active: entry %u", brushKind_ == 0 ? "NPC" : "GameObject", brushEntry_);
+    if (!brushStatus_.empty())
+        ImGui::TextDisabled("%s", brushStatus_.c_str());
+    ImGui::Separator();
+    ImGui::TextWrapped("This is a rapid version of the right-click Add menu. Every stamp is a normal database spawn, gets its own undo command, and can be moved precisely afterward. The spacing guard applies only to stamps made in this session; set it to 0 to allow overlap.");
+    ImGui::End();
+}
+
+void AdtViewerModule::DrawLocationsPanel()
+{
+    if (!ImGui::Begin("Locations"))
+    {
+        ImGui::End();
+        return;
+    }
+    const bool mapOpen = streamerInit_ && !loadedName_.empty();
+    ImGui::SeparatorText("Coordinate navigator");
+    ImGui::BeginDisabled(!mapOpen);
+    ImGui::SetNextItemWidth(125.0f); ImGui::InputFloat("X", &locationX_, 0.0f, 0.0f, "%.3f");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(125.0f); ImGui::InputFloat("Y", &locationY_, 0.0f, 0.0f, "%.3f");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f); ImGui::InputFloat("Z", &locationZ_, 0.0f, 0.0f, "%.3f");
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::SliderFloat("Frame radius", &locationRadius_, 10.0f, 500.0f, "%.0f yd", ImGuiSliderFlags_Logarithmic);
+    if (ImGui::Button("Go to coordinates"))
+        FrameWorldPosition(glm::vec3(locationX_, locationY_, locationZ_), locationRadius_);
+    ImGui::SameLine();
+    if (ImGui::Button("Use camera focus"))
+    {
+        const glm::vec3 local = camera_.mode() == ViewportCamera::Mode::Fly ? camera_.Eye()
+                                                                              : camera_.center();
+        const glm::vec3 origin = streamer_.origin();
+        locationX_ = local.x + origin.x;
+        locationY_ = local.y + origin.y;
+        locationZ_ = local.z;
+    }
+    ImGui::EndDisabled();
+    if (!mapOpen)
+        ImGui::TextDisabled("Open a map before navigating to coordinates.");
+
+    if (mapOpen && !streamer_.wmoOnly())
+    {
+        ImGui::SeparatorText("Map overview");
+        const float side = std::max(128.0f, std::min(ImGui::GetContentRegionAvail().x, 300.0f));
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##tileoverview", ImVec2(side, side));
+        const bool mapHovered = ImGui::IsItemHovered();
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        draw->AddRectFilled(p0, ImVec2(p0.x + side, p0.y + side), IM_COL32(13, 18, 24, 255));
+        const float cell = side / 64.0f;
+        std::vector<uint8_t> exists(64 * 64, 0);
+        for (const auto& tile : streamer_.world().tiles)
+            if (tile.first >= 0 && tile.first < 64 && tile.second >= 0 && tile.second < 64)
+                exists[tile.second * 64 + tile.first] = 1;
+        for (int ty = 0; ty < 64; ++ty)
+            for (int tx = 0; tx < 64; ++tx)
+            {
+                if (!exists[ty * 64 + tx])
+                    continue;
+                const ImVec2 a(p0.x + tx * cell, p0.y + ty * cell);
+                const ImVec2 b(a.x + std::max(cell - 0.25f, 1.0f), a.y + std::max(cell - 0.25f, 1.0f));
+                const ImU32 color = streamer_.IsTileLoaded(tx, ty) ? IM_COL32(67, 177, 113, 255)
+                                   : streamer_.IsTilePending(tx, ty) ? IM_COL32(240, 184, 68, 255)
+                                                                     : IM_COL32(69, 89, 110, 255);
+                draw->AddRectFilled(a, b, color);
+            }
+        const glm::vec3 local = camera_.mode() == ViewportCamera::Mode::Fly ? camera_.Eye()
+                                                                              : camera_.center();
+        const glm::vec3 origin = streamer_.origin();
+        const float worldX = local.x + origin.x;
+        const float worldY = local.y + origin.y;
+        const int cx = std::clamp(static_cast<int>(std::floor(32.0f - worldY / adt::kTileSize)), 0, 63);
+        const int cy = std::clamp(static_cast<int>(std::floor(32.0f - worldX / adt::kTileSize)), 0, 63);
+        const ImVec2 cameraAt(p0.x + (cx + 0.5f) * cell, p0.y + (cy + 0.5f) * cell);
+        draw->AddCircleFilled(cameraAt, std::max(2.5f, cell * 1.2f), IM_COL32(255, 87, 87, 255), 12);
+        draw->AddRect(p0, ImVec2(p0.x + side, p0.y + side), IM_COL32(160, 180, 205, 255));
+        if (mapHovered)
+        {
+            const int tx = std::clamp(static_cast<int>((mouse.x - p0.x) / cell), 0, 63);
+            const int ty = std::clamp(static_cast<int>((mouse.y - p0.y) / cell), 0, 63);
+            if (exists[ty * 64 + tx])
+            {
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                {
+                    const glm::vec3 target((31.5f - ty) * adt::kTileSize,
+                                           (31.5f - tx) * adt::kTileSize, local.z);
+                    locationX_ = target.x; locationY_ = target.y; locationZ_ = target.z;
+                    FrameWorldPosition(target, adt::kTileSize * 1.8f);
+                }
+                ImGui::SetTooltip("Tile %d, %d%s", tx, ty,
+                                  streamer_.IsTileLoaded(tx, ty) ? " (loaded)"
+                                                                    : streamer_.IsTilePending(tx, ty) ? " (loading)" : "");
+            }
+        }
+        ImGui::TextDisabled("Green = streamed terrain, gold = loading, grey = map tile. Click a tile to fly there.");
+    }
+
+    ImGui::SeparatorText("Bookmarks");
+    ImGui::BeginDisabled(!mapOpen);
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##bookmarkname", "bookmark name", bookmarkName_, sizeof(bookmarkName_));
+    if (ImGui::Button("Save current location"))
+    {
+        WorldBookmark b;
+        b.name = bookmarkName_[0] ? bookmarkName_
+                                  : ("Location " + std::to_string(bookmarks_.size() + 1));
+        b.mapId = currentMapId_;
+        b.mapDir = selectedMapDir_;
+        b.world = glm::vec3(locationX_, locationY_, locationZ_);
+        b.radius = locationRadius_;
+        bookmarks_.push_back(std::move(b));
+        bookmarkName_[0] = 0;
+        if (svc_ && svc_->requestSaveSettings)
+            svc_->requestSaveSettings();
+    }
+    ImGui::EndDisabled();
+
+    int erase = -1;
+    ImGui::BeginChild("##bookmarklist", ImVec2(0, 0), true);
+    for (int i = 0; i < static_cast<int>(bookmarks_.size()); ++i)
+    {
+        const WorldBookmark& b = bookmarks_[i];
+        ImGui::PushID(i);
+        const std::string label = b.name + "  [" + b.mapDir + "]";
+        if (ImGui::Selectable(label.c_str(), false))
+        {
+            locationX_ = b.world.x;
+            locationY_ = b.world.y;
+            locationZ_ = b.world.z;
+            locationRadius_ = b.radius;
+            if (b.mapDir == selectedMapDir_ && mapOpen)
+                FrameWorldPosition(b.world, b.radius);
+            else if (streamerInit_)
+            {
+                pendingLocationFocus_ = true;
+                pendingLocationMapDir_ = b.mapDir;
+                pendingLocationWorld_ = b.world;
+                pendingLocationRadius_ = b.radius;
+                currentMapId_ = b.mapId;
+                for (int mi = 0; mi < static_cast<int>(mapList_.size()); ++mi)
+                    if (mapList_[mi].first == b.mapId || maps_[mapList_[mi].first].directory == b.mapDir)
+                    {
+                        selectedMap_ = mi;
+                        currentMapId_ = mapList_[mi].first;
+                        break;
+                    }
+                selectedMapDir_ = b.mapDir;
+                OpenMapDir(b.mapDir, false);
+                npcLayer_.Clear();
+                goLayer_.Clear();
+                brushPlacements_.clear();
+                brushActive_ = false;
+                outlinerDirty_ = true;
+                LoadNpcSpawns();
+                LoadGameObjects();
+                LoadFormations();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Delete"))
+            erase = i;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("X %.2f  Y %.2f  Z %.2f", b.world.x, b.world.y, b.world.z);
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    if (erase >= 0)
+    {
+        bookmarks_.erase(bookmarks_.begin() + erase);
+        if (svc_ && svc_->requestSaveSettings)
+            svc_->requestSaveSettings();
+    }
+    ImGui::End();
+}
+
+void AdtViewerModule::SyncTransformEdit()
+{
+    if (selKind_ == SelKind::None)
+    {
+        transformEdit_ = TransformEdit{};
+        return;
+    }
+    const uint64_t uid = selKind_ == SelKind::Doodad ? selUid_ : 0;
+    const uint32_t guid = selKind_ == SelKind::Doodad ? 0 : selGuid_;
+    if (transformEdit_.initialized && transformEdit_.kind == selKind_ &&
+        transformEdit_.uid == uid && transformEdit_.guid == guid)
+        return;
+
+    const AdtXform source = CaptureSelection();
+    if (source.kind == SelKind::None)
+    {
+        transformEdit_ = TransformEdit{};
+        return;
+    }
+    TransformEdit fresh;
+    fresh.kind = source.kind;
+    fresh.uid = source.uid;
+    fresh.guid = source.guid;
+    if (source.kind == SelKind::Doodad)
+    {
+        glm::vec3 local, scale;
+        glm::quat rotation;
+        DecomposeTRS(source.local, local, rotation, scale);
+        const glm::vec3 origin = streamer_.origin();
+        fresh.x = local.x + origin.x;
+        fresh.y = local.y + origin.y;
+        fresh.z = local.z;
+        fresh.scale = std::max(scale.x, 0.001f);
+        fresh.yaw = std::atan2(2.0f * (rotation.w * rotation.z + rotation.x * rotation.y),
+                               1.0f - 2.0f * (rotation.y * rotation.y + rotation.z * rotation.z));
+    }
+    else if (source.kind == SelKind::GameObject)
+    {
+        fresh.x = source.x; fresh.y = source.y; fresh.z = source.z;
+        fresh.scale = source.size;
+        fresh.yaw = source.o;
+    }
+    else
+    {
+        fresh.x = source.x; fresh.y = source.y; fresh.z = source.z;
+        fresh.yaw = source.o;
+        if (const MapSpawn* n = npcLayer_.FindSpawn(source.guid))
+            fresh.scale = n->scale;
+    }
+    fresh.initialized = true;
+    transformEdit_ = fresh;
+}
+
+void AdtViewerModule::RevertTransformEdit()
+{
+    transformEdit_ = TransformEdit{};
+    transformStatus_ = "Transform edits discarded.";
+    SyncTransformEdit();
+}
+
+void AdtViewerModule::ApplyTransformEdit()
+{
+    if (!transformEdit_.initialized || !transformEdit_.dirty || selKind_ == SelKind::None ||
+        transformEdit_.kind != selKind_ ||
+        (selKind_ == SelKind::Doodad ? transformEdit_.uid != selUid_
+                                     : transformEdit_.guid != selGuid_))
+    {
+        transformStatus_ = "Select the object whose staged transform you want to apply.";
+        return;
+    }
+
+    const AdtXform before = CaptureSelection();
+    if (before.kind == SelKind::None)
+    {
+        transformStatus_ = "The selected object is no longer loaded.";
+        return;
+    }
+    const TransformEdit edit = transformEdit_;
+    if (before.kind == SelKind::Doodad)
+    {
+        glm::vec3 oldLocal, oldScale;
+        glm::quat oldRotation;
+        DecomposeTRS(before.local, oldLocal, oldRotation, oldScale);
+        const float oldYaw = std::atan2(2.0f * (oldRotation.w * oldRotation.z + oldRotation.x * oldRotation.y),
+                                        1.0f - 2.0f * (oldRotation.y * oldRotation.y + oldRotation.z * oldRotation.z));
+        const glm::quat rotation = glm::normalize(glm::angleAxis(edit.yaw - oldYaw,
+                                                                   glm::vec3(0.0f, 0.0f, 1.0f)) * oldRotation);
+        const glm::vec3 origin = streamer_.origin();
+        glm::mat4 matrix(1.0f);
+        matrix = glm::translate(matrix, glm::vec3(edit.x - origin.x, edit.y - origin.y, edit.z));
+        matrix = matrix * glm::mat4_cast(rotation);
+        matrix = glm::scale(matrix, glm::vec3(std::clamp(edit.scale, 0.001f, 64.0f)));
+        if (!streamer_.SetObjectTransform(before.uid, matrix))
+        {
+            transformStatus_ = "Could not apply the doodad transform.";
+            return;
+        }
+    }
+    else if (before.kind == SelKind::GameObject)
+    {
+        if (MapGameObject* g = goLayer_.FindSpawn(before.guid))
+        {
+            glm::quat oldRotation(g->rot[3], g->rot[0], g->rot[1], g->rot[2]);
+            if (glm::length(oldRotation) < 1e-6f)
+                oldRotation = glm::angleAxis(g->o, glm::vec3(0.0f, 0.0f, 1.0f));
+            else
+                oldRotation = glm::normalize(oldRotation);
+            const float oldYaw = std::atan2(2.0f * (oldRotation.w * oldRotation.z + oldRotation.x * oldRotation.y),
+                                            1.0f - 2.0f * (oldRotation.y * oldRotation.y + oldRotation.z * oldRotation.z));
+            const glm::quat rotation = glm::normalize(glm::angleAxis(edit.yaw - oldYaw,
+                                                                       glm::vec3(0.0f, 0.0f, 1.0f)) * oldRotation);
+            g->x = edit.x; g->y = edit.y; g->z = edit.z; g->o = edit.yaw;
+            g->rot[0] = rotation.x; g->rot[1] = rotation.y;
+            g->rot[2] = rotation.z; g->rot[3] = rotation.w;
+        }
+        else
+        {
+            transformStatus_ = "The selected GameObject is no longer loaded.";
+            return;
+        }
+    }
+    else if (!npcLayer_.SetSpawnHome(before.guid, edit.x, edit.y, edit.z, edit.yaw))
+    {
+        transformStatus_ = "The selected NPC is no longer loaded.";
+        return;
+    }
+
+    const AdtXform after = CaptureSelection();
+    if (after.kind == SelKind::None || SameXform(before, after))
+    {
+        transformStatus_ = "No transform change to apply.";
+        transformEdit_.dirty = false;
+        return;
+    }
+    CommitSelectionToDb();
+    undo_.Push(MakeCommand([this, before]() { ApplyAndPersist(before); },
+                           [this, after]() { ApplyAndPersist(after); }, "Set precise transform"));
+    transformStatus_ = saveStatus_.empty() ? "Transform applied." : saveStatus_;
+    transformEdit_.initialized = false;
+    SyncTransformEdit();
+}
+
+void AdtViewerModule::DrawTransformPanel()
+{
+    if (!ImGui::Begin("Transform"))
+    {
+        ImGui::End();
+        return;
+    }
+    if (selKind_ == SelKind::None)
+    {
+        ImGui::TextWrapped("Select an NPC, GameObject, doodad, or WMO in the World Editor for exact placement controls.");
+        ImGui::End();
+        return;
+    }
+    const uint64_t activeUid = selKind_ == SelKind::Doodad ? selUid_ : 0;
+    const uint32_t activeGuid = selKind_ == SelKind::Doodad ? 0 : selGuid_;
+    if (transformEdit_.dirty && (!transformEdit_.initialized || transformEdit_.kind != selKind_ ||
+        transformEdit_.uid != activeUid || transformEdit_.guid != activeGuid))
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.20f, 1.0f),
+                           "A different object has an unapplied staged transform.");
+        if (ImGui::Button("Discard staged transform"))
+            RevertTransformEdit();
+        ImGui::End();
+        return;
+    }
+    SyncTransformEdit();
+    if (!transformEdit_.initialized)
+    {
+        ImGui::TextDisabled("Selection is no longer available.");
+        ImGui::End();
+        return;
+    }
+
+    const char* kind = selKind_ == SelKind::Npc ? "NPC" : selKind_ == SelKind::GameObject ? "GameObject" : "ADT placement";
+    ImGui::Text("%s  —  %s", kind, selLabel_.c_str());
+    ImGui::Separator();
+    bool changed = false;
+    if (BeginFieldTable("precisetransform", 120.0f))
+    {
+        FieldRow("World X"); changed |= InputFloatField("##tx", transformEdit_.x);
+        FieldRow("World Y"); changed |= InputFloatField("##ty", transformEdit_.y);
+        FieldRow("World Z"); changed |= InputFloatField("##tz", transformEdit_.z);
+        float yawDegrees = glm::degrees(transformEdit_.yaw);
+        FieldRow("Yaw (degrees)");
+        if (ImGui::InputFloat("##tyaw", &yawDegrees, 1.0f, 15.0f, "%.2f"))
+        {
+            transformEdit_.yaw = glm::radians(yawDegrees);
+            changed = true;
+        }
+        if (selKind_ == SelKind::Doodad)
+        {
+            FieldRow("Scale", "ADT doodad scale is per-placement and persists to the client-data overlay.");
+            changed |= InputFloatField("##tscale", transformEdit_.scale);
+            transformEdit_.scale = std::clamp(transformEdit_.scale, 0.001f, 64.0f);
+        }
+        else
+        {
+            FieldRow("Scale");
+            ImGui::TextDisabled("Template-owned (edit the template, not this spawn).");
+        }
+        EndFieldTable();
+    }
+    if (changed)
+        transformEdit_.dirty = true;
+
+    ImGui::SeparatorText("Placement tools");
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::DragFloat("Nudge", &transformNudge_, 0.1f, 0.05f, 500.0f, "%.2f yd", ImGuiSliderFlags_Logarithmic);
+    auto nudge = [&](const char* label, float dx, float dy, float dz) {
+        if (ImGui::SmallButton(label))
+        {
+            transformEdit_.x += dx * transformNudge_;
+            transformEdit_.y += dy * transformNudge_;
+            transformEdit_.z += dz * transformNudge_;
+            transformEdit_.dirty = true;
+        }
+    };
+    nudge("X-", -1, 0, 0); ImGui::SameLine(); nudge("X+", 1, 0, 0); ImGui::SameLine();
+    nudge("Y-", 0, -1, 0); ImGui::SameLine(); nudge("Y+", 0, 1, 0); ImGui::SameLine();
+    nudge("Z-", 0, 0, -1); ImGui::SameLine(); nudge("Z+", 0, 0, 1);
+
+    if (ImGui::Button("Copy placement"))
+    {
+        transformClipboard_ = transformEdit_;
+        transformClipboard_.dirty = false;
+        transformClipboard_.initialized = true;
+        transformStatus_ = "Placement copied.";
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!transformClipboard_.initialized);
+    if (ImGui::Button("Paste placement"))
+    {
+        transformEdit_.x = transformClipboard_.x;
+        transformEdit_.y = transformClipboard_.y;
+        transformEdit_.z = transformClipboard_.z;
+        transformEdit_.yaw = transformClipboard_.yaw;
+        if (selKind_ == SelKind::Doodad)
+            transformEdit_.scale = transformClipboard_.scale;
+        transformEdit_.dirty = true;
+        transformStatus_ = "Placement pasted — click Apply to save.";
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Frame selection"))
+        FrameSelection();
+    ImGui::SameLine();
+    if (ImGui::Button("Snap selection"))
+    {
+        SnapSelectionToGround();
+        transformEdit_ = TransformEdit{};
+        SyncTransformEdit();
+    }
+    if (selKind_ == SelKind::Npc || selKind_ == SelKind::GameObject)
+    {
+        if (ImGui::Button("Use selected template as brush"))
+        {
+            brushKind_ = selKind_ == SelKind::Npc ? 0 : 1;
+            brushEntry_ = selEntry_;
+            brushActive_ = brushEntry_ != 0;
+            brushStatus_ = brushActive_ ? "Selected template loaded into the placement brush."
+                                        : "Selection has no template entry.";
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::BeginDisabled(!transformEdit_.dirty);
+    if (ImGui::Button("Apply transform"))
+        ApplyTransformEdit();
+    ImGui::SameLine();
+    if (ImGui::Button("Revert staged"))
+        RevertTransformEdit();
+    ImGui::EndDisabled();
+    if (transformEdit_.dirty)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.20f, 1.0f), "staged");
+    }
+    if (!transformStatus_.empty())
+        ImGui::TextDisabled("%s", transformStatus_.c_str());
+    ImGui::End();
+}
+
+void AdtViewerModule::SyncFormationEdit()
+{
+    if (selKind_ != SelKind::Npc)
+    {
+        if (!formationDirty_)
+        {
+            formationEdit_ = FormationState{};
+            formationOrig_ = FormationState{};
+            formationEditGuid_ = 0;
+        }
+        return;
+    }
+    if (formationDirty_ || formationEditGuid_ == selGuid_)
+        return;
+
+    FormationState state;
+    state.row.memberGuid = selGuid_;
+    state.row.leaderGuid = selGuid_;
+    for (const CreatureFormationMember& f : formations_)
+        if (f.memberGuid == selGuid_)
+        {
+            state.present = true;
+            state.row = f;
+            break;
+        }
+    formationEdit_ = state;
+    formationOrig_ = state;
+    formationEditGuid_ = selGuid_;
+    formationStatus_.clear();
+}
+
+void AdtViewerModule::ApplyFormationState(uint32_t memberGuid, const FormationState& state)
+{
+    if (!svc_ || !svc_->connected || !svc_->activeDb || memberGuid == 0)
+        return;
+    FormationState normalized = state;
+    normalized.row.memberGuid = memberGuid;
+    DbError e = normalized.present ? spawnRepo_.SaveCreatureFormation(*svc_->activeDb, normalized.row)
+                                   : spawnRepo_.DeleteCreatureFormation(*svc_->activeDb, memberGuid);
+    if (!e.ok)
+    {
+        formationStatus_ = "Formation save failed: " + e.message;
+        return;
+    }
+    formations_.erase(std::remove_if(formations_.begin(), formations_.end(),
+                                     [memberGuid](const CreatureFormationMember& f) {
+                                         return f.memberGuid == memberGuid;
+                                     }), formations_.end());
+    if (normalized.present)
+        formations_.push_back(normalized.row);
+    std::sort(formations_.begin(), formations_.end(), [](const CreatureFormationMember& a,
+                                                          const CreatureFormationMember& b) {
+        if (a.leaderGuid != b.leaderGuid)
+            return a.leaderGuid < b.leaderGuid;
+        return a.memberGuid < b.memberGuid;
+    });
+    if (formationEditGuid_ == memberGuid)
+    {
+        formationEdit_ = normalized;
+        formationOrig_ = normalized;
+        formationDirty_ = false;
+    }
+    formationStatus_ = normalized.present ? "Formation saved." : "Formation membership removed.";
+    if (svc_->setStatus)
+        svc_->setStatus(formationStatus_);
+}
+
+void AdtViewerModule::SaveFormationEdit()
+{
+    if (!formationDirty_ || formationEditGuid_ == 0)
+        return;
+    const FormationState before = formationOrig_;
+    const FormationState after = formationEdit_;
+    ApplyFormationState(formationEditGuid_, after);
+    if (formationDirty_)  // Apply failed and intentionally left the staged edit untouched
+        return;
+    const uint32_t guid = formationEditGuid_;
+    undo_.Push(MakeCommand([this, guid, before]() { ApplyFormationState(guid, before); },
+                           [this, guid, after]() { ApplyFormationState(guid, after); },
+                           "Edit creature formation"));
+}
+
+void AdtViewerModule::DeleteFormationEdit()
+{
+    if (formationEditGuid_ == 0 || !formationOrig_.present)
+        return;
+    const FormationState before = formationOrig_;
+    FormationState after;
+    after.row.memberGuid = formationEditGuid_;
+    ApplyFormationState(formationEditGuid_, after);
+    if (formationOrig_.present)  // delete failed
+        return;
+    const uint32_t guid = formationEditGuid_;
+    undo_.Push(MakeCommand([this, guid, before]() { ApplyFormationState(guid, before); },
+                           [this, guid, after]() { ApplyFormationState(guid, after); },
+                           "Remove creature formation"));
+}
+
+void AdtViewerModule::DrawFormationPanel()
+{
+    if (!ImGui::Begin("Formation"))
+    {
+        ImGui::End();
+        return;
+    }
+    if (!svc_ || !svc_->connected || !svc_->activeDb)
+    {
+        ImGui::TextWrapped("Connect a project DB to edit creature formations.");
+        ImGui::End();
+        return;
+    }
+    if (!formationsAvailable_)
+    {
+        ImGui::TextWrapped("%s", formationStatus_.empty() ? "Formation data is unavailable for this map/database."
+                                                             : formationStatus_.c_str());
+        ImGui::End();
+        return;
+    }
+    if (selKind_ != SelKind::Npc)
+    {
+        if (!formationDirty_)
+            SyncFormationEdit();
+        ImGui::TextWrapped("Select an NPC to inspect or edit its creature_formations membership.");
+        if (formationDirty_)
+            ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.20f, 1.0f),
+                               "A different NPC has an unsaved formation edit. Re-select it to save or revert.");
+        if (!formationStatus_.empty())
+            ImGui::TextDisabled("%s", formationStatus_.c_str());
+        ImGui::End();
+        return;
+    }
+    if (formationDirty_ && formationEditGuid_ != selGuid_)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.20f, 1.0f),
+                           "Guid %u has an unsaved formation edit.", formationEditGuid_);
+        if (ImGui::Button("Save current formation"))
+            SaveFormationEdit();
+        ImGui::SameLine();
+        if (ImGui::Button("Discard and load selected"))
+        {
+            formationDirty_ = false;
+            formationEditGuid_ = 0;
+            SyncFormationEdit();
+        }
+        ImGui::End();
+        return;
+    }
+    SyncFormationEdit();
+    if (formationEditGuid_ == 0)
+    {
+        ImGui::TextDisabled("Formation data is unavailable for this selection.");
+        ImGui::End();
+        return;
+    }
+
+    const std::string title = svc_->lookups ? svc_->lookups->LabelCreature(selEntry_)
+                                            : ("entry " + std::to_string(selEntry_));
+    ImGui::TextUnformatted(title.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("guid %u", formationEditGuid_);
+    ImGui::Checkbox("Show formation links in world", &showFormations_);
+
+    bool enabled = formationEdit_.present;
+    if (ImGui::Checkbox("Member of a formation", &enabled))
+    {
+        formationEdit_.present = enabled;
+        if (enabled && formationEdit_.row.leaderGuid == 0)
+            formationEdit_.row.leaderGuid = formationEditGuid_;
+        formationDirty_ = true;
+    }
+
+    if (formationEdit_.present)
+    {
+        if (BeginFieldTable("formationfields", 165.0f))
+        {
+            FieldRow("Leader guid", "Set this NPC's own guid for a formation leader/self row.");
+            if (InputU32("##flead", formationEdit_.row.leaderGuid)) formationDirty_ = true;
+            FieldRow("Distance", "Formation offset distance in yards.");
+            if (InputFloatField("##fdist", formationEdit_.row.distance)) formationDirty_ = true;
+            FieldRow("Angle (degrees)", "0..360; TrinityCore formation angles are degrees.");
+            if (InputFloatField("##fangle", formationEdit_.row.angle)) formationDirty_ = true;
+            FieldRow("Group AI", "When enabled, members share combat/evade behavior.");
+            bool ai = formationEdit_.row.groupAi != 0;
+            if (ImGui::Checkbox("##fgai", &ai)) { formationEdit_.row.groupAi = ai ? 1 : 0; formationDirty_ = true; }
+            FieldRow("Path point 1", "Optional angle-swap start point (newer schema revisions).");
+            if (InputU32("##fp1", formationEdit_.row.point1)) formationDirty_ = true;
+            FieldRow("Path point 2", "Optional angle-swap end point (newer schema revisions).");
+            if (InputU32("##fp2", formationEdit_.row.point2)) formationDirty_ = true;
+            EndFieldTable();
+        }
+        if (ImGui::Button("Make selected NPC the leader"))
+        {
+            formationEdit_.row.leaderGuid = formationEditGuid_;
+            formationEdit_.row.distance = 0.0f;
+            formationEdit_.row.angle = 0.0f;
+            formationDirty_ = true;
+        }
+    }
+    else
+        ImGui::TextDisabled("Enable membership to create a self-leader row or join an existing leader guid.");
+
+    ImGui::BeginDisabled(!formationDirty_);
+    if (ImGui::Button(formationEdit_.present ? "Save formation" : "Remove membership"))
+        SaveFormationEdit();
+    ImGui::SameLine();
+    if (ImGui::Button("Revert"))
+    {
+        formationEdit_ = formationOrig_;
+        formationDirty_ = false;
+    }
+    ImGui::EndDisabled();
+    if (formationOrig_.present)
+    {
+        ImGui::SameLine();
+        if (ImGui::Button("Delete membership"))
+            DeleteFormationEdit();
+    }
+    if (formationDirty_)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.20f, 1.0f), "unsaved");
+    }
+    if (!formationStatus_.empty())
+        ImGui::TextDisabled("%s", formationStatus_.c_str());
+
+    if (formationEdit_.present)
+    {
+        ImGui::SeparatorText("Members of this leader");
+        int shown = 0;
+        for (const CreatureFormationMember& f : formations_)
+        {
+            if (f.leaderGuid != formationEdit_.row.leaderGuid)
+                continue;
+            const MapSpawn* member = npcLayer_.FindSpawn(f.memberGuid);
+            const std::string label = "guid " + std::to_string(f.memberGuid) +
+                                      (member && svc_->lookups ? ("  " + svc_->lookups->LabelCreature(member->entry)) : "");
+            ImGui::PushID(static_cast<int>(f.memberGuid));
+            if (ImGui::Selectable(label.c_str(), f.memberGuid == formationEditGuid_))
+            {
+                SelectObject(SelKind::Npc, 0, 0, f.memberGuid);
+                if (member)
+                    FrameWorldPosition(glm::vec3(member->x, member->y, member->z), 40.0f);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("dist %.2f  angle %.1f°", f.distance, f.angle);
+            ImGui::PopID();
+            if (++shown >= 100)
+            {
+                ImGui::TextDisabled("... more members omitted");
+                break;
+            }
+        }
+        if (shown == 0)
+            ImGui::TextDisabled("No saved members yet — save this row to create the group.");
+    }
+    ImGui::End();
+}
+
+void AdtViewerModule::DrawFormationOverlay(const glm::mat4& view, const glm::mat4& proj,
+                                           const ImVec2& p0, int w, int h)
+{
+    if (!showFormations_ || formations_.empty())
+        return;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const glm::vec3 origin = streamer_.origin();
+    int links = 0;
+    for (const CreatureFormationMember& f : formations_)
+    {
+        if (f.memberGuid == f.leaderGuid)
+            continue;  // leader self-row is useful in DB but has no visible link
+        const MapSpawn* leader = npcLayer_.FindSpawn(f.leaderGuid);
+        const MapSpawn* member = npcLayer_.FindSpawn(f.memberGuid);
+        if (!leader || !member)
+            continue;
+        ImVec2 a, b;
+        if (!ProjectWorldPoint(glm::vec3(leader->x, leader->y, leader->z), origin, view, proj, p0, w, h, a) ||
+            !ProjectWorldPoint(glm::vec3(member->x, member->y, member->z), origin, view, proj, p0, w, h, b))
+            continue;
+        const bool selected = f.memberGuid == selGuid_ || f.leaderGuid == selGuid_;
+        const ImU32 color = selected ? IM_COL32(255, 126, 221, 235) : IM_COL32(181, 102, 236, 175);
+        draw->AddLine(a, b, color, selected ? 2.5f : 1.25f);
+        draw->AddCircleFilled(b, selected ? 4.5f : 3.0f, color, 10);
+        if (++links >= 750)
+            break;  // keep the overlay cheap on intentionally huge formations
+    }
 }
 
 void AdtViewerModule::DrawViewportPanel()
@@ -354,6 +1496,11 @@ void AdtViewerModule::DrawViewportPanel()
         ImGui::TextDisabled("%d/%d NPCs%s", npcLayer_.drawnCount(), npcLayer_.spawnCount(),
                             npcLayer_.cappedLastFrame() ? " (capped)" : "");
     }
+
+    ImGui::SameLine();
+    ImGui::Checkbox("Formations", &showFormations_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Draw creature_formations leader/member links for the open map.");
 
     ImGui::Checkbox("GameObjects", &showGos_);
     if (showGos_)
@@ -419,6 +1566,10 @@ void AdtViewerModule::DrawViewportPanel()
         ImGui::TextDisabled("%s", npcStatus_.c_str());
     if (!goStatus_.empty())
         ImGui::TextDisabled("%s", goStatus_.c_str());
+    if (brushActive_)
+        ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.42f, 1.0f),
+                           "Placement brush active: %s entry %u — right-click terrain; Esc stops.",
+                           brushKind_ == 0 ? "NPC" : "GameObject", brushEntry_);
 
     ImGui::TextDisabled("loaded %d tiles (%d pending), %d objects, %d models", streamer_.loadedTiles(),
                         streamer_.pendingTiles(), streamer_.objectCount(), streamer_.modelCount());
@@ -445,17 +1596,9 @@ void AdtViewerModule::DrawViewportPanel()
     // Stream around the camera's focus: the eye when flying, the orbit pivot otherwise.
     const glm::vec3 focus = (camera_.mode() == ViewportCamera::Mode::Fly) ? eye : camera_.center();
 
-    // Assemble the live spawn-visibility filter from the toolbar state (used by picking + the layers).
-    SpawnFilter filter;
-    filter.phaseMask = viewPhaseMask_;
-    filter.spawnMask = (diffSel_ == 0) ? 0xFFFFFFFFu : (1u << (diffSel_ - 1));
-    filter.activeEvent = (eventSel_ == 0) ? 0
-                         : (eventSel_ == 1) ? -1
-                         : (eventSel_ - 2 < static_cast<int>(gameEvents_.size())
-                                ? gameEvents_[eventSel_ - 2].id
-                                : 0);
-    filter.respectPools = respectPools_;
-    filter.showManualGroups = showManualGroups_;
+    // Assemble the live spawn-visibility filter once; picking, rendering, and the World Outliner
+    // share this exact interpretation of phases/difficulty/events/pools/groups.
+    const SpawnFilter filter = CurrentSpawnFilter();
 
     // Selection: hover-highlight + click-to-select, then seed the gizmo from the live object.
     // Highlights must be set BEFORE BuildFrame / the layers' Build consume them below. Picking is
@@ -482,11 +1625,18 @@ void AdtViewerModule::DrawViewportPanel()
     // waypoint. Escape cancels the active terrain waypoint tool without changing the working route.
     if (editMode_)
         HandleRightClickAdd(view, proj, p0, w, h, hovered, focus, filter);
-    if (editMode_ && hovered && waypointPlacementMode_ != WaypointPlacementMode::None &&
-        ImGui::IsKeyPressed(ImGuiKey_Escape))
+    if (editMode_ && hovered && ImGui::IsKeyPressed(ImGuiKey_Escape))
     {
-        waypointPlacementMode_ = WaypointPlacementMode::None;
-        waypointStatus_ = "Terrain waypoint tool cancelled.";
+        if (waypointPlacementMode_ != WaypointPlacementMode::None)
+        {
+            waypointPlacementMode_ = WaypointPlacementMode::None;
+            waypointStatus_ = "Terrain waypoint tool cancelled.";
+        }
+        else if (brushActive_)
+        {
+            brushActive_ = false;
+            brushStatus_ = "Placement brush cancelled.";
+        }
     }
     // Delete key removes the selected object (undoable).
     if (editMode_ && hovered && selKind_ != SelKind::None && !io.WantTextInput &&
@@ -538,6 +1688,7 @@ void AdtViewerModule::DrawViewportPanel()
     // labels the ordered points, and is drawn above the final 3D image but below the transform gizmo.
     // It stays visible in read-only view mode; point picking/terrain tools still require Edit.
     DrawWaypointOverlay(view, proj, p0, w, h);
+    DrawFormationOverlay(view, proj, p0, w, h);
 
     // Transform gizmo: drawn ON TOP of the blitted image, on THIS window's draw list, with the SAME
     // view/proj the scene was rendered with (so it stays locked to the model). Runs before the camera
@@ -781,6 +1932,7 @@ void AdtViewerModule::ApplyRenderFromSpawn(const CreatureSpawn& s)
     if (s.modelId != 0)
         f.displayId = s.modelId;
     npcLayer_.UpdateSpawnEditable(s.guid, f);
+    outlinerDirty_ = true;
 }
 
 // Keep the panel's working copy consistent when the gizmo moves the same NPC (so a drag doesn't leave
@@ -1733,6 +2885,7 @@ void AdtViewerModule::ApplyRenderFromGoSpawn(const GameObjectSpawn& s)
     g->phaseMask = s.phaseMask;
     g->spawnMask = s.spawnMask;
     g->state = s.state;
+    outlinerDirty_ = true;
 }
 
 // Keep the panel's working copy consistent when the gizmo moves the same GameObject.
@@ -2152,6 +3305,8 @@ void AdtViewerModule::CommitSelectionToDb()
         if (e.ok)
             SyncNpcPanelTransform(s->guid, s->x, s->y, s->z, s->o);
     }
+    if (selKind_ == SelKind::GameObject || selKind_ == SelKind::Npc)
+        outlinerDirty_ = true;
     if (e.ok && svc_->setStatus)
         svc_->setStatus(saveStatus_);
 }
@@ -2341,6 +3496,7 @@ void AdtViewerModule::CreateObject(const AdtObjectDesc& d)
         g.displayId = d.displayId ? d.displayId : disp;
         g.size = d.size > 0.0f ? d.size : 1.0f; g.phaseMask = 1; g.spawnMask = 1;
         goLayer_.AddGameObject(g);
+        outlinerDirty_ = true;
     }
     else if (d.kind == SelKind::Npc)
     {
@@ -2352,6 +3508,7 @@ void AdtViewerModule::CreateObject(const AdtObjectDesc& d)
         s.displayId = d.displayId ? d.displayId : disp;
         s.scale = d.size > 0.0f ? d.size : 1.0f; s.phaseMask = 1; s.spawnMask = 1;
         npcLayer_.AddSpawn(s);
+        outlinerDirty_ = true;
     }
 }
 
@@ -2371,12 +3528,14 @@ void AdtViewerModule::DestroyObject(const AdtObjectDesc& d)
         goLayer_.RemoveGameObject(d.guid);
         if (svc_ && svc_->connected && svc_->activeDb)
             spawnRepo_.DeleteGameObjectSpawn(*svc_->activeDb, d.guid);
+        outlinerDirty_ = true;
     }
     else if (d.kind == SelKind::Npc)
     {
         npcLayer_.RemoveSpawn(d.guid);
         if (svc_ && svc_->connected && svc_->activeDb)
             spawnRepo_.DeleteCreatureSpawn(*svc_->activeDb, d.guid);
+        outlinerDirty_ = true;
     }
     // Drop the selection if it referenced the destroyed object.
     const bool wasDoodad = d.kind == SelKind::Doodad && selKind_ == SelKind::Doodad && selUid_ == d.uid;
@@ -2473,6 +3632,27 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
             AddWaypointAt(world);
         else
             MoveSelectedWaypointTo(world);
+        return;
+    }
+
+    // A palette brush has the next priority: an author deliberately armed it for rapid terrain
+    // stamping, so don't turn the same click into an object context menu or one-shot add popup.
+    if (brushActive_ && brushEntry_ != 0)
+    {
+        const glm::vec3 world(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z);
+        if (!CanBrushPlace(world))
+        {
+            brushStatus_ = "Skipped placement: closer than the configured session spacing.";
+            return;
+        }
+        const bool added = brushKind_ == 0 ? PerformAddNpcAt(brushEntry_, world, brushYaw_)
+                                            : PerformAddGameObjectAt(brushEntry_, world, brushYaw_);
+        if (added)
+        {
+            brushPlacements_.push_back({brushKind_, brushEntry_, world});
+            brushStatus_ = "Placed stamp " + std::to_string(brushPlacements_.size()) +
+                           " — right-click terrain to continue.";
+        }
         return;
     }
 
@@ -2627,54 +3807,68 @@ void AdtViewerModule::DrawObjectContextPopup()
 
 void AdtViewerModule::PerformAddNpc(uint32_t entry)
 {
+    PerformAddNpcAt(entry, addWorldPos_, 0.0f);
+}
+
+bool AdtViewerModule::PerformAddNpcAt(uint32_t entry, const glm::vec3& world, float yaw)
+{
     if (!svc_ || !svc_->connected || !svc_->activeDb)
     {
         saveStatus_ = "Connect a project DB to add NPCs.";
-        return;
+        return false;
     }
     uint32_t guid = 0, displayId = 0;
-    DbError e = spawnRepo_.InsertCreatureSpawn(*svc_->activeDb, currentMapId_, entry, addWorldPos_.x,
-                                               addWorldPos_.y, addWorldPos_.z, 0.0f, guid, displayId);
+    DbError e = spawnRepo_.InsertCreatureSpawn(*svc_->activeDb, currentMapId_, entry, world.x, world.y,
+                                               world.z, yaw, guid, displayId);
     if (!e.ok || guid == 0)
     {
         saveStatus_ = "Add NPC failed: " + e.message;
-        return;
+        return false;
     }
     MapSpawn s;
     s.guid = guid; s.entry = entry;
-    s.x = addWorldPos_.x; s.y = addWorldPos_.y; s.z = addWorldPos_.z; s.o = 0.0f;
+    s.x = world.x; s.y = world.y; s.z = world.z; s.o = yaw;
     s.displayId = displayId; s.scale = 1.0f; s.phaseMask = 1; s.spawnMask = 1;
     npcLayer_.AddSpawn(s);
+    outlinerDirty_ = true;
     saveStatus_ = "Added creature guid " + std::to_string(guid) + " (entry " + std::to_string(entry) + ").";
     if (svc_->setStatus) svc_->setStatus(saveStatus_);
     AdtObjectDesc d;
     d.kind = SelKind::Npc; d.guid = guid; d.entry = entry; d.displayId = displayId;
     d.x = s.x; d.y = s.y; d.z = s.z; d.o = s.o; d.size = s.scale;
     PushCreateUndo(d);
+    return true;
 }
 
 void AdtViewerModule::PerformAddGameObject(uint32_t entry)
 {
+    PerformAddGameObjectAt(entry, addWorldPos_, 0.0f);
+}
+
+bool AdtViewerModule::PerformAddGameObjectAt(uint32_t entry, const glm::vec3& world, float yaw)
+{
     if (!svc_ || !svc_->connected || !svc_->activeDb)
     {
         saveStatus_ = "Connect a project DB to add GameObjects.";
-        return;
+        return false;
     }
-    const float rot[4] = {0.0f, 0.0f, 0.0f, 1.0f};   // identity (facing yaw 0)
+    const float half = yaw * 0.5f;
+    const float rot[4] = {0.0f, 0.0f, std::sin(half), std::cos(half)};
     uint32_t guid = 0, displayId = 0;
-    DbError e = spawnRepo_.InsertGameObjectSpawn(*svc_->activeDb, currentMapId_, entry, addWorldPos_.x,
-                                                 addWorldPos_.y, addWorldPos_.z, 0.0f, rot, guid, displayId);
+    DbError e = spawnRepo_.InsertGameObjectSpawn(*svc_->activeDb, currentMapId_, entry, world.x,
+                                                 world.y, world.z, yaw, rot, guid, displayId);
     if (!e.ok || guid == 0)
     {
         saveStatus_ = "Add GameObject failed: " + e.message;
-        return;
+        return false;
     }
     MapGameObject g;
     g.guid = guid; g.entry = entry;
-    g.x = addWorldPos_.x; g.y = addWorldPos_.y; g.z = addWorldPos_.z; g.o = 0.0f;
+    g.x = world.x; g.y = world.y; g.z = world.z; g.o = yaw;
     g.rot[0] = rot[0]; g.rot[1] = rot[1]; g.rot[2] = rot[2]; g.rot[3] = rot[3];
     g.displayId = displayId; g.size = 1.0f; g.phaseMask = 1; g.spawnMask = 1;
     goLayer_.AddGameObject(g);
+    outlinerDirty_ = true;
     saveStatus_ = "Added gameobject guid " + std::to_string(guid) + " (entry " + std::to_string(entry) + ").";
     if (svc_->setStatus) svc_->setStatus(saveStatus_);
     AdtObjectDesc d;
@@ -2682,6 +3876,7 @@ void AdtViewerModule::PerformAddGameObject(uint32_t entry)
     d.x = g.x; d.y = g.y; d.z = g.z; d.o = g.o; d.size = g.size;
     d.rot[0] = rot[0]; d.rot[1] = rot[1]; d.rot[2] = rot[2]; d.rot[3] = rot[3];
     PushCreateUndo(d);
+    return true;
 }
 
 void AdtViewerModule::PerformAddModel(const std::string& path, bool isWmo)

@@ -43,6 +43,11 @@ public:
         // Keep the pre-v0.5 ImGui IDs after ### so existing users retain their saved docking layout
         // while the visible product language moves from "ADT Viewer" to "World Editor".
         return {{"World Browser###ADT Browser", DockSlot::Left, true},
+                {"World Outliner", DockSlot::Left, true},
+                {"Spawn Palette", DockSlot::Left, true},
+                {"Locations", DockSlot::Left, true},
+                {"Transform", DockSlot::Left, true},
+                {"Formation", DockSlot::Left, true},
                 {"NPC Instance", DockSlot::Left, true},
                 {"GameObject Instance", DockSlot::Left, true},
                 {"Waypoint Path", DockSlot::Bottom, true},
@@ -54,6 +59,9 @@ public:
     void OnConnected() override;
     void OnDisconnected() override;
     void OnShutdown() override;
+    void HandleShortcuts() override;
+    void LoadSettings(const nlohmann::json& editorNode) override;
+    void SaveSettings(nlohmann::json& editorNode) const override;
 
     // Undo/redo of object moves and the currently-authored waypoint route. While a route has
     // unsaved edits, Ctrl+Z/Ctrl+Y naturally targets its local snapshots; otherwise it targets the
@@ -68,14 +76,76 @@ public:
 
 private:
     void DrawBrowserPanel();
+    void DrawOutlinerPanel();
+    void DrawSpawnPalettePanel();
+    void DrawLocationsPanel();
+    void DrawTransformPanel();
     void DrawViewportPanel();
     void DrawStatsOverlay(const ImVec2& p0, const ImGuiIO& io);
     void OpenMapDir(const std::string& dir, bool frameCamera);
     void LoadNpcSpawns();       // query the current map's creature spawns into the NPC layer
     void LoadGameObjects();     // query the current map's gameobject spawns into the GO layer
+    void LoadFormations();      // query creature_formations members for the open map (fail-soft)
+    SpawnFilter CurrentSpawnFilter() const;
+    void FrameWorldPosition(const glm::vec3& world, float radius = 75.0f);
+    void FrameSelection();
+    bool CanBrushPlace(const glm::vec3& world) const;
 
     // --- object selection + transform gizmo (see AdtViewerModule.cpp) ---
     enum class SelKind { None, Doodad, GameObject, Npc };
+    struct TransformEdit
+    {
+        SelKind kind = SelKind::None;
+        uint64_t uid = 0;
+        uint32_t guid = 0;
+        float x = 0.0f, y = 0.0f, z = 0.0f;
+        float yaw = 0.0f;              // radians, shared by NPC/GO/doodad placement controls
+        float scale = 1.0f;
+        bool initialized = false;
+        bool dirty = false;
+    };
+    struct FormationState;
+    void SyncTransformEdit();
+    void ApplyTransformEdit();
+    void RevertTransformEdit();
+    void DrawFormationPanel();
+    void SyncFormationEdit();
+    void SaveFormationEdit();
+    void DeleteFormationEdit();
+    void ApplyFormationState(uint32_t memberGuid, const FormationState& state);
+    void DrawFormationOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
+                              int w, int h);
+    struct OutlinerEntry
+    {
+        SelKind kind = SelKind::None;
+        uint32_t guid = 0, entry = 0;
+        glm::vec3 world{0.0f};
+        uint32_t phaseMask = 1, spawnMask = 1;
+        int32_t eventEntry = 0;
+        bool poolHidden = false, groupManual = false;
+        std::string label;
+        std::string searchKey;
+    };
+    struct WorldBookmark
+    {
+        std::string name;
+        uint32_t mapId = 0;
+        std::string mapDir;
+        glm::vec3 world{0.0f};
+        float radius = 75.0f;
+    };
+    struct BrushPlacement
+    {
+        int kind = 0;  // 0 NPC, 1 GameObject
+        uint32_t entry = 0;
+        glm::vec3 world{0.0f};
+    };
+    struct FormationState
+    {
+        bool present = false;
+        CreatureFormationMember row;
+    };
+    void RebuildOutliner();
     void DrawSelectionToolbar();
     void RefreshGizmoFromSelection();   // seed gizmoMatrix_ + outline bounds from the live object
     void UpdateHoverAndSelection(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
@@ -98,6 +168,8 @@ private:
     void DrawObjectContextPopup();   // context menu for a right-clicked object (move hint / delete)
     void PerformAddNpc(uint32_t entry);
     void PerformAddGameObject(uint32_t entry);
+    bool PerformAddNpcAt(uint32_t entry, const glm::vec3& world, float yaw);
+    bool PerformAddGameObjectAt(uint32_t entry, const glm::vec3& world, float yaw);
     void PerformAddModel(const std::string& path, bool isWmo);
 
     // --- undo/redo of object moves ---
@@ -193,6 +265,17 @@ private:
     std::string loadedName_;
     std::string error_;
 
+    // Coordinate navigation + persisted bookmarks. Coordinates are TrinityCore world values,
+    // never streamer-local values, so they stay useful across tile-origin changes.
+    std::vector<WorldBookmark> bookmarks_;
+    char  bookmarkName_[80] = {0};
+    float locationX_ = 0.0f, locationY_ = 0.0f, locationZ_ = 0.0f;
+    float locationRadius_ = 75.0f;
+    bool  pendingLocationFocus_ = false;
+    std::string pendingLocationMapDir_;
+    glm::vec3 pendingLocationWorld_{0.0f};
+    float pendingLocationRadius_ = 75.0f;
+
     // NPC layer: DB creature spawns rendered + movement-simulated on the terrain.
     MapSpawnRepository spawnRepo_;
     NpcLayer npcLayer_;
@@ -207,6 +290,40 @@ private:
     int   goMaxDraw_ = 300;        // cap on drawn GameObjects (nearest first)
     float goCullDist_ = 400.0f;    // yards: draw GameObjects within this of the camera
     std::string goStatus_;
+
+    // World Outliner snapshots: all DB spawns on the open map, independent of the draw-distance
+    // cap. Rebuilt only after map/spawn changes or client/DB labels refresh, then filtered/sorted
+    // cheaply while the panel is visible.
+    std::vector<OutlinerEntry> outlinerEntries_;
+    std::vector<int> outlinerFiltered_;
+    char outlinerSearch_[128] = {0};
+    int  outlinerKind_ = 0;       // 0 all, 1 NPCs, 2 GameObjects
+    bool outlinerVisibleOnly_ = false;
+    bool outlinerSortByDistance_ = true;
+    bool outlinerDirty_ = true;
+
+    // Formation data is map-scoped and visualized as leader/member links in the viewport. The
+    // selected member gets an editable working state with the same save/revert/undo discipline as
+    // spawn instance panels.
+    std::vector<CreatureFormationMember> formations_;
+    bool formationsAvailable_ = false;
+    bool showFormations_ = true;
+    FormationState formationEdit_;
+    FormationState formationOrig_;
+    uint32_t formationEditGuid_ = 0;
+    bool formationDirty_ = false;
+    std::string formationStatus_;
+
+    // Reusable terrain-click placement palette. Unlike the one-shot context menu, a palette entry
+    // stays armed for rapid map dressing and keeps an inexpensive spacing guard for the session.
+    int brushKind_ = 0;          // 0 NPC, 1 GameObject
+    uint32_t brushEntry_ = 0;
+    char brushSearch_[128] = {0};
+    bool brushActive_ = false;
+    float brushYaw_ = 0.0f;
+    float brushMinSpacing_ = 2.0f;
+    std::vector<BrushPlacement> brushPlacements_;
+    std::string brushStatus_;
 
     // Spawn-visibility filters (live; assembled into a SpawnFilter each frame).
     // Phase: phaseSel_ 0 = All phases (0xFFFFFFFF); N>0 = single phase bit (1 << (N-1)).
@@ -245,6 +362,13 @@ private:
     bool      gizmoUsingPrev_ = false;         // edge-detect release (to commit the DB save)
     bool      gizmoHoveredPrev_ = false;       // suppress camera when hovering the gizmo
     std::string saveStatus_;
+
+    // Precise transform panel + copy/paste clipboard. The edit is staged so a multi-field change
+    // produces one DB/ADT save and one undo command rather than a write for every keystroke.
+    TransformEdit transformEdit_;
+    TransformEdit transformClipboard_;
+    float transformNudge_ = 1.0f;
+    std::string transformStatus_;
 
     // NPC spawn-instance editor state. npcEdit_ is the working copy the panel widgets edit;
     // npcEditOrig_ is the last-saved baseline (Revert target + the undo "before" state).

@@ -76,6 +76,20 @@ bool AdtStreamer::TileExists(int x, int y) const
     return tileExists_[y * 64 + x] != 0;
 }
 
+bool AdtStreamer::IsTileLoaded(int x, int y) const
+{
+    if (x < 0 || x >= 64 || y < 0 || y >= 64)
+        return false;
+    return tiles_.find(Key(x, y)) != tiles_.end();
+}
+
+bool AdtStreamer::IsTilePending(int x, int y) const
+{
+    if (x < 0 || x >= 64 || y < 0 || y >= 64)
+        return false;
+    return inFlight_.count(Key(x, y)) != 0;
+}
+
 void AdtStreamer::ClearAll()
 {
     if (renderer_)

@@ -95,6 +95,14 @@ bool NpcLayer::RemoveSpawn(uint32_t guid)
     return false;
 }
 
+void NpcLayer::SnapshotSpawns(std::vector<MapSpawn>& out) const
+{
+    out.clear();
+    out.reserve(npcs_.size());
+    for (const Npc& n : npcs_)
+        out.push_back(n.spawn);
+}
+
 void NpcLayer::Clear()
 {
     if (renderer_)

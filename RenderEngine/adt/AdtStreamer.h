@@ -116,6 +116,12 @@ public:
     bool showWdl() const { return showWdl_; }
     int lowTileCount() const { return (int)lowTiles_.size(); }
 
+    // Main-thread UI diagnostics/navigation helpers. These deliberately expose only state, not the
+    // loaded-tile payloads, so the World Editor can paint a map overview without breaking streamer's
+    // ownership of GPU/CPU terrain resources.
+    bool IsTileLoaded(int x, int y) const;
+    bool IsTilePending(int x, int y) const;
+
 private:
     // ---- worker payloads (worker -> main) ----
     struct ModelPayload

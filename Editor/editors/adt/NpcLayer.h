@@ -64,6 +64,11 @@ public:
     int modelCount() const { return static_cast<int>(models_.size()); }
     bool cappedLastFrame() const { return cappedLastFrame_; }
 
+    // Copy the map's canonical spawn homes for UI tooling such as the World Outliner. This is
+    // intentionally a snapshot (rather than exposing Npc internals), so callers cannot mutate the
+    // simulation state without going through the explicit edit methods below.
+    void SnapshotSpawns(std::vector<MapSpawn>& out) const;
+
     // --- object selection / manipulation (ADT viewer) ---
     // Ray-pick the nearest visible NPC (ray + origin in the streamer-local frame). Honors the same
     // visibility filter + cull distance as Build. Returns guid + hit distance, or 0 on a miss.
