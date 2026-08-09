@@ -1054,6 +1054,11 @@ TextureId VulkanRenderer::RenderWorld(const TerrainHandle* terrains, int terrain
                                         view, proj, width, height);
 }
 
+void VulkanRenderer::SetWorldLighting(const WorldLightingGpu& lighting)
+{
+    d->modelPipeline.SetWorldLighting(lighting);
+}
+
 void VulkanRenderer::SetGrid(bool enabled, const float center[3], float extent, float spacing)
 {
     d->modelPipeline.SetGrid(enabled, center, extent, spacing);

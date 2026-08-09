@@ -97,6 +97,14 @@ void AdtViewerModule::OnClientDataLoaded()
     terrainSculptActive_ = false;
     ++terrainHistoryGeneration_;
     terrainStatus_.clear();
+    // Client/project data changed: do not carry an unsaved map-light draft into a different
+    // world that happens to reuse the same map directory name.
+    lightingDrafts_.clear();
+    lightingMapDir_.clear();
+    lightingDirty_ = false;
+    selectedWorldLightId_ = 0;
+    lightPlacementActive_ = false;
+    lightMarkers_.clear();
     outlinerDirty_ = true;
 }
 
@@ -124,39 +132,152 @@ void AdtViewerModule::HandleShortcuts()
 {
     // Shell already excludes text input before dispatching module shortcuts. F mirrors the common
     // DCC/world-editor convention: center the streamed world around the current selection.
-    if (ImGui::IsKeyPressed(ImGuiKey_F, false) && selKind_ != SelKind::None)
+    if (ImGui::IsKeyPressed(ImGuiKey_F, false) &&
+        (selKind_ != SelKind::None || selectedWorldLightId_ != 0))
         FrameSelection();
+}
+
+AdtViewerModule::WorldLightingProfile AdtViewerModule::DefaultLightingProfile()
+{
+    // Mirrors the fixed world lighting used before the Light Editor existed: white ambient 0.45
+    // plus a slightly blue 0.55 directional sun. This makes the feature opt-in visually while
+    // still giving every newly authored profile predictable game-style daylight.
+    WorldLightingProfile profile;
+    profile.ambientColor = glm::vec3(1.0f);
+    profile.ambientIntensity = 0.45f;
+    profile.sunColor = glm::vec3(1.0f);
+    profile.sunIntensity = 0.55f;
+    profile.sunAzimuth = 48.8f;
+    profile.sunElevation = 58.2f;
+    profile.fogColor = glm::vec3(0.12f, 0.12f, 0.14f);
+    profile.fogStart = 500.0f;
+    profile.fogEnd = 1000.0f;
+    return profile;
+}
+
+const char* AdtViewerModule::WorldLightTypeName(WorldLightType type)
+{
+    return type == WorldLightType::Spot ? "Spot" : "Point";
 }
 
 void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
 {
     bookmarks_.clear();
+    lightingProfiles_.clear();
+    lightingDrafts_.clear();
+    lightingEdit_ = DefaultLightingProfile();
+    lightingMapDir_.clear();
+    lightingDirty_ = false;
+    selectedWorldLightId_ = 0;
+    nextWorldLightId_ = 1;
+
+    auto finite = [](float value, float fallback) {
+        return std::isfinite(value) ? value : fallback;
+    };
     try
     {
-        if (!editorNode.contains("bookmarks") || !editorNode["bookmarks"].is_array())
-            return;
-        for (const nlohmann::json& j : editorNode["bookmarks"])
+        if (editorNode.contains("bookmarks") && editorNode["bookmarks"].is_array())
+            for (const nlohmann::json& j : editorNode["bookmarks"])
+            {
+                if (!j.is_object())
+                    continue;
+                WorldBookmark b;
+                b.name = j.value("name", std::string());
+                b.mapId = j.value("mapId", 0u);
+                b.mapDir = j.value("mapDir", std::string());
+                b.world.x = finite(j.value("x", 0.0f), 0.0f);
+                b.world.y = finite(j.value("y", 0.0f), 0.0f);
+                b.world.z = finite(j.value("z", 0.0f), 0.0f);
+                b.radius = std::clamp(finite(j.value("radius", 75.0f), 75.0f), 5.0f, 2000.0f);
+                if (b.name.empty() || b.mapDir.empty())
+                    continue;
+                bookmarks_.push_back(std::move(b));
+                if (bookmarks_.size() >= 100)  // settings guard; plenty for a project without bloating config
+                    break;
+            }
+
+        // Lighting profiles are deliberately Studio-side data rather than an unsafe rewrite of
+        // client Light*.dbc tables. Each map keeps its own editable point/spot collection and
+        // atmosphere, which the renderer consumes live while the World Editor is open.
+        const nlohmann::json* profiles = nullptr;
+        if (editorNode.contains("worldLighting") && editorNode["worldLighting"].is_object())
         {
-            if (!j.is_object())
-                continue;
-            WorldBookmark b;
-            b.name = j.value("name", std::string());
-            b.mapId = j.value("mapId", 0u);
-            b.mapDir = j.value("mapDir", std::string());
-            b.world.x = j.value("x", 0.0f);
-            b.world.y = j.value("y", 0.0f);
-            b.world.z = j.value("z", 0.0f);
-            b.radius = std::clamp(j.value("radius", 75.0f), 5.0f, 2000.0f);
-            if (b.name.empty() || b.mapDir.empty())
-                continue;
-            bookmarks_.push_back(std::move(b));
-            if (bookmarks_.size() >= 100)  // settings guard; plenty for a project without bloating config
-                break;
+            const nlohmann::json& lighting = editorNode["worldLighting"];
+            if (lighting.contains("profiles") && lighting["profiles"].is_array())
+                profiles = &lighting["profiles"];
         }
+        if (profiles)
+            for (const nlohmann::json& j : *profiles)
+            {
+                if (!j.is_object())
+                    continue;
+                const std::string mapDir = j.value("mapDir", std::string());
+                if (mapDir.empty())
+                    continue;
+                WorldLightingProfile profile = DefaultLightingProfile();
+                profile.previewEnabled = j.value("previewEnabled", true);
+                profile.sunEnabled = j.value("sunEnabled", true);
+                profile.fogEnabled = j.value("fogEnabled", false);
+                profile.showMarkers = j.value("showMarkers", true);
+                profile.showVolumes = j.value("showVolumes", true);
+                profile.ambientColor.x = std::clamp(finite(j.value("ambientR", 1.0f), 1.0f), 0.0f, 8.0f);
+                profile.ambientColor.y = std::clamp(finite(j.value("ambientG", 1.0f), 1.0f), 0.0f, 8.0f);
+                profile.ambientColor.z = std::clamp(finite(j.value("ambientB", 1.0f), 1.0f), 0.0f, 8.0f);
+                profile.ambientIntensity = std::clamp(finite(j.value("ambientIntensity", 0.45f), 0.45f), 0.0f, 8.0f);
+                profile.sunColor.x = std::clamp(finite(j.value("sunR", 1.0f), 1.0f), 0.0f, 8.0f);
+                profile.sunColor.y = std::clamp(finite(j.value("sunG", 1.0f), 1.0f), 0.0f, 8.0f);
+                profile.sunColor.z = std::clamp(finite(j.value("sunB", 1.0f), 1.0f), 0.0f, 8.0f);
+                profile.sunIntensity = std::clamp(finite(j.value("sunIntensity", 0.55f), 0.55f), 0.0f, 16.0f);
+                profile.sunAzimuth = finite(j.value("sunAzimuth", profile.sunAzimuth), profile.sunAzimuth);
+                profile.sunElevation = std::clamp(finite(j.value("sunElevation", profile.sunElevation), profile.sunElevation),
+                                                   -89.9f, 89.9f);
+                profile.fogColor.x = std::clamp(finite(j.value("fogR", profile.fogColor.x), profile.fogColor.x), 0.0f, 8.0f);
+                profile.fogColor.y = std::clamp(finite(j.value("fogG", profile.fogColor.y), profile.fogColor.y), 0.0f, 8.0f);
+                profile.fogColor.z = std::clamp(finite(j.value("fogB", profile.fogColor.z), profile.fogColor.z), 0.0f, 8.0f);
+                profile.fogStart = std::max(0.0f, finite(j.value("fogStart", profile.fogStart), profile.fogStart));
+                profile.fogEnd = std::max(profile.fogStart + 0.01f,
+                                          finite(j.value("fogEnd", profile.fogEnd), profile.fogEnd));
+
+                if (j.contains("lights") && j["lights"].is_array())
+                    for (const nlohmann::json& lj : j["lights"])
+                    {
+                        if (!lj.is_object() || profile.lights.size() >= 256)
+                            continue;
+                        WorldLight light;
+                        light.id = lj.value("id", uint64_t(0));
+                        if (light.id == 0)
+                            light.id = nextWorldLightId_++;
+                        light.name = lj.value("name", std::string());
+                        light.type = lj.value("type", std::string("point")) == "spot"
+                                         ? WorldLightType::Spot : WorldLightType::Point;
+                        light.enabled = lj.value("enabled", true);
+                        light.position.x = finite(lj.value("x", 0.0f), 0.0f);
+                        light.position.y = finite(lj.value("y", 0.0f), 0.0f);
+                        light.position.z = finite(lj.value("z", 0.0f), 0.0f);
+                        light.direction.x = finite(lj.value("dirX", 0.0f), 0.0f);
+                        light.direction.y = finite(lj.value("dirY", 0.0f), 0.0f);
+                        light.direction.z = finite(lj.value("dirZ", -1.0f), -1.0f);
+                        light.color.x = finite(lj.value("r", 1.0f), 1.0f);
+                        light.color.y = finite(lj.value("g", 1.0f), 1.0f);
+                        light.color.z = finite(lj.value("b", 1.0f), 1.0f);
+                        light.intensity = finite(lj.value("intensity", 1.0f), 1.0f);
+                        light.range = finite(lj.value("range", 12.0f), 12.0f);
+                        light.falloff = finite(lj.value("falloff", 2.0f), 2.0f);
+                        light.innerAngle = finite(lj.value("innerAngle", 20.0f), 20.0f);
+                        light.outerAngle = finite(lj.value("outerAngle", 35.0f), 35.0f);
+                        NormalizeWorldLight(light);
+                        nextWorldLightId_ = std::max(nextWorldLightId_, light.id + 1);
+                        profile.lights.push_back(std::move(light));
+                    }
+                lightingProfiles_[mapDir] = std::move(profile);
+            }
     }
     catch (...)
     {
+        // Keep valid bookmarks/profiles from a previous project out of a malformed settings node.
         bookmarks_.clear();
+        lightingProfiles_.clear();
+        nextWorldLightId_ = 1;
     }
 }
 
@@ -168,6 +289,43 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
                          {"x", b.world.x}, {"y", b.world.y}, {"z", b.world.z},
                          {"radius", b.radius}});
     editorNode["bookmarks"] = std::move(saved);
+
+    nlohmann::json profiles = nlohmann::json::array();
+    std::vector<std::string> mapDirs;
+    mapDirs.reserve(lightingProfiles_.size());
+    for (const auto& pair : lightingProfiles_)
+        mapDirs.push_back(pair.first);
+    std::sort(mapDirs.begin(), mapDirs.end());
+    for (const std::string& mapDir : mapDirs)
+    {
+        const WorldLightingProfile& profile = lightingProfiles_.at(mapDir);
+        nlohmann::json p = {
+            {"mapDir", mapDir},
+            {"previewEnabled", profile.previewEnabled}, {"sunEnabled", profile.sunEnabled},
+            {"fogEnabled", profile.fogEnabled}, {"showMarkers", profile.showMarkers},
+            {"showVolumes", profile.showVolumes},
+            {"ambientR", profile.ambientColor.r}, {"ambientG", profile.ambientColor.g}, {"ambientB", profile.ambientColor.b},
+            {"ambientIntensity", profile.ambientIntensity},
+            {"sunR", profile.sunColor.r}, {"sunG", profile.sunColor.g}, {"sunB", profile.sunColor.b},
+            {"sunIntensity", profile.sunIntensity}, {"sunAzimuth", profile.sunAzimuth},
+            {"sunElevation", profile.sunElevation},
+            {"fogR", profile.fogColor.r}, {"fogG", profile.fogColor.g}, {"fogB", profile.fogColor.b},
+            {"fogStart", profile.fogStart}, {"fogEnd", profile.fogEnd},
+            {"lights", nlohmann::json::array()}
+        };
+        for (const WorldLight& light : profile.lights)
+            p["lights"].push_back({
+                {"id", light.id}, {"name", light.name},
+                {"type", light.type == WorldLightType::Spot ? "spot" : "point"}, {"enabled", light.enabled},
+                {"x", light.position.x}, {"y", light.position.y}, {"z", light.position.z},
+                {"dirX", light.direction.x}, {"dirY", light.direction.y}, {"dirZ", light.direction.z},
+                {"r", light.color.r}, {"g", light.color.g}, {"b", light.color.b},
+                {"intensity", light.intensity}, {"range", light.range}, {"falloff", light.falloff},
+                {"innerAngle", light.innerAngle}, {"outerAngle", light.outerAngle}
+            });
+        profiles.push_back(std::move(p));
+    }
+    editorNode["worldLighting"] = {{"profiles", std::move(profiles)}};
 }
 
 void AdtViewerModule::Undo()
@@ -347,6 +505,7 @@ void AdtViewerModule::DrawPanels()
     DrawGoInstancePanel();
     DrawWaypointPathPanel();
     DrawTerrainSculptPanel();
+    DrawLightEditorPanel();
     DrawViewportPanel();
 }
 
@@ -424,6 +583,7 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
         return;
     }
     error_.clear();
+    LoadLightingForMap(dir);
     loadedName_ = dir + (streamer_.wmoOnly() ? "  (WMO)" : "");
     if (pendingLocationFocus_ && pendingLocationMapDir_ == dir)
     {
@@ -465,7 +625,10 @@ void AdtViewerModule::FrameWorldPosition(const glm::vec3& world, float radius)
 void AdtViewerModule::FrameSelection()
 {
     if (selKind_ == SelKind::None)
+    {
+        FrameSelectedWorldLight();
         return;
+    }
     const glm::vec3 origin = streamer_.origin();
     if (selKind_ == SelKind::Npc)
     {
@@ -488,6 +651,403 @@ void AdtViewerModule::FrameSelection()
         }
     }
 }
+
+void AdtViewerModule::LoadLightingForMap(const std::string& mapDir)
+{
+    if (mapDir.empty() || lightingMapDir_ == mapDir)
+        return;
+
+    // Preserve a dirty map as a session-only draft when moving to another map. Explicit Save is
+    // what writes a profile into Studio settings, matching terrain/path editor expectations.
+    if (!lightingMapDir_.empty() && lightingDirty_)
+        lightingDrafts_[lightingMapDir_] = lightingEdit_;
+
+    lightingMapDir_ = mapDir;
+    const auto draft = lightingDrafts_.find(mapDir);
+    if (draft != lightingDrafts_.end())
+    {
+        lightingEdit_ = draft->second;
+        lightingDirty_ = true;
+        lightingStatus_ = "Restored an unsaved lighting draft for " + mapDir + ".";
+    }
+    else
+    {
+        const auto saved = lightingProfiles_.find(mapDir);
+        lightingEdit_ = saved != lightingProfiles_.end() ? saved->second : DefaultLightingProfile();
+        lightingDirty_ = false;
+        lightingStatus_ = saved != lightingProfiles_.end()
+            ? "Loaded saved Studio lighting for " + mapDir + "."
+            : "Using the neutral game-style lighting baseline for " + mapDir + ".";
+    }
+    selectedWorldLightId_ = lightingEdit_.lights.empty() ? 0 : lightingEdit_.lights.front().id;
+    lightPlacementActive_ = false;
+    lightMarkers_.clear();
+}
+
+void AdtViewerModule::SaveLightingProfile()
+{
+    if (lightingMapDir_.empty())
+        return;
+    lightingProfiles_[lightingMapDir_] = lightingEdit_;
+    lightingDrafts_.erase(lightingMapDir_);
+    lightingDirty_ = false;
+    lightingStatus_ = "Saved " + std::to_string(lightingEdit_.lights.size()) +
+                      " Studio light(s) for " + lightingMapDir_ + ".";
+    if (svc_ && svc_->requestSaveSettings)
+        svc_->requestSaveSettings();
+    if (svc_ && svc_->setStatus)
+        svc_->setStatus(lightingStatus_);
+}
+
+void AdtViewerModule::RevertLightingProfile()
+{
+    if (lightingMapDir_.empty())
+        return;
+    const auto saved = lightingProfiles_.find(lightingMapDir_);
+    lightingEdit_ = saved != lightingProfiles_.end() ? saved->second : DefaultLightingProfile();
+    lightingDrafts_.erase(lightingMapDir_);
+    lightingDirty_ = false;
+    selectedWorldLightId_ = lightingEdit_.lights.empty() ? 0 : lightingEdit_.lights.front().id;
+    lightPlacementActive_ = false;
+    lightingStatus_ = saved != lightingProfiles_.end()
+        ? "Reverted to saved Studio lighting."
+        : "Reverted to the neutral game-style lighting baseline.";
+}
+
+void AdtViewerModule::MarkLightingDirty(const char* status)
+{
+    if (lightingMapDir_.empty())
+        return;
+    lightingDirty_ = true;
+    lightingDrafts_[lightingMapDir_] = lightingEdit_;
+    if (status)
+        lightingStatus_ = status;
+}
+
+AdtViewerModule::WorldLight* AdtViewerModule::FindWorldLight(uint64_t id)
+{
+    for (WorldLight& light : lightingEdit_.lights)
+        if (light.id == id)
+            return &light;
+    return nullptr;
+}
+
+const AdtViewerModule::WorldLight* AdtViewerModule::FindWorldLight(uint64_t id) const
+{
+    for (const WorldLight& light : lightingEdit_.lights)
+        if (light.id == id)
+            return &light;
+    return nullptr;
+}
+
+void AdtViewerModule::NormalizeWorldLight(WorldLight& light)
+{
+    auto finite = [](float value, float fallback) { return std::isfinite(value) ? value : fallback; };
+    light.position.x = finite(light.position.x, 0.0f);
+    light.position.y = finite(light.position.y, 0.0f);
+    light.position.z = finite(light.position.z, 0.0f);
+    light.direction.x = finite(light.direction.x, 0.0f);
+    light.direction.y = finite(light.direction.y, 0.0f);
+    light.direction.z = finite(light.direction.z, -1.0f);
+    if (glm::length(light.direction) < 1e-5f)
+        light.direction = glm::vec3(0.0f, 0.0f, -1.0f);
+    else
+        light.direction = glm::normalize(light.direction);
+    light.color.x = std::clamp(finite(light.color.x, 1.0f), 0.0f, 8.0f);
+    light.color.y = std::clamp(finite(light.color.y, 1.0f), 0.0f, 8.0f);
+    light.color.z = std::clamp(finite(light.color.z, 1.0f), 0.0f, 8.0f);
+    light.intensity = std::clamp(finite(light.intensity, 1.0f), 0.0f, 64.0f);
+    light.range = std::clamp(finite(light.range, 12.0f), 0.1f, 5000.0f);
+    light.falloff = std::clamp(finite(light.falloff, 2.0f), 0.05f, 16.0f);
+    light.innerAngle = std::clamp(finite(light.innerAngle, 20.0f), 0.1f, 89.0f);
+    light.outerAngle = std::clamp(finite(light.outerAngle, 35.0f), light.innerAngle + 0.1f, 89.9f);
+    if (light.name.empty())
+        light.name = std::string(WorldLightTypeName(light.type)) + " Light " + std::to_string(light.id);
+}
+
+void AdtViewerModule::AddWorldLight(WorldLightType type, const glm::vec3& world)
+{
+    if (lightingMapDir_.empty() || lightingEdit_.lights.size() >= 256)
+    {
+        lightingStatus_ = lightingMapDir_.empty() ? "Open a map before placing a light."
+                                                   : "This map already has the 256-light project safety limit.";
+        return;
+    }
+    WorldLight light;
+    light.id = nextWorldLightId_++;
+    light.type = type;
+    light.name = std::string(WorldLightTypeName(type)) + " Light " +
+                 std::to_string(lightingEdit_.lights.size() + 1);
+    light.position = world;
+    light.direction = glm::vec3(0.0f, 0.0f, -1.0f);
+    light.color = type == WorldLightType::Spot ? glm::vec3(1.0f, 0.88f, 0.62f)
+                                               : glm::vec3(1.0f, 0.94f, 0.78f);
+    light.intensity = type == WorldLightType::Spot ? 2.0f : 1.35f;
+    light.range = type == WorldLightType::Spot ? 24.0f : 14.0f;
+    light.falloff = 2.0f;
+    light.innerAngle = 17.0f;
+    light.outerAngle = 32.0f;
+    NormalizeWorldLight(light);
+    ClearSelection();
+    selectedWorldLightId_ = light.id;
+    lightingEdit_.lights.push_back(std::move(light));
+    MarkLightingDirty("Added a preview light. Save Lighting to persist it in the project.");
+}
+
+void AdtViewerModule::DuplicateSelectedWorldLight()
+{
+    WorldLight* source = FindWorldLight(selectedWorldLightId_);
+    if (!source || lightingEdit_.lights.size() >= 256)
+        return;
+    WorldLight duplicate = *source;
+    duplicate.id = nextWorldLightId_++;
+    duplicate.name += " Copy";
+    duplicate.position += glm::vec3(1.0f, 1.0f, 0.5f);
+    selectedWorldLightId_ = duplicate.id;
+    lightingEdit_.lights.push_back(std::move(duplicate));
+    MarkLightingDirty("Duplicated the selected light.");
+}
+
+void AdtViewerModule::DeleteSelectedWorldLight()
+{
+    if (selectedWorldLightId_ == 0)
+        return;
+    const uint64_t removed = selectedWorldLightId_;
+    const size_t before = lightingEdit_.lights.size();
+    lightingEdit_.lights.erase(std::remove_if(lightingEdit_.lights.begin(), lightingEdit_.lights.end(),
+                                               [removed](const WorldLight& light) {
+                                                   return light.id == removed;
+                                               }), lightingEdit_.lights.end());
+    if (lightingEdit_.lights.size() == before) // stale marker/selection; nothing was removed
+        return;
+    selectedWorldLightId_ = lightingEdit_.lights.empty() ? 0 : lightingEdit_.lights.front().id;
+    MarkLightingDirty("Deleted the selected light.");
+}
+
+void AdtViewerModule::FrameSelectedWorldLight()
+{
+    if (const WorldLight* light = FindWorldLight(selectedWorldLightId_))
+        FrameWorldPosition(light->position, std::max(18.0f, light->range * 1.25f));
+}
+
+void AdtViewerModule::ApplyWorldLightingToRenderer(const glm::vec3& origin,
+                                                    const glm::vec3& worldFocus)
+{
+    if (!svc_ || !svc_->renderer)
+        return;
+    WorldLightingGpu gpu{}; // neutral historical sunlight by default
+    if (!lightingEdit_.previewEnabled)
+    {
+        svc_->renderer->SetWorldLighting(gpu);
+        return;
+    }
+
+    gpu.ambientColor[0] = lightingEdit_.ambientColor.r;
+    gpu.ambientColor[1] = lightingEdit_.ambientColor.g;
+    gpu.ambientColor[2] = lightingEdit_.ambientColor.b;
+    gpu.ambientColor[3] = lightingEdit_.ambientIntensity;
+    gpu.sunColor[0] = lightingEdit_.sunColor.r;
+    gpu.sunColor[1] = lightingEdit_.sunColor.g;
+    gpu.sunColor[2] = lightingEdit_.sunColor.b;
+    gpu.sunColor[3] = 1.0f;
+    const float azimuth = glm::radians(lightingEdit_.sunAzimuth);
+    const float elevation = glm::radians(lightingEdit_.sunElevation);
+    const glm::vec3 sunDirection(std::cos(elevation) * std::cos(azimuth),
+                                 std::cos(elevation) * std::sin(azimuth), std::sin(elevation));
+    gpu.sunDirectionIntensity[0] = sunDirection.x;
+    gpu.sunDirectionIntensity[1] = sunDirection.y;
+    gpu.sunDirectionIntensity[2] = sunDirection.z;
+    gpu.sunDirectionIntensity[3] = lightingEdit_.sunEnabled ? lightingEdit_.sunIntensity : 0.0f;
+    gpu.fogColor[0] = lightingEdit_.fogColor.r;
+    gpu.fogColor[1] = lightingEdit_.fogColor.g;
+    gpu.fogColor[2] = lightingEdit_.fogColor.b;
+    gpu.fogColor[3] = 1.0f;
+    gpu.fogParams[0] = lightingEdit_.fogStart;
+    gpu.fogParams[1] = lightingEdit_.fogEnd;
+    gpu.fogParams[2] = lightingEdit_.fogEnabled ? 1.0f : 0.0f;
+
+    struct Candidate { float dist2 = 0.0f; const WorldLight* light = nullptr; };
+    std::vector<Candidate> nearest;
+    nearest.reserve(lightingEdit_.lights.size());
+    for (const WorldLight& light : lightingEdit_.lights)
+    {
+        if (!light.enabled || light.intensity <= 0.0f || light.range <= 0.0f)
+            continue;
+        const glm::vec3 d = light.position - worldFocus;
+        nearest.push_back({glm::dot(d, d), &light});
+    }
+    std::sort(nearest.begin(), nearest.end(), [](const Candidate& a, const Candidate& b) {
+        return a.dist2 < b.dist2;
+    });
+    const int count = std::min<int>(static_cast<int>(nearest.size()), kMaxWorldLights);
+    for (int i = 0; i < count; ++i)
+    {
+        const WorldLight& light = *nearest[i].light;
+        WorldLightGpu& out = gpu.lights[i];
+        out.positionRange[0] = light.position.x - origin.x;
+        out.positionRange[1] = light.position.y - origin.y;
+        out.positionRange[2] = light.position.z;
+        out.positionRange[3] = light.range;
+        out.colorIntensity[0] = light.color.r;
+        out.colorIntensity[1] = light.color.g;
+        out.colorIntensity[2] = light.color.b;
+        out.colorIntensity[3] = light.intensity;
+        out.directionInnerCos[0] = light.direction.x;
+        out.directionInnerCos[1] = light.direction.y;
+        out.directionInnerCos[2] = light.direction.z;
+        out.directionInnerCos[3] = std::cos(glm::radians(light.innerAngle));
+        out.outerType[0] = std::cos(glm::radians(light.outerAngle));
+        out.outerType[1] = light.type == WorldLightType::Spot ? 1.0f : 0.0f;
+        out.outerType[2] = light.falloff;
+    }
+    gpu.fogParams[3] = static_cast<float>(count);
+    svc_->renderer->SetWorldLighting(gpu);
+}
+
+void AdtViewerModule::BuildLightMarkerCache(const glm::mat4& view, const glm::mat4& proj,
+                                             const ImVec2& p0, int w, int h,
+                                             const glm::vec3& focus)
+{
+    lightMarkers_.clear();
+    if (!lightingEdit_.showMarkers || lightingEdit_.lights.empty())
+        return;
+    const glm::vec3 origin = streamer_.origin();
+    const glm::vec3 worldFocus = focus + origin;
+    for (const WorldLight& light : lightingEdit_.lights)
+    {
+        ImVec2 screen;
+        if (!ProjectWorldPoint(light.position, origin, view, proj, p0, w, h, screen))
+            continue;
+        const glm::vec3 d = light.position - worldFocus;
+        lightMarkers_.push_back({light.id, screen, glm::dot(d, d)});
+    }
+    std::sort(lightMarkers_.begin(), lightMarkers_.end(), [](const LightMarker& a, const LightMarker& b) {
+        return a.dist2 < b.dist2;
+    });
+    if (lightMarkers_.size() > 256)
+        lightMarkers_.resize(256);
+}
+
+bool AdtViewerModule::TrySelectLightMarkerOverlay(bool viewportHovered)
+{
+    if (!viewportHovered || lightMarkers_.empty() || !ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+        return false;
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const LightMarker* best = nullptr;
+    float bestD2 = 14.0f * 14.0f;
+    for (const LightMarker& marker : lightMarkers_)
+    {
+        const float dx = marker.screen.x - mouse.x;
+        const float dy = marker.screen.y - mouse.y;
+        const float d2 = dx * dx + dy * dy;
+        if (d2 < bestD2)
+        {
+            bestD2 = d2;
+            best = &marker;
+        }
+    }
+    if (!best)
+        return false;
+    selectedWorldLightId_ = best->id;
+    ClearSelection(); // a Light Editor selection is independent from DB/ADT object transforms
+    lightingStatus_ = "Selected a light marker in the World Editor.";
+    return true;
+}
+
+void AdtViewerModule::DrawLightOverlay(const glm::mat4& view, const glm::mat4& proj,
+                                       const ImVec2& p0, int w, int h)
+{
+    if (!lightingEdit_.showMarkers || lightMarkers_.empty())
+        return;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const glm::vec3 origin = streamer_.origin();
+    auto colorFor = [](const WorldLight& light, int alpha) {
+        const int r = std::clamp(static_cast<int>(light.color.r * 255.0f), 0, 255);
+        const int g = std::clamp(static_cast<int>(light.color.g * 255.0f), 0, 255);
+        const int b = std::clamp(static_cast<int>(light.color.b * 255.0f), 0, 255);
+        return IM_COL32(r, g, b, alpha);
+    };
+    auto project = [&](const glm::vec3& world, ImVec2& screen) {
+        return ProjectWorldPoint(world, origin, view, proj, p0, w, h, screen);
+    };
+
+    for (const LightMarker& marker : lightMarkers_)
+    {
+        const WorldLight* light = FindWorldLight(marker.id);
+        if (!light)
+            continue;
+        const bool selected = light->id == selectedWorldLightId_;
+        const ImU32 color = colorFor(*light, light->enabled ? 240 : 110);
+        const ImU32 dimColor = colorFor(*light, light->enabled ? 120 : 55);
+
+        if (lightingEdit_.showVolumes && light->range > 0.1f)
+        {
+            if (light->type == WorldLightType::Point)
+            {
+                constexpr int segments = 28;
+                ImVec2 previous{};
+                bool havePrevious = false;
+                for (int i = 0; i <= segments; ++i)
+                {
+                    const float angle = (static_cast<float>(i) / segments) * 6.28318530718f;
+                    ImVec2 at;
+                    const glm::vec3 rim = light->position + glm::vec3(std::cos(angle) * light->range,
+                                                                         std::sin(angle) * light->range, 0.0f);
+                    const bool visible = project(rim, at);
+                    if (visible && havePrevious)
+                        draw->AddLine(previous, at, dimColor, selected ? 2.0f : 1.0f);
+                    previous = at;
+                    havePrevious = visible;
+                }
+            }
+            else
+            {
+                const glm::vec3 forward = glm::normalize(light->direction);
+                const glm::vec3 reference = std::fabs(forward.z) < 0.9f ? glm::vec3(0, 0, 1)
+                                                                          : glm::vec3(0, 1, 0);
+                const glm::vec3 right = glm::normalize(glm::cross(forward, reference));
+                const glm::vec3 up = glm::normalize(glm::cross(right, forward));
+                const glm::vec3 end = light->position + forward * light->range;
+                const float radius = std::tan(glm::radians(light->outerAngle)) * light->range;
+                constexpr int segments = 16;
+                ImVec2 source;
+                const bool sourceVisible = project(light->position, source);
+                ImVec2 previous{};
+                bool havePrevious = false;
+                for (int i = 0; i <= segments; ++i)
+                {
+                    const float angle = (static_cast<float>(i) / segments) * 6.28318530718f;
+                    const glm::vec3 rim = end + (right * std::cos(angle) + up * std::sin(angle)) * radius;
+                    ImVec2 at;
+                    const bool visible = project(rim, at);
+                    if (visible && havePrevious)
+                        draw->AddLine(previous, at, dimColor, selected ? 2.0f : 1.0f);
+                    if (visible && sourceVisible && (i % 4 == 0))
+                        draw->AddLine(source, at, dimColor, selected ? 1.8f : 1.0f);
+                    previous = at;
+                    havePrevious = visible;
+                }
+            }
+        }
+
+        const float radius = selected ? 8.0f : 6.0f;
+        draw->AddCircleFilled(marker.screen, radius, color, 16);
+        draw->AddCircle(marker.screen, radius, selected ? IM_COL32(255, 244, 206, 255) : IM_COL32(235, 245, 255, 225),
+                        16, selected ? 2.0f : 1.25f);
+        draw->AddLine(ImVec2(marker.screen.x - radius * 0.62f, marker.screen.y),
+                      ImVec2(marker.screen.x + radius * 0.62f, marker.screen.y), IM_COL32(22, 24, 28, 235), 1.3f);
+        draw->AddLine(ImVec2(marker.screen.x, marker.screen.y - radius * 0.62f),
+                      ImVec2(marker.screen.x, marker.screen.y + radius * 0.62f), IM_COL32(22, 24, 28, 235), 1.3f);
+        if (selected)
+        {
+            const std::string label = light->name + "  [" + WorldLightTypeName(light->type) + "]";
+            draw->AddText(ImVec2(marker.screen.x + radius + 4.0f, marker.screen.y - radius),
+                          IM_COL32(255, 247, 220, 255), label.c_str());
+        }
+    }
+}
+
+
 
 bool AdtViewerModule::CanBrushPlace(const glm::vec3& world) const
 {
@@ -1518,6 +2078,11 @@ void AdtViewerModule::DrawViewportPanel()
     if (ImGui::Checkbox("WMOs", &opt_.wmos)) OpenMapDir(selectedMapDir_, false);
     ImGui::SameLine();
     if (ImGui::Checkbox("Liquid", &opt_.liquid)) OpenMapDir(selectedMapDir_, false);
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Light preview", &lightingEdit_.previewEnabled))
+        MarkLightingDirty("Toggled the World Editor lighting preview.");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Toggle authored sun, fog and point/spot lights. Configure them in Light Editor.");
     if (!streamer_.wmoOnly())
     {
         ImGui::SameLine();
@@ -1632,6 +2197,10 @@ void AdtViewerModule::DrawViewportPanel()
         ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.42f, 1.0f),
                            "Placement brush active: %s entry %u — right-click terrain; Esc stops.",
                            brushKind_ == 0 ? "NPC" : "GameObject", brushEntry_);
+    if (lightPlacementActive_)
+        ImGui::TextColored(ImVec4(1.0f, 0.76f, 0.28f, 1.0f),
+                           "%s light placement active — right-click terrain; Esc stops.",
+                           WorldLightTypeName(lightPlacementType_));
     if (terrainSculptActive_)
     {
         static const char* kSculptNames[] = {"Raise", "Lower", "Flatten"};
@@ -1669,6 +2238,7 @@ void AdtViewerModule::DrawViewportPanel()
     // share this exact interpretation of phases/difficulty/events/pools/groups.
     const SpawnFilter filter = CurrentSpawnFilter();
     BuildNpcMarkerCache(view, proj, p0, w, h, focus, filter);
+    BuildLightMarkerCache(view, proj, p0, w, h, focus);
 
     // Selection: hover-highlight + click-to-select, then seed the gizmo from the live object.
     // Highlights must be set BEFORE BuildFrame / the layers' Build consume them below. Picking is
@@ -1707,16 +2277,26 @@ void AdtViewerModule::DrawViewportPanel()
             waypointPlacementMode_ = WaypointPlacementMode::None;
             waypointStatus_ = "Terrain waypoint tool cancelled.";
         }
+        else if (lightPlacementActive_)
+        {
+            lightPlacementActive_ = false;
+            lightingStatus_ = "Light placement tool cancelled.";
+        }
         else if (brushActive_)
         {
             brushActive_ = false;
             brushStatus_ = "Placement brush cancelled.";
         }
     }
-    // Delete key removes the selected object (undoable).
-    if (editMode_ && hovered && selKind_ != SelKind::None && !io.WantTextInput &&
-        ImGui::IsKeyPressed(ImGuiKey_Delete))
-        DeleteSelection();
+    // Delete key removes the selected light or selected world object. Studio lights are a separate
+    // editor layer (not DB/ADT placements), so they take priority when their marker is selected.
+    if (editMode_ && hovered && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete))
+    {
+        if (selectedWorldLightId_ != 0)
+            DeleteSelectedWorldLight();
+        else if (selKind_ != SelKind::None)
+            DeleteSelection();
+    }
 
     streamer_.Update(focus, streamRadius_, opt_);
 
@@ -1752,6 +2332,9 @@ void AdtViewerModule::DrawViewportPanel()
     }
     cpuBuildMs_ = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tBuild).count();
 
+    // Pack the map-scoped Light Editor profile into renderer-local coordinates just before the
+    // world pass. Point/spot selection is camera-nearest, matching the GPU's fixed light budget.
+    ApplyWorldLightingToRenderer(streamer_.origin(), focus + streamer_.origin());
     ImTextureID tex = svc_->renderer->RenderWorld(frameTerrains_.data(), (int)frameTerrains_.size(),
                                                   frameGroups_.data(), (int)frameGroups_.size(),
                                                   frameScene_.data(), (int)frameScene_.size(),
@@ -1764,6 +2347,7 @@ void AdtViewerModule::DrawViewportPanel()
     // It stays visible in read-only view mode; point picking/terrain tools still require Edit.
     DrawWaypointOverlay(view, proj, p0, w, h);
     DrawFormationOverlay(view, proj, p0, w, h);
+    DrawLightOverlay(view, proj, p0, w, h);
     DrawNpcMarkerOverlay();
     DrawTerrainBrushOverlay(view, proj, p0, w, h, hovered);
 
@@ -2659,6 +3243,311 @@ void AdtViewerModule::DrawTerrainSculptPanel()
     ImGui::End();
 }
 
+void AdtViewerModule::DrawLightEditorPanel()
+{
+    if (!ImGui::Begin("Light Editor"))
+    {
+        ImGui::End();
+        return;
+    }
+    const bool mapReady = streamerInit_ && !loadedName_.empty() && !lightingMapDir_.empty();
+    if (!mapReady)
+    {
+        ImGui::TextWrapped("Open a world map to author point and spot lights. Light Editor data is a non-destructive, map-scoped Studio settings layer rendered live in the World Editor.");
+        ImGui::End();
+        return;
+    }
+
+    WorldLightingProfile& profile = lightingEdit_;
+    ImGui::TextDisabled("Map: %s", lightingMapDir_.c_str());
+    ImGui::BeginDisabled(!lightingDirty_);
+    if (ImGui::Button("Save lighting"))
+        SaveLightingProfile();
+    ImGui::SameLine();
+    if (ImGui::Button("Revert lighting"))
+        RevertLightingProfile();
+    ImGui::EndDisabled();
+    if (lightingDirty_)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.20f, 1.0f), "unsaved preview");
+    }
+    if (!lightingStatus_.empty())
+        ImGui::TextDisabled("%s", lightingStatus_.c_str());
+
+    bool environmentChanged = false;
+    ImGui::SeparatorText("Viewport lighting");
+    environmentChanged |= ImGui::Checkbox("Preview authored lighting", &profile.previewEnabled);
+    ImGui::SameLine();
+    environmentChanged |= ImGui::Checkbox("Game-style sunlight", &profile.sunEnabled);
+    ImGui::SameLine();
+    environmentChanged |= ImGui::Checkbox("Show light markers", &profile.showMarkers);
+    ImGui::SameLine();
+    environmentChanged |= ImGui::Checkbox("Show influence volumes", &profile.showVolumes);
+
+    if (ImGui::CollapsingHeader("Sun and ambient", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        if (BeginFieldTable("lightenvironment", 150.0f))
+        {
+            FieldRow("Ambient color");
+            environmentChanged |= ImGui::ColorEdit3("##ambientcolor", &profile.ambientColor.x,
+                                                     ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+            FieldRow("Ambient intensity");
+            environmentChanged |= ImGui::SliderFloat("##ambientintensity", &profile.ambientIntensity,
+                                                      0.0f, 3.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+            FieldRow("Sun color");
+            environmentChanged |= ImGui::ColorEdit3("##suncolor", &profile.sunColor.x,
+                                                     ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+            FieldRow("Sun intensity");
+            environmentChanged |= ImGui::SliderFloat("##sunintensity", &profile.sunIntensity,
+                                                      0.0f, 6.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+            FieldRow("Sun azimuth", "Degrees around Z: 0° is +X, 90° is +Y.");
+            environmentChanged |= InputFloatField("##sunazimuth", profile.sunAzimuth);
+            FieldRow("Sun elevation", "Degrees above the horizon; negative values create night/rim lighting.");
+            environmentChanged |= InputFloatField("##sunelevation", profile.sunElevation);
+            EndFieldTable();
+        }
+        if (ImGui::SmallButton("Dawn"))
+        {
+            profile.sunAzimuth = 35.0f; profile.sunElevation = 12.0f;
+            profile.sunColor = glm::vec3(1.0f, 0.61f, 0.34f); profile.sunIntensity = 0.72f;
+            profile.ambientColor = glm::vec3(0.44f, 0.51f, 0.70f); profile.ambientIntensity = 0.46f;
+            environmentChanged = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Noon"))
+        {
+            profile.sunAzimuth = 48.8f; profile.sunElevation = 58.2f;
+            profile.sunColor = glm::vec3(1.0f); profile.sunIntensity = 0.55f;
+            profile.ambientColor = glm::vec3(1.0f); profile.ambientIntensity = 0.45f;
+            environmentChanged = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Dusk"))
+        {
+            profile.sunAzimuth = 225.0f; profile.sunElevation = 9.0f;
+            profile.sunColor = glm::vec3(1.0f, 0.38f, 0.20f); profile.sunIntensity = 0.66f;
+            profile.ambientColor = glm::vec3(0.36f, 0.28f, 0.52f); profile.ambientIntensity = 0.38f;
+            environmentChanged = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Night"))
+        {
+            profile.sunEnabled = false;
+            profile.ambientColor = glm::vec3(0.20f, 0.28f, 0.52f); profile.ambientIntensity = 0.32f;
+            environmentChanged = true;
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Distance fog", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        environmentChanged |= ImGui::Checkbox("Enable distance fog", &profile.fogEnabled);
+        if (BeginFieldTable("lightfog", 150.0f))
+        {
+            FieldRow("Fog color");
+            environmentChanged |= ImGui::ColorEdit3("##fogcolor", &profile.fogColor.x,
+                                                     ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+            FieldRow("Fog start"); environmentChanged |= InputFloatField("##fogstart", profile.fogStart);
+            FieldRow("Fog end"); environmentChanged |= InputFloatField("##fogend", profile.fogEnd);
+            EndFieldTable();
+        }
+        if (!std::isfinite(profile.fogStart)) profile.fogStart = 500.0f;
+        if (!std::isfinite(profile.fogEnd)) profile.fogEnd = 1000.0f;
+        profile.fogStart = std::max(profile.fogStart, 0.0f);
+        profile.fogEnd = std::max(profile.fogEnd, profile.fogStart + 0.01f);
+    }
+    profile.ambientColor = glm::clamp(profile.ambientColor, glm::vec3(0.0f), glm::vec3(8.0f));
+    profile.sunColor = glm::clamp(profile.sunColor, glm::vec3(0.0f), glm::vec3(8.0f));
+    profile.fogColor = glm::clamp(profile.fogColor, glm::vec3(0.0f), glm::vec3(8.0f));
+    profile.ambientIntensity = std::clamp(profile.ambientIntensity, 0.0f, 8.0f);
+    profile.sunIntensity = std::clamp(profile.sunIntensity, 0.0f, 16.0f);
+    profile.sunAzimuth = std::fmod(profile.sunAzimuth, 360.0f);
+    if (profile.sunAzimuth < 0.0f)
+        profile.sunAzimuth += 360.0f;
+    profile.sunElevation = std::clamp(profile.sunElevation, -89.9f, 89.9f);
+    if (environmentChanged)
+        MarkLightingDirty("Updated the live environment preview.");
+
+    ImGui::SeparatorText("Point / spot lights");
+    const glm::vec3 localFocus = camera_.mode() == ViewportCamera::Mode::Fly ? camera_.Eye()
+                                                                               : camera_.center();
+    const glm::vec3 origin = streamer_.origin();
+    const glm::vec3 cameraWorld(localFocus.x + origin.x, localFocus.y + origin.y, localFocus.z);
+    if (ImGui::Button("Add point at camera"))
+        AddWorldLight(WorldLightType::Point, cameraWorld);
+    ImGui::SameLine();
+    if (ImGui::Button("Add spot at camera"))
+        AddWorldLight(WorldLightType::Spot, cameraWorld);
+    ImGui::SameLine();
+    auto armLightPlacement = [&](WorldLightType type, bool alreadyActive) {
+        lightPlacementActive_ = !alreadyActive;
+        lightPlacementType_ = type;
+        if (lightPlacementActive_)
+        {
+            // Match WoWEdit's modal tool behavior: one terrain click must have one unambiguous
+            // authoring meaning, rather than competing with a sculpt/path/spawn brush.
+            editMode_ = true;
+            terrainSculptActive_ = false;
+            waypointPlacementMode_ = WaypointPlacementMode::None;
+            brushActive_ = false;
+        }
+    };
+    const bool placePoint = lightPlacementActive_ && lightPlacementType_ == WorldLightType::Point;
+    if (ImGui::Button(placePoint ? "Stop placing" : "Place point on terrain"))
+        armLightPlacement(WorldLightType::Point, placePoint);
+    ImGui::SameLine();
+    const bool placeSpot = lightPlacementActive_ && lightPlacementType_ == WorldLightType::Spot;
+    if (ImGui::Button(placeSpot ? "Stop placing" : "Place spot on terrain"))
+        armLightPlacement(WorldLightType::Spot, placeSpot);
+    ImGui::SameLine();
+    ImGui::Checkbox("Continuous", &lightPlacementContinuous_);
+    if (lightPlacementActive_)
+        ImGui::TextColored(ImVec4(1.0f, 0.77f, 0.24f, 1.0f),
+                           "%s placement active — right-click terrain in the World Editor.",
+                           WorldLightTypeName(lightPlacementType_));
+
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##lightsearch", "filter lights", lightSearch_, sizeof(lightSearch_));
+    const std::string query = Lower(lightSearch_);
+    ImGui::BeginChild("##worldlightlist", ImVec2(0, 154), true);
+    for (WorldLight& light : profile.lights)
+    {
+        const std::string type = WorldLightTypeName(light.type);
+        const std::string label = type + "  " + light.name + "  ##" + std::to_string(light.id);
+        if (!query.empty() && Lower(type + " " + light.name + " " + std::to_string(light.id)).find(query) == std::string::npos)
+            continue;
+        const std::string rowId = "light-" + std::to_string(light.id);
+        ImGui::PushID(rowId.c_str());
+        bool enabled = light.enabled;
+        if (ImGui::Checkbox("##enabled", &enabled))
+        {
+            light.enabled = enabled;
+            MarkLightingDirty("Changed light visibility.");
+        }
+        ImGui::SameLine();
+        if (ImGui::Selectable(label.c_str(), selectedWorldLightId_ == light.id))
+        {
+            ClearSelection();
+            selectedWorldLightId_ = light.id;
+            lightingStatus_ = "Selected " + light.name + ".";
+        }
+        ImGui::PopID();
+    }
+    if (profile.lights.empty())
+        ImGui::TextDisabled("No Studio lights yet — add one at the camera or place one on terrain.");
+    ImGui::EndChild();
+    int enabledLights = 0;
+    for (const WorldLight& light : profile.lights)
+        if (light.enabled && light.intensity > 0.0f && light.range > 0.0f)
+            ++enabledLights;
+    ImGui::TextDisabled("%d authored / %d enabled — nearest %d affect the current viewport.",
+                        static_cast<int>(profile.lights.size()), enabledLights, kMaxWorldLights);
+
+    WorldLight* selected = FindWorldLight(selectedWorldLightId_);
+    if (!selected)
+    {
+        ImGui::TextDisabled("Select a point/spot marker in the world or a row above to edit it.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::SeparatorText((std::string(WorldLightTypeName(selected->type)) + " Light Inspector").c_str());
+    bool changed = false;
+    if (BeginFieldTable("lightinspector", 150.0f))
+    {
+        FieldRow("Name"); changed |= InputTextString("##lightname", selected->name);
+        int lightType = selected->type == WorldLightType::Spot ? 1 : 0;
+        static const char* kLightTypes[] = {"Point", "Spot"};
+        FieldRow("Type");
+        if (ImGui::Combo("##lighttype", &lightType, kLightTypes, IM_ARRAYSIZE(kLightTypes)))
+        {
+            selected->type = lightType == 1 ? WorldLightType::Spot : WorldLightType::Point;
+            changed = true;
+        }
+        FieldRow("Enabled"); changed |= ImGui::Checkbox("##lightenabled", &selected->enabled);
+        FieldRow("Position X"); changed |= InputFloatField("##lightx", selected->position.x);
+        FieldRow("Position Y"); changed |= InputFloatField("##lighty", selected->position.y);
+        FieldRow("Position Z"); changed |= InputFloatField("##lightz", selected->position.z);
+        FieldRow("Color"); changed |= ImGui::ColorEdit3("##lightcolor", &selected->color.x,
+                                                          ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+        FieldRow("Intensity"); changed |= InputFloatField("##lightintensity", selected->intensity);
+        FieldRow("Range"); changed |= InputFloatField("##lightrange", selected->range);
+        FieldRow("Falloff exponent", "Higher values concentrate light near the source.");
+        changed |= InputFloatField("##lightfalloff", selected->falloff);
+        if (selected->type == WorldLightType::Spot)
+        {
+            FieldRow("Direction");
+            float direction[3] = {selected->direction.x, selected->direction.y, selected->direction.z};
+            if (ImGui::InputFloat3("##lightdir", direction, "%.3f"))
+            {
+                selected->direction = glm::vec3(direction[0], direction[1], direction[2]);
+                changed = true;
+            }
+            FieldRow("Inner cone (deg)"); changed |= InputFloatField("##innercone", selected->innerAngle);
+            FieldRow("Outer cone (deg)"); changed |= InputFloatField("##outercone", selected->outerAngle);
+        }
+        EndFieldTable();
+    }
+    if (changed)
+    {
+        NormalizeWorldLight(*selected);
+        MarkLightingDirty("Edited the selected light.");
+    }
+
+    if (ImGui::Button("Frame light"))
+        FrameSelectedWorldLight();
+    ImGui::SameLine();
+    if (ImGui::Button("Snap to terrain"))
+    {
+        glm::vec3 ground;
+        float hitT = -1.0f;
+        int tileX = 0, tileY = 0;
+        const glm::vec3 local(selected->position.x - origin.x, selected->position.y - origin.y, selected->position.z);
+        if (streamer_.GroundHit(glm::vec3(local.x, local.y, 10000.0f), glm::vec3(0, 0, -1),
+                                ground, hitT, tileX, tileY))
+        {
+            selected->position.z = ground.z;
+            MarkLightingDirty("Snapped the light to terrain.");
+        }
+        else
+            lightingStatus_ = "No loaded terrain below this light.";
+    }
+    if (selected->type == WorldLightType::Spot)
+    {
+        ImGui::SameLine();
+        if (ImGui::Button("Aim at camera"))
+        {
+            const glm::vec3 target = cameraWorld;
+            if (glm::length(target - selected->position) > 1e-4f)
+            {
+                selected->direction = glm::normalize(target - selected->position);
+                MarkLightingDirty("Aimed the spot light at the camera focus.");
+            }
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Duplicate light"))
+    {
+        DuplicateSelectedWorldLight();
+        ImGui::End(); // vector growth may invalidate `selected`; draw the new selection next frame
+        return;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete light"))
+    {
+        DeleteSelectedWorldLight();
+        ImGui::End(); // erase invalidates `selected`; avoid touching it later in this frame
+        return;
+    }
+
+    ImGui::Separator();
+    ImGui::TextWrapped("The renderer evaluates the nearest %d enabled point/spot lights per frame, plus the sun, ambient and optional distance fog. Marker volumes are editor aids. Profiles save with this Studio project; the classic 3.3.5 ADT format itself has no standalone point/spot-light placement table.",
+                       kMaxWorldLights);
+    ImGui::End();
+}
+
+
+
 void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::mat4& proj,
                                                     const ImVec2& p0, int w, int h,
                                                     bool viewportHovered)
@@ -3380,6 +4269,10 @@ void AdtViewerModule::UpdateHoverAndSelection(const glm::mat4& view, const glm::
     // inside an NPC's model would deselect the route instead of selecting its point for terrain moves.
     if (TrySelectWaypointOverlay(view, proj, p0, w, h, viewportHovered))
         return;
+    // Point/spot markers are an explicit authoring target, so select them before an NPC or
+    // doodad underneath their influence volume.
+    if (TrySelectLightMarkerOverlay(viewportHovered))
+        return;
     if (TrySelectNpcMarkerOverlay(viewportHovered))
         return;
 
@@ -3418,6 +4311,7 @@ void AdtViewerModule::UpdateHoverAndSelection(const glm::mat4& view, const glm::
     if (hitKind == SelKind::None)
     {
         ClearSelection();
+        selectedWorldLightId_ = 0;
         return;
     }
     SelectObject(hitKind, duid, gg, ng);
@@ -3428,6 +4322,7 @@ void AdtViewerModule::UpdateHoverAndSelection(const glm::mat4& view, const glm::
 void AdtViewerModule::SelectObject(SelKind kind, uint64_t duid, uint32_t gg, uint32_t ng)
 {
     ClearSelection();
+    selectedWorldLightId_ = 0;   // object transforms and Light Editor markers are distinct selections
     selKind_ = kind;
     saveStatus_.clear();
     if (kind == SelKind::Doodad)
@@ -3992,7 +4887,11 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
     float gT = -1.0f;
     int gtx = 0, gty = 0;
     if (!streamer_.GroundHit(ray.origin, ray.dir, gLocal, gT, gtx, gty))
+    {
+        if (lightPlacementActive_)
+            lightingStatus_ = "No loaded terrain below the cursor — add the light at the camera or fly over an ADT tile.";
         return;   // no ground under the cursor
+    }
 
     // Terrain sculpting is deliberately highest-priority: an author armed it to modify the ground,
     // even when a doodad/NPC happens to sit between the cursor and the terrain triangle. The actual
@@ -4064,6 +4963,16 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
             AddWaypointAt(world);
         else
             MoveSelectedWaypointTo(world);
+        return;
+    }
+
+    // WoWEdit-style point/spot placement comes next. It is a project-light authoring operation,
+    // deliberately above the spawn palette so an armed light tool cannot accidentally stamp an NPC.
+    if (lightPlacementActive_)
+    {
+        AddWorldLight(lightPlacementType_, glm::vec3(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z));
+        if (!lightPlacementContinuous_)
+            lightPlacementActive_ = false;
         return;
     }
 

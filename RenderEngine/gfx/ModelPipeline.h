@@ -45,6 +45,9 @@ public:
                           const InstancedGroup* groups, int groupCount,
                           const SceneInstanceGpu* instances, int count,
                           const float view[16], const float proj[16], int width, int height);
+    // Copy the World Editor's current lighting snapshot. It is packed into SceneUbo for every
+    // render path, including terrain, instanced doodads, NPCs and GameObjects.
+    void SetWorldLighting(const WorldLightingGpu& lighting);
     const RenderStats& stats() const { return stats_; }
     // The semaphore the last offscreen render signaled (or VK_NULL_HANDLE if none this frame).
     // EndFrame waits on it so ImGui samples a completed target. Consuming clears the pending flag.
@@ -196,6 +199,8 @@ private:
     VkBuffer sceneUbo_ = VK_NULL_HANDLE;
     VmaAllocation sceneUboAlloc_ = VK_NULL_HANDLE;
     void* sceneUboMapped_ = nullptr;
+    // Neutral defaults reproduce the historic fixed sun until World Editor calls SetWorldLighting.
+    WorldLightingGpu worldLighting_{};
     VkBuffer sceneBoneSsbo_ = VK_NULL_HANDLE;
     VmaAllocation sceneBoneAlloc_ = VK_NULL_HANDLE;
     void* sceneBoneMapped_ = nullptr;

@@ -45,6 +45,7 @@ public:
                           const InstancedGroup* groups, int groupCount,
                           const SceneInstanceGpu* instances, int count,
                           const float view[16], const float proj[16], int width, int height) override;
+    void SetWorldLighting(const WorldLightingGpu& lighting) override;
     void SetGrid(bool enabled, const float center[3], float extent, float spacing) override;
     bool CaptureModelTarget(std::vector<uint8_t>& outRgba, int& outW, int& outH) override;
     const RenderStats& renderStats() const override;

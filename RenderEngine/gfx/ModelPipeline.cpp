@@ -3,6 +3,8 @@
 #include "gfx/ModelPipeline.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <cstring>
 
 #include "gfx/UiTexturePool.h"
@@ -35,12 +37,22 @@ constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
 // (see revealFormat_, chosen at Init).
 constexpr VkFormat kAccumFormat  = VK_FORMAT_R16G16B16A16_SFLOAT;
 
-// Phase 2 scene UBO: just the camera. Phase 4 adds a bone palette (separate binding).
-struct SceneUbo
+// Shared camera + World Editor lighting snapshot. The lighting fields are all vec4-aligned so
+// this C++ layout maps 1:1 to the std140 Scene block in model/terrain shaders. Bone palettes stay
+// in their own dynamic SSBO; keeping point/spot lights here makes a scene-wide lighting edit one
+// tiny UBO write rather than a model/terrain re-upload.
+struct alignas(16) SceneUbo
 {
     float view[16];
     float proj[16];
+    WorldLightingGpu lighting;
 };
+static_assert(sizeof(WorldLightGpu) == sizeof(float) * 16,
+              "WorldLightGpu must remain four std140 vec4 values");
+static_assert(sizeof(WorldLightingGpu) == sizeof(float) * (5 * 4 + kMaxWorldLights * 16),
+              "WorldLightingGpu must remain tightly packed std140 vec4 data");
+static_assert(offsetof(SceneUbo, lighting) == sizeof(float) * 32,
+              "SceneUbo lighting must begin directly after view/proj matrices");
 
 // Per-draw push constant (matches model.vert/frag). `boneBase` offsets into the shared
 // bone palette so many instances share one buffer (scene instancing); 0 for a lone model.
@@ -274,14 +286,15 @@ bool ModelPipeline::Init(VkPhysicalDevice phys, VkDevice device, VmaAllocator vm
     rpci.pDependencies = deps;
     Chk(vkCreateRenderPass(device_, &rpci, nullptr, &renderPass_), "render pass");
 
-    // Descriptor set layout: UBO (vertex) + combined sampler (fragment) + bone SSBO (vertex).
+    // Descriptor set layout: scene UBO (vertex + fragment lighting/fog), combined sampler
+    // (fragment), and bone SSBO (vertex).
     // UBO + bone SSBO are DYNAMIC so a per-frame dynamic offset selects the frame's region of the
     // single N x-sized buffer (frames-in-flight) without needing N copies of every image descriptor.
     VkDescriptorSetLayoutBinding binds[3] = {};
     binds[0].binding = 0;
     binds[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     binds[0].descriptorCount = 1;
-    binds[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    binds[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     binds[1].binding = 1;
     binds[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     binds[1].descriptorCount = 1;
@@ -410,7 +423,8 @@ bool ModelPipeline::Init(VkPhysicalDevice phys, VkDevice device, VmaAllocator vm
         // groundSet_ (set 0) is allocated after its layout is created, in the terrain pipeline block.
     }
 
-    // Shared scene UBO (view/proj) + bone palette, each sized kFramesInFlight regions. Descriptors
+    // Shared scene UBO (view/proj + World Editor lighting) + bone palette, each sized
+    // kFramesInFlight regions. Descriptors
     // bind the whole buffer as DYNAMIC; a per-frame dynamic offset selects the frame's region, and a
     // per-draw boneBase push constant selects an instance's palette slice within it.
     {
@@ -918,7 +932,7 @@ bool ModelPipeline::Init(VkPhysicalDevice phys, VkDevice device, VmaAllocator vm
         s0.binding = 0;
         s0.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         s0.descriptorCount = 1;
-        s0.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        s0.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo tsl0 = {};
         tsl0.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         tsl0.bindingCount = 1;
@@ -1051,6 +1065,43 @@ bool ModelPipeline::Init(VkPhysicalDevice phys, VkDevice device, VmaAllocator vm
         vkUpdateDescriptorSets(device_, 2, w, 0, nullptr);
     }
     return ok;
+}
+
+void ModelPipeline::SetWorldLighting(const WorldLightingGpu& lighting)
+{
+    worldLighting_ = lighting;
+    // Light data comes from editable Studio settings, so keep malformed hand-edited JSON from
+    // poisoning a shader with NaNs/infinite ranges. The renderer owns the final hard cap too.
+    auto finiteOr = [](float& value, float fallback) {
+        if (!std::isfinite(value))
+            value = fallback;
+    };
+    for (float& value : worldLighting_.sunDirectionIntensity) finiteOr(value, 0.0f);
+    for (float& value : worldLighting_.sunColor) finiteOr(value, 1.0f);
+    for (float& value : worldLighting_.ambientColor) finiteOr(value, 1.0f);
+    for (float& value : worldLighting_.fogColor) finiteOr(value, 0.0f);
+    for (float& value : worldLighting_.fogParams) finiteOr(value, 0.0f);
+    worldLighting_.fogParams[0] = std::max(0.0f, worldLighting_.fogParams[0]);
+    worldLighting_.fogParams[1] = std::max(worldLighting_.fogParams[0] + 0.01f,
+                                             worldLighting_.fogParams[1]);
+    const int count = std::clamp(static_cast<int>(worldLighting_.fogParams[3] + 0.5f),
+                                 0, kMaxWorldLights);
+    worldLighting_.fogParams[2] = worldLighting_.fogParams[2] > 0.5f ? 1.0f : 0.0f;
+    worldLighting_.fogParams[3] = static_cast<float>(count);
+    for (int i = 0; i < kMaxWorldLights; ++i)
+    {
+        WorldLightGpu& light = worldLighting_.lights[i];
+        for (float& value : light.positionRange) finiteOr(value, 0.0f);
+        for (float& value : light.colorIntensity) finiteOr(value, 0.0f);
+        for (float& value : light.directionInnerCos) finiteOr(value, 0.0f);
+        for (float& value : light.outerType) finiteOr(value, 0.0f);
+        light.positionRange[3] = std::max(0.0f, light.positionRange[3]);
+        light.colorIntensity[3] = std::max(0.0f, light.colorIntensity[3]);
+        light.directionInnerCos[3] = std::clamp(light.directionInnerCos[3], -1.0f, 1.0f);
+        light.outerType[0] = std::clamp(light.outerType[0], -1.0f, 1.0f);
+        light.outerType[1] = light.outerType[1] > 0.5f ? 1.0f : 0.0f;
+        light.outerType[2] = std::max(0.05f, light.outerType[2]);
+    }
 }
 
 void ModelPipeline::SetGrid(bool enabled, const float center[3], float extent, float spacing)
@@ -1827,9 +1878,10 @@ TextureId ModelPipeline::RenderModel(ModelHandle handle, const float view[16], c
         std::memcpy(static_cast<char*>(effectMapped_) + curEffOff_, effects->verts,
                     static_cast<size_t>(effectVertCount) * sizeof(float) * 9);
 
-    SceneUbo ubo;
+    SceneUbo ubo = {};
     std::memcpy(ubo.view, view, sizeof(ubo.view));
     std::memcpy(ubo.proj, proj, sizeof(ubo.proj));
+    ubo.lighting = WorldLightingGpu{};
     std::memcpy(static_cast<char*>(sceneUboMapped_) + curDynOff_[0], &ubo, sizeof(ubo));
 
     // Write this model's palette at the base of the frame's bone region (boneBase 0).
@@ -1843,7 +1895,8 @@ TextureId ModelPipeline::RenderModel(ModelHandle handle, const float view[16], c
 
     {
         VkClearValue clears[4] = {};
-        clears[0].color = {{0.12f, 0.12f, 0.14f, 1.0f}};
+        clears[0].color = {{ubo.lighting.fogColor[0], ubo.lighting.fogColor[1],
+                            ubo.lighting.fogColor[2], ubo.lighting.fogColor[3]}};
         clears[1].depthStencil = {1.0f, 0};
         clears[2].color = {{0.0f, 0.0f, 0.0f, 0.0f}};   // accum
         clears[3].color = {{1.0f, 0.0f, 0.0f, 0.0f}};   // reveal (fully revealed)
@@ -1977,9 +2030,10 @@ TextureId ModelPipeline::RenderScene(const SceneInstanceGpu* instances, int coun
 
     VkCommandBuffer cmd = BeginOffscreenFrame();
 
-    SceneUbo ubo;
+    SceneUbo ubo = {};
     std::memcpy(ubo.view, view, sizeof(ubo.view));
     std::memcpy(ubo.proj, proj, sizeof(ubo.proj));
+    ubo.lighting = WorldLightingGpu{};
     std::memcpy(static_cast<char*>(sceneUboMapped_) + curDynOff_[0], &ubo, sizeof(ubo));
 
     // Resolve instances: concatenate bone palettes + effect geometry into the shared buffers,
@@ -2035,7 +2089,8 @@ TextureId ModelPipeline::RenderScene(const SceneInstanceGpu* instances, int coun
 
     {
         VkClearValue clears[4] = {};
-        clears[0].color = {{0.12f, 0.12f, 0.14f, 1.0f}};
+        clears[0].color = {{ubo.lighting.fogColor[0], ubo.lighting.fogColor[1],
+                            ubo.lighting.fogColor[2], ubo.lighting.fogColor[3]}};
         clears[1].depthStencil = {1.0f, 0};
         clears[2].color = {{0.0f, 0.0f, 0.0f, 0.0f}};   // accum
         clears[3].color = {{1.0f, 0.0f, 0.0f, 0.0f}};   // reveal
@@ -2176,9 +2231,10 @@ TextureId ModelPipeline::RenderWorld(const TerrainHandle* terrains, int terrainC
 
     VkCommandBuffer cmd = BeginOffscreenFrame();
 
-    SceneUbo ubo;
+    SceneUbo ubo = {};
     std::memcpy(ubo.view, view, sizeof(ubo.view));
     std::memcpy(ubo.proj, proj, sizeof(ubo.proj));
+    ubo.lighting = worldLighting_;
     std::memcpy(static_cast<char*>(sceneUboMapped_) + curDynOff_[0], &ubo, sizeof(ubo));
 
     struct RInst {
@@ -2292,7 +2348,8 @@ TextureId ModelPipeline::RenderWorld(const TerrainHandle* terrains, int terrainC
             tsSlotWritten_[frameIndex_] = true;   // this slot is now safe to read next cycle
         }
         VkClearValue clears[4] = {};
-        clears[0].color = {{0.12f, 0.12f, 0.14f, 1.0f}};
+        clears[0].color = {{worldLighting_.fogColor[0], worldLighting_.fogColor[1],
+                            worldLighting_.fogColor[2], worldLighting_.fogColor[3]}};
         clears[1].depthStencil = {1.0f, 0};
         clears[2].color = {{0.0f, 0.0f, 0.0f, 0.0f}};   // accum
         clears[3].color = {{1.0f, 0.0f, 0.0f, 0.0f}};   // reveal

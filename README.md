@@ -35,8 +35,9 @@ panel + log across the bottom.
 - **World Editor** - streams whole ADT maps from client data, renders terrain, doodads,
   WMOs, NPCs, GameObjects, transports, phases/events/pools, and provides a map overview,
   coordinate bookmarks, a searchable world outliner, precise transforms, rapid spawn brushes,
-  formation links, non-destructive **terrain height sculpting**, right-click placement, deletion,
-  undo/redo, spawn-instance forms, and an in-world **waypoint path editor** for NPC routes.
+  formation links, non-destructive **terrain height sculpting**, a WoWEdit-style **Light Editor**
+  (sun/ambient/fog plus point and spot lights), right-click placement, deletion, undo/redo,
+  spawn-instance forms, and an in-world **waypoint path editor** for NPC routes.
 
 ### World Editor workflow
 
@@ -65,22 +66,28 @@ turn on **Edit**:
    brush, then right-click the ground. Smooth radial strokes queue MCVT height changes and rebuilt
    MCNR normals across every intersected existing ADT tile. Pending strokes support Ctrl+Z/Ctrl+Y;
    **Save ADT edits** writes the project overlay and reloads streamed terrain.
-6. **Edit an NPC route:** select an NPC and open **Waypoint Path**. The panel identifies whether
+6. **Light the scene:** open **Light Editor** for a WoWEdit-style point/spot-light list. Add a
+   point or spot at the camera, or arm terrain placement and right-click the world. Select its
+   colored marker to edit position, range, falloff, HDR color/intensity, and spot cone/direction.
+   Sun/ambient presets and distance fog update the actual terrain, doodad, WMO, NPC, and GameObject
+   preview immediately. **Save lighting** persists the map-scoped Studio profile; the nearest 16
+   enabled local lights are evaluated in the live renderer.
+7. **Edit an NPC route:** select an NPC and open **Waypoint Path**. The panel identifies whether
    its route comes from the creature template (shared) or its `creature_addon` row (local). Use
    **Make local copy** before changing a shared route when the change is map/spawn-specific;
    creating that local addon carries over the template's visual addon settings so mounted/
    aura-equipped NPCs keep their appearance.
-7. **Author paths in 3D:** click blue numbered route markers to select a point. Add a point at
+8. **Author paths in 3D:** click blue numbered route markers to select a point. Add a point at
    the NPC home, arm **Place on terrain** and right-click ground to insert a point, or arm
    **Move selected on terrain** to reposition one. The route overlay, loop line, delays,
    orientation, walk/run mode, events, actions, chances, and `wpguid` all preview and edit in
    place. Route-table changes have local Ctrl+Z/Ctrl+Y before Save.
-8. **Save deliberately:** route edits are an unsaved live preview until **Save route**. Existing
+9. **Save deliberately:** route edits are an unsaved live preview until **Save route**. Existing
    `waypoint_data` rows are updated transactionally rather than replaced, so project-specific
    columns survive point moves/reordering. A spawn addon row takes precedence over template addon
    data in TrinityCore; clearing its `path_id` keeps its other addon fields and intentionally
    leaves that spawn without a route.
-9. **Verify server appearance:** select an NPC and inspect **NPC Instance → World appearance**.
+10. **Verify server appearance:** select an NPC and inspect **NPC Instance → World appearance**.
    The renderer resolves the server's `CreatureDisplayInfo` id in this order: persistent spawn
    `displayid`/`modelid`, modern AzerothCore `creature_template_model.CreatureDisplayID`, then
    legacy TrinityCore `creature_template.modelid1..4`. It applies the selected

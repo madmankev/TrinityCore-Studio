@@ -6,9 +6,23 @@
 // trees is one instanced draw instead of N, and the bone SSBO holds one palette per model, not per
 // instance. Zero-weight WMO vertices pass through, so instanceMatrix * vertex = the placement.
 
+const int MAX_WORLD_LIGHTS = 16;
+struct WorldLight {
+    vec4 positionRange;
+    vec4 colorIntensity;
+    vec4 directionInnerCos;
+    vec4 outerType;
+};
+
 layout(binding = 0) uniform Scene {
     mat4 view;
     mat4 proj;
+    vec4 sunDirectionIntensity;
+    vec4 sunColor;
+    vec4 ambientColor;
+    vec4 fogColor;
+    vec4 fogParams;
+    WorldLight lights[MAX_WORLD_LIGHTS];
 } scene;
 
 layout(std430, binding = 2) readonly buffer Bones {
@@ -19,8 +33,10 @@ layout(push_constant) uniform Material {
     mat4 texMatrix;
     vec4 color;
     int  blendMode;
-    int  unlit;
+    int  flags;
     int  boneBase;   // base of the model's SHARED palette
+    int  pad0;       // aligns highlight to the shared C++ MeshPush layout
+    vec4 highlight;
 } mat;
 
 layout(location = 0) in vec3  inPos;
@@ -37,6 +53,7 @@ layout(location = 9) in vec4  inInst3;
 layout(location = 0) out vec2 outUV;
 layout(location = 1) out vec3 outNormal;
 layout(location = 2) out vec4 outColor;
+layout(location = 3) out vec3 outWorldPos;
 
 void main()
 {
@@ -63,8 +80,10 @@ void main()
     }
 
     mat4 inst = mat4(inInst0, inInst1, inInst2, inInst3);
-    gl_Position = scene.proj * scene.view * inst * vec4(pos, 1.0);
+    vec3 worldPos = vec3(inst * vec4(pos, 1.0));
+    gl_Position = scene.proj * scene.view * vec4(worldPos, 1.0);
     outUV = (mat.texMatrix * vec4(inUV, 0.0, 1.0)).xy;
     outNormal = mat3(inst) * nrm;
     outColor = inColor;
+    outWorldPos = worldPos;
 }

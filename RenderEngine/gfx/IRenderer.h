@@ -170,6 +170,35 @@ struct SceneInstanceGpu
     float                 outline[4] = {0, 0, 0, 0};
 };
 
+// Real-time editor lighting sent with the scene camera. The World Editor owns the authoring model
+// (names, map-local persistence, point/spot controls); the renderer receives this compact, POD-only
+// snapshot every frame so no UI/GLM types cross the rendering seam. Positions are in the current
+// streamed local frame, just like SceneInstanceGpu bone palettes.
+constexpr int kMaxWorldLights = 16;
+
+struct WorldLightGpu
+{
+    float positionRange[4] = {0, 0, 0, 0};       // xyz local world position, w = range/yards
+    float colorIntensity[4] = {1, 1, 1, 0};      // rgb, w = intensity
+    float directionInnerCos[4] = {0, 0, -1, 1};  // xyz spot direction, w = cos(inner cone)
+    // x = cos(outer cone), y = type (0 point / 1 spot), z = falloff exponent, w = reserved.
+    float outerType[4] = {-1, 0, 1, 0};
+};
+
+struct WorldLightingGpu
+{
+    // Direction points from a shaded surface toward the sun; w is directional intensity.
+    float sunDirectionIntensity[4] = {0.35f, 0.40f, 0.85f, 0.55f};
+    float sunColor[4] = {1, 1, 1, 1};
+    // rgb tint + scalar ambient intensity. Existing world-render behavior is represented by
+    // white at 0.45, so callers that never set lighting retain the pre-Light-Editor look.
+    float ambientColor[4] = {1, 1, 1, 0.45f};
+    float fogColor[4] = {0.12f, 0.12f, 0.14f, 1};
+    // x = fog start, y = fog end, z = fog enabled (0/1), w = active point/spot count.
+    float fogParams[4] = {500.0f, 1000.0f, 0, 0};
+    WorldLightGpu lights[kMaxWorldLights] = {};
+};
+
 // Per-frame render statistics, filled by the renderer while recording RenderWorld and read by the
 // viewer HUD. `gpuMs` is the GPU time of the offscreen 3D pass (via timestamp queries).
 struct RenderStats
@@ -245,6 +274,10 @@ public:
                                     const SceneInstanceGpu* instances, int count,
                                     const float view[16], const float proj[16],
                                     int width, int height) = 0;
+    // Replace the active directional/ambient/fog and point/spot-light snapshot. The renderer keeps
+    // a copy, so caller-owned arrays can be frame scratch. RenderWorld consumes it on its next call;
+    // Model/WMO Viewer paths deliberately retain the neutral default.
+    virtual void SetWorldLighting(const WorldLightingGpu& lighting) = 0;
     // Configure the ground reference grid drawn in RenderModel/RenderScene (on the XY plane
     // at center.z, spanning +/-extent, lines every `spacing`). enabled=false hides it.
     virtual void SetGrid(bool enabled, const float center[3], float extent, float spacing) = 0;

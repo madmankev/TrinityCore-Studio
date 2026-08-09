@@ -52,6 +52,7 @@ public:
                 {"GameObject Instance", DockSlot::Left, true},
                 {"Waypoint Path", DockSlot::Bottom, true},
                 {"Terrain Sculpt", DockSlot::Bottom, true},
+                {"Light Editor", DockSlot::Left, true},
                 {"World Editor###ADT Viewer", DockSlot::Center, true}};
     }
     void DrawPanels() override;
@@ -81,6 +82,7 @@ private:
     void DrawSpawnPalettePanel();
     void DrawLocationsPanel();
     void DrawTransformPanel();
+    void DrawLightEditorPanel();
     void DrawViewportPanel();
     void DrawStatsOverlay(const ImVec2& p0, const ImGuiIO& io);
     void OpenMapDir(const std::string& dir, bool frameCamera);
@@ -135,6 +137,69 @@ private:
         glm::vec3 world{0.0f};
         float radius = 75.0f;
     };
+    // WoWEdit-style Studio light authoring. WotLK ADTs do not carry standalone editable
+    // point/spot-light records, so these are deliberately a Studio settings layer: non-destructive,
+    // map-scoped, saved in Studio settings, and fed live to the World Editor renderer.
+    enum class WorldLightType : uint8_t { Point, Spot };
+    struct WorldLight
+    {
+        uint64_t id = 0;
+        std::string name;
+        WorldLightType type = WorldLightType::Point;
+        bool enabled = true;
+        glm::vec3 position{0.0f};      // TrinityCore world coordinates
+        glm::vec3 direction{0.0f, 0.0f, -1.0f}; // spot beam direction (outward from emitter)
+        glm::vec3 color{1.0f};
+        float intensity = 1.0f;
+        float range = 12.0f;
+        float falloff = 2.0f;
+        float innerAngle = 20.0f;      // degrees, spot only
+        float outerAngle = 35.0f;      // degrees, spot only
+    };
+    struct WorldLightingProfile
+    {
+        bool previewEnabled = true;
+        bool sunEnabled = true;
+        bool fogEnabled = false;
+        bool showMarkers = true;
+        bool showVolumes = true;
+        glm::vec3 ambientColor{1.0f};
+        float ambientIntensity = 0.45f;
+        glm::vec3 sunColor{1.0f};
+        float sunIntensity = 0.55f;
+        float sunAzimuth = 48.8f;      // degrees; matches the historical fixed sun approximately
+        float sunElevation = 58.2f;
+        glm::vec3 fogColor{0.12f, 0.12f, 0.14f};
+        float fogStart = 500.0f;
+        float fogEnd = 1000.0f;
+        std::vector<WorldLight> lights;
+    };
+    struct LightMarker
+    {
+        uint64_t id = 0;
+        ImVec2 screen{};
+        float dist2 = 0.0f;
+    };
+    static WorldLightingProfile DefaultLightingProfile();
+    static const char* WorldLightTypeName(WorldLightType type);
+    void LoadLightingForMap(const std::string& mapDir);
+    void SaveLightingProfile();
+    void RevertLightingProfile();
+    void MarkLightingDirty(const char* status = nullptr);
+    WorldLight* FindWorldLight(uint64_t id);
+    const WorldLight* FindWorldLight(uint64_t id) const;
+    void AddWorldLight(WorldLightType type, const glm::vec3& world);
+    void DuplicateSelectedWorldLight();
+    void DeleteSelectedWorldLight();
+    void NormalizeWorldLight(WorldLight& light);
+    void FrameSelectedWorldLight();
+    void ApplyWorldLightingToRenderer(const glm::vec3& origin, const glm::vec3& worldFocus);
+    void BuildLightMarkerCache(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
+                               int w, int h, const glm::vec3& focus);
+    bool TrySelectLightMarkerOverlay(bool viewportHovered);
+    void DrawLightOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
+                          int w, int h);
+
     struct BrushPlacement
     {
         int kind = 0;  // 0 NPC, 1 GameObject
@@ -287,6 +352,23 @@ private:
     std::string pendingLocationMapDir_;
     glm::vec3 pendingLocationWorld_{0.0f};
     float pendingLocationRadius_ = 75.0f;
+
+    // Map-scoped Light Editor state. `lightingProfiles_` is the persisted baseline; a profile
+    // being actively edited lives in lightingEdit_ and can remain as an in-memory draft while the
+    // user moves between maps. This mirrors the World Editor's explicit Save/Revert discipline.
+    std::unordered_map<std::string, WorldLightingProfile> lightingProfiles_;
+    std::unordered_map<std::string, WorldLightingProfile> lightingDrafts_;
+    WorldLightingProfile lightingEdit_;
+    std::string lightingMapDir_;
+    uint64_t nextWorldLightId_ = 1;
+    uint64_t selectedWorldLightId_ = 0;
+    bool lightingDirty_ = false;
+    bool lightPlacementActive_ = false;
+    bool lightPlacementContinuous_ = false;
+    WorldLightType lightPlacementType_ = WorldLightType::Point;
+    char lightSearch_[128] = {0};
+    std::string lightingStatus_;
+    std::vector<LightMarker> lightMarkers_;
 
     // NPC layer: DB creature spawns rendered + movement-simulated on the terrain.
     MapSpawnRepository spawnRepo_;
