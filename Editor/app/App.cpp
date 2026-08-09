@@ -238,6 +238,9 @@ void App::RefreshServicesInto(EditorServices& s)
     s.connected = connected;
     s.mode = mode;
     s.exportPath = exportPath;
+    s.coreFlavor = activeCoreFlavor;
+    s.coreRoot = requestedCoreRoot;
+    s.coreSchemaSummary = coreSchema.summary;
     s.editRoot = activeProject.location.empty()
                      ? std::string()
                      : (std::filesystem::path(activeProject.location) / "edited-client").string();
@@ -632,7 +635,11 @@ void App::DrawStatusBar()
         ImGui::TextUnformatted(m->DisplayName());
         sep();
         if (connected)
+        {
             ImGui::Text("Connected (%s)", mode == WriteMode::SqlExport ? "SQL export" : "live");
+            sep();
+            ImGui::TextDisabled("%s", CoreFlavorName(activeCoreFlavor));
+        }
         else
             ImGui::TextDisabled("Disconnected");
         sep();
@@ -827,7 +834,12 @@ void App::Connect(const ConnectionConfig& config, WriteMode writeMode, const std
         activeDb = live.get();
         LogInfo("Connected (live write mode)");
     }
-    SetStatus("Connected to " + config.worldDb + " @ " + config.host);
+    coreSchema = DetectCoreSchema(*activeDb);
+    activeCoreFlavor = requestedCoreFlavor == CoreFlavor::Auto ? coreSchema.detected
+                                                               : requestedCoreFlavor;
+    SetStatus("Connected to " + config.worldDb + " @ " + config.host + " (" +
+              CoreFlavorName(activeCoreFlavor) + ")");
+    LogInfo("Core schema: " + coreSchema.summary);
 
     // Keep client-DBC names (faction/spell/skill/title/area); each module loads its
     // own world-DB lookups + refreshes its browser via OnConnected().
@@ -845,6 +857,8 @@ void App::Disconnect()
     live.reset();
     activeDb = nullptr;
     connected = false;
+    coreSchema = CoreSchemaInfo{};
+    activeCoreFlavor = CoreFlavor::Auto;
     lookups.ClearDbSourced();  // keep client-DBC names loaded for offline editing
     RefreshServices();
     for (auto& m : modules_)
@@ -1034,6 +1048,10 @@ ProjectLoadResult App::LoadProject(const ProjectConfig& p)
 
     LogInfo("LoadProject '" + p.name + "': connecting to " + p.conn.host + "/" + p.conn.worldDb);
 
+    // Make the requested core profile available before Connect dispatches OnConnected to modules.
+    requestedCoreFlavor = p.coreFlavor;
+    requestedCoreRoot = p.coreRoot;
+
     // 1) Database — attempt the real connection.
     Connect(p.conn, p.writeMode, exp);
     r.dbOk = connected;
@@ -1057,6 +1075,8 @@ ProjectLoadResult App::LoadProject(const ProjectConfig& p)
             Disconnect();
         if (clientOk)
             clientData.Close();
+        requestedCoreFlavor = CoreFlavor::Auto;
+        requestedCoreRoot.clear();
         return r;
     }
 
@@ -1101,6 +1121,8 @@ void App::CloseProject()
     clientLoadStep = -1;
     clientDataStatus.clear();
     activeProject = ProjectConfig{};
+    requestedCoreFlavor = CoreFlavor::Auto;
+    requestedCoreRoot.clear();
     SetStatus("No project open");
     screen = Screen::ProjectSelect;
     ApplyProjectSelectWindow();   // shrink back to the selection-screen window

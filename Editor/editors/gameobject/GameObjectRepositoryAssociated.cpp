@@ -3,6 +3,7 @@
 
 #include "editors/gameobject/GameObjectRepository.h"
 
+#include <algorithm>
 #include <memory>
 #include <set>
 #include <string>
@@ -34,6 +35,11 @@ bool ExecStep(IDatabase& db, const std::string& sql, DbError& err)
 {
     db.Execute(sql, err);
     return err.ok;
+}
+
+std::string SpawnEntryColumn(const std::set<std::string>& cols)
+{
+    return !cols.empty() && cols.count("id1") != 0 ? "id1" : "id";
 }
 
 // Which loot table a GO type reads (by tmpl.Data1); null for non-loot types.
@@ -75,34 +81,35 @@ DbError GameObjectRepository::LoadAssociated(IDatabase& db, uint32_t entry, Game
             }
     }
 
-    // --- spawns (gameobject.id = entry) ----------------------------------
-    if (auto rs = db.Query("SELECT guid, map, zoneId, areaId, spawnMask, phaseMask, position_x, "
-                           "position_y, position_z, orientation, rotation0, rotation1, rotation2, "
-                           "rotation3, spawntimesecs, animprogress, state, ScriptName, StringId, "
-                           "VerifiedBuild FROM gameobject WHERE id = " + idStr + " ORDER BY guid", err))
+    // --- spawns (TrinityCore gameobject.id / AzerothCore gameobject.id1) ---
+    const std::set<std::string> spawnCols = ExistingCols(db, "gameobject");
+    const std::string spawnEntryCol = SpawnEntryColumn(spawnCols);
+    if (auto rs = db.Query("SELECT * FROM gameobject WHERE `" + spawnEntryCol + "` = " + idStr +
+                           " ORDER BY guid", err))
         while (rs->Next())
         {
+            Row row(*rs);
             GameObjectSpawn s;
-            s.guid = rs->GetUInt32(0);
-            s.map = static_cast<uint16_t>(rs->GetUInt32(1));
-            s.zoneId = static_cast<uint16_t>(rs->GetUInt32(2));
-            s.areaId = static_cast<uint16_t>(rs->GetUInt32(3));
-            s.spawnMask = static_cast<uint8_t>(rs->GetUInt32(4));
-            s.phaseMask = rs->GetUInt32(5);
-            s.x = rs->GetFloat(6);
-            s.y = rs->GetFloat(7);
-            s.z = rs->GetFloat(8);
-            s.o = rs->GetFloat(9);
-            s.rotation[0] = rs->GetFloat(10);
-            s.rotation[1] = rs->GetFloat(11);
-            s.rotation[2] = rs->GetFloat(12);
-            s.rotation[3] = rs->GetFloat(13);
-            s.spawnTimeSecs = rs->GetInt32(14);
-            s.animProgress = static_cast<uint8_t>(rs->GetUInt32(15));
-            s.state = static_cast<uint8_t>(rs->GetUInt32(16));
-            s.scriptName = rs->GetString(17);
-            s.stringId = rs->GetString(18);
-            s.verifiedBuild = rs->GetInt32(19);
+            s.guid = row.U("guid");
+            s.map = static_cast<uint16_t>(row.U("map"));
+            s.zoneId = static_cast<uint16_t>(row.U("zoneId"));
+            s.areaId = static_cast<uint16_t>(row.U("areaId"));
+            s.spawnMask = static_cast<uint8_t>(row.U("spawnMask"));
+            s.phaseMask = row.U("phaseMask");
+            s.x = row.F("position_x");
+            s.y = row.F("position_y");
+            s.z = row.F("position_z");
+            s.o = row.F("orientation");
+            s.rotation[0] = row.F("rotation0");
+            s.rotation[1] = row.F("rotation1");
+            s.rotation[2] = row.F("rotation2");
+            s.rotation[3] = row.F("rotation3");
+            s.spawnTimeSecs = row.I("spawntimesecs");
+            s.animProgress = static_cast<uint8_t>(row.U("animprogress"));
+            s.state = static_cast<uint8_t>(row.U("state"));
+            s.scriptName = row.S("ScriptName");
+            s.stringId = row.S("StringId");
+            s.verifiedBuild = row.I("VerifiedBuild");
             out.spawns.push_back(std::move(s));
         }
 
@@ -147,12 +154,29 @@ bool GameObjectRepository::SaveAssociated(IDatabase& db, const GameObject& go, D
     // --- spawns (in-place per guid) --------------------------------------
     if (all || go.spawnsDirty)
     {
-        static const std::vector<std::string> fullCols = SplitCols(kSpawnColsFull);
-        static const std::vector<std::string> newCols = SplitCols(kSpawnColsNew);
+        std::vector<std::string> fullCols = SplitCols(kSpawnColsFull);
+        std::vector<std::string> newCols = SplitCols(kSpawnColsNew);
         const std::set<std::string> existing = ExistingCols(db, "gameobject");
+        const std::string spawnEntryCol = SpawnEntryColumn(existing);
+        if (fullCols.size() > 1) fullCols[1] = spawnEntryCol;
+        if (!newCols.empty()) newCols[0] = spawnEntryCol;
+        const bool hasId2 = !existing.empty() && existing.count("id2") != 0;
+        const bool hasId3 = !existing.empty() && existing.count("id3") != 0;
+        if (hasId2)
+        {
+            fullCols.insert(fullCols.begin() + std::min<size_t>(2, fullCols.size()), "id2");
+            newCols.insert(newCols.begin() + std::min<size_t>(1, newCols.size()), "id2");
+        }
+        if (hasId3)
+        {
+            fullCols.insert(fullCols.begin() + std::min<size_t>(hasId2 ? 3 : 2, fullCols.size()), "id3");
+            newCols.insert(newCols.begin() + std::min<size_t>(hasId2 ? 2 : 1, newCols.size()), "id3");
+        }
         auto push = [&](ValueList& v, const GameObjectSpawn& s, bool withGuid) {
             if (withGuid) v.UInt(s.guid);
             v.UInt(id);
+            if (hasId2) v.UInt(0);
+            if (hasId3) v.UInt(0);
             v.UInt(s.map);
             v.UInt(s.zoneId);
             v.UInt(s.areaId);

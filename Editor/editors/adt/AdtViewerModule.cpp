@@ -17,6 +17,7 @@
 #include "adt/AdtWriter.h"
 #include "clientdata/ClientData.h"
 #include "data/LookupCache.h"
+#include "data/CoreSupport.h"
 #include "ui/Widgets.h"
 #include "ui/Enums.h"
 #include "viewer/Picking.h"
@@ -345,6 +346,13 @@ void AdtViewerModule::DrawBrowserPanel()
         ImGui::TextWrapped("Renderer unavailable.");
         ImGui::End();
         return;
+    }
+
+    if (svc_->connected)
+    {
+        ImGui::TextDisabled("Core profile: %s", CoreFlavorName(svc_->coreFlavor));
+        if (!svc_->coreSchemaSummary.empty() && ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", svc_->coreSchemaSummary.c_str());
     }
 
     ImGui::SeparatorText("Map");

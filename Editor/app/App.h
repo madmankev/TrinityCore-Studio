@@ -15,6 +15,7 @@
 #include "db/LiveMysqlDatabase.h"
 #include "db/SqlExportDatabase.h"
 #include "data/LookupCache.h"
+#include "data/CoreSupport.h"
 #include "net/SoapClient.h"
 #include "clientdata/ClientData.h"
 #include "clientdata/DbcStore.h"
@@ -146,6 +147,12 @@ private:
     bool connected = false;
     WriteMode mode = WriteMode::Live;
     std::string exportPath = "quest_export.sql";
+    // Requested profile comes from the project form; Connect resolves Auto against the live schema
+    // before modules receive OnConnected. Direct ad-hoc connections retain Auto detection.
+    CoreFlavor requestedCoreFlavor = CoreFlavor::Auto;
+    std::string requestedCoreRoot;
+    CoreSchemaInfo coreSchema;
+    CoreFlavor activeCoreFlavor = CoreFlavor::Auto;
 
     // --- shared data / assets ---
     LookupCache lookups;

@@ -108,6 +108,12 @@ const DbTableSchema& CreatureAddonSpawn()
     static const DbTableSchema s = {"creature_addon", "guid", {
         {"path_id", C::U32, "Path ID", "waypoint_data path this spawn follows"},
         {"mount", C::U32, "Mount", "mount display id"},
+        // AzerothCore bytes/animation-kit layout (filtered automatically on TrinityCore schemas).
+        {"bytes1", C::U32, "Bytes 1", "AzerothCore addon visual-state bytes"},
+        {"bytes2", C::U32, "Bytes 2", "AzerothCore sheath/visual bytes (commonly 1)"},
+        {"aiAnimKit", C::I32, "AI Anim Kit", "AzerothCore ai animation kit id"},
+        {"movementAnimKit", C::I32, "Movement Anim Kit", "AzerothCore movement animation kit id"},
+        {"meleeAnimKit", C::I32, "Melee Anim Kit", "AzerothCore melee animation kit id"},
         {"MountCreatureID", C::U32, "Mount Creature", "creature_template of the mount"},
         {"StandState", C::U8, "Stand State"},
         {"AnimTier", C::U8, "Anim Tier"},

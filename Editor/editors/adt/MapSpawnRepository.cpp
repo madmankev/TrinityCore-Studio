@@ -90,6 +90,34 @@ void ApplyAssociations(IDatabase& db, const char* eventTable, const char* poolTa
                 spawns[it->second].groupManual = true;
         }
 }
+
+std::string LowerColumn(std::string value)
+{
+    for (char& c : value)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return value;
+}
+
+bool HasColumn(const std::set<std::string>& cols, const char* name)
+{
+    // An empty set means schema introspection was unavailable (typically an offline export helper),
+    // so use the stable TrinityCore spelling as a best-effort fallback.
+    return cols.empty() || cols.count(LowerColumn(name)) != 0;
+}
+
+std::string ColumnOr(const char* alias, const std::set<std::string>& cols, const char* name,
+                     const char* fallback)
+{
+    return HasColumn(cols, name) ? (std::string(alias) + ".`" + name + "`") : fallback;
+}
+
+std::string SpawnEntryColumn(const std::set<std::string>& cols)
+{
+    // Current AzerothCore uses id1/id2/id3 while TrinityCore uses id. Prefer id1 when present.
+    if (!cols.empty() && cols.count("id1") != 0)
+        return "id1";
+    return "id";
+}
 } // namespace
 
 DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
@@ -97,20 +125,35 @@ DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
 {
     out.clear();
 
-    // One row per spawn, joined to its template (model ids / scale / speeds), the optional
-    // template addon, and the optional creature_addon row. TrinityCore prefers a creature_addon
-    // row wholesale, so we select ca.guid as well as ca.path_id: path_id=0 on an existing row means
-    // no route, it is not a fallback to creature_template_addon.path_id.
+    const std::set<std::string> creatureCols = sql::ExistingCols(db, "creature");
+    const std::set<std::string> templateCols = sql::ExistingCols(db, "creature_template");
+    const std::set<std::string> addonCols = sql::ExistingCols(db, "creature_addon");
+    const std::set<std::string> templateAddonCols = sql::ExistingCols(db, "creature_template_addon");
+    const std::string entryCol = SpawnEntryColumn(creatureCols);
+
+    // Alias every projected field into a stable position. This accommodates TrinityCore's id/modelid
+    // spawn shape and AzerothCore's id1/id2/id3 shape without making the renderer/UI care which core
+    // supplied the map. Optional values use a SQL literal rather than referencing a missing column.
     const std::string sql =
-        "SELECT c.guid, c.id, c.position_x, c.position_y, c.position_z, c.orientation, "
-        "c.MovementType, c.wander_distance, c.modelid, "
-        "ct.modelid1, ct.modelid2, ct.modelid3, ct.modelid4, ct.scale, ct.speed_walk, ct.speed_run, "
-        "cta.path_id, ca.guid, ca.path_id, c.phaseMask, c.spawnMask "
-        "FROM creature c "
-        "JOIN creature_template ct ON ct.entry = c.id "
-        "LEFT JOIN creature_template_addon cta ON cta.entry = c.id "
-        "LEFT JOIN creature_addon ca ON ca.guid = c.guid "
-        "WHERE c.map = " + std::to_string(mapId);
+        "SELECT c.guid, c.`" + entryCol + "`, c.position_x, c.position_y, c.position_z, c.orientation, " +
+        ColumnOr("c", creatureCols, "MovementType", "0") + ", " +
+        ColumnOr("c", creatureCols, "wander_distance", "0") + ", " +
+        ColumnOr("c", creatureCols, "modelid", "0") + ", " +
+        ColumnOr("ct", templateCols, "modelid1", "0") + ", " +
+        ColumnOr("ct", templateCols, "modelid2", "0") + ", " +
+        ColumnOr("ct", templateCols, "modelid3", "0") + ", " +
+        ColumnOr("ct", templateCols, "modelid4", "0") + ", " +
+        ColumnOr("ct", templateCols, "scale", "1") + ", " +
+        ColumnOr("ct", templateCols, "speed_walk", "1") + ", " +
+        ColumnOr("ct", templateCols, "speed_run", "1.14286") + ", " +
+        ColumnOr("cta", templateAddonCols, "path_id", "0") + ", " +
+        (HasColumn(addonCols, "guid") ? "ca.guid" : "NULL") + ", " +
+        ColumnOr("ca", addonCols, "path_id", "0") + ", " +
+        ColumnOr("c", creatureCols, "phaseMask", "1") + ", " +
+        ColumnOr("c", creatureCols, "spawnMask", "1") +
+        " FROM creature c JOIN creature_template ct ON ct.entry = c.`" + entryCol + "` " +
+        "LEFT JOIN creature_template_addon cta ON cta.entry = c.`" + entryCol + "` " +
+        "LEFT JOIN creature_addon ca ON ca.guid = c.guid WHERE c.map = " + std::to_string(mapId);
 
     DbError err;
     auto rs = db.Query(sql, err);
@@ -129,15 +172,14 @@ DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
         s.movementType = static_cast<uint8_t>(rs->GetUInt32(6));
         s.wanderDistance = rs->GetFloat(7);
 
-        // Resolve the display id: the spawn's modelid override wins, else the first
-        // non-zero template modelid (a CreatureDisplayInfo displayId either way).
-        uint32_t spawnModel = rs->GetUInt32(8);
-        uint32_t display = spawnModel;
+        // Resolve the display id: a TrinityCore spawn modelid override wins when present; current
+        // AzerothCore spawns generally omit that column, so the first template display wins.
+        uint32_t display = rs->GetUInt32(8);
         if (display == 0)
-            for (int col = 9; col <= 12; ++col)   // modelid1..4
+            for (int col = 9; col <= 12; ++col)
             {
-                uint32_t m = rs->GetUInt32(col);
-                if (m != 0) { display = m; break; }
+                const uint32_t model = rs->GetUInt32(col);
+                if (model != 0) { display = model; break; }
             }
         s.displayId = display;
 
@@ -160,7 +202,6 @@ DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
         s.spawnMask = rs->GetUInt32(20);
         if (s.spawnMask == 0)
             s.spawnMask = 1;
-
         out.push_back(std::move(s));
     }
 
@@ -175,12 +216,14 @@ DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
         byGuid.reserve(out.size());
         for (MapSpawn& s : out)
             byGuid[s.guid] = &s;
+        const std::string equipId = ColumnOr("c", creatureCols, "equipment_id", "0");
         const std::string eq =
             "SELECT c.guid, it1.displayid, it2.displayid, it3.displayid "
             "FROM creature c "
-            "JOIN creature_equip_template cet ON cet.CreatureID = c.id AND cet.ID = "
-            "  (CASE WHEN c.equipment_id > 0 THEN c.equipment_id "
-            "        ELSE (SELECT MIN(e2.ID) FROM creature_equip_template e2 WHERE e2.CreatureID = c.id) END) "
+            "JOIN creature_equip_template cet ON cet.CreatureID = c.`" + entryCol + "` AND cet.ID = "
+            "  (CASE WHEN " + equipId + " > 0 THEN " + equipId +
+            "        ELSE (SELECT MIN(e2.ID) FROM creature_equip_template e2 WHERE e2.CreatureID = c.`" +
+                         entryCol + "`) END) "
             "LEFT JOIN item_template it1 ON it1.entry = cet.ItemID1 "
             "LEFT JOIN item_template it2 ON it2.entry = cet.ItemID2 "
             "LEFT JOIN item_template it3 ON it3.entry = cet.ItemID3 "
@@ -285,10 +328,11 @@ DbError MapSpawnRepository::LoadWaypointPath(IDatabase& db, uint32_t pathId, Way
     if (pathId == 0)
         return DbError{};
 
-    const std::string sql =
-        "SELECT point, position_x, position_y, position_z, orientation, delay, move_type, "
-        "move_event, action, action_chance, wpguid "
-        "FROM waypoint_data WHERE id = " + std::to_string(pathId) + " ORDER BY point";
+    // AzerothCore's base waypoint_data may omit the TrinityCore event/action extension columns.
+    // SELECT * + Row-by-name preserves the common path fields and simply defaults unavailable
+    // optional fields, while the schema-adaptive writer below only emits columns that exist.
+    const std::string sql = "SELECT * FROM waypoint_data WHERE id = " + std::to_string(pathId) +
+                            " ORDER BY point";
 
     DbError err;
     auto rs = db.Query(sql, err);
@@ -297,18 +341,20 @@ DbError MapSpawnRepository::LoadWaypointPath(IDatabase& db, uint32_t pathId, Way
 
     while (rs->Next())
     {
+        sql::Row row(*rs);
         WaypointPoint p;
-        p.point = rs->GetUInt32(0);
-        p.x = rs->GetFloat(1);
-        p.y = rs->GetFloat(2);
-        p.z = rs->GetFloat(3);
-        p.o = rs->GetFloat(4);
-        p.delay = rs->GetUInt32(5);
-        p.moveType = static_cast<uint8_t>(rs->GetUInt32(6));
-        p.moveEvent = static_cast<uint8_t>(rs->GetUInt32(7));
-        p.action = rs->GetUInt32(8);
-        p.actionChance = static_cast<uint8_t>(rs->GetUInt32(9));
-        p.waypointGuid = rs->GetUInt32(10);
+        p.point = row.U("point");
+        p.x = row.F("position_x");
+        p.y = row.F("position_y");
+        p.z = row.F("position_z");
+        p.o = row.F("orientation");
+        p.delay = row.U("delay");
+        p.moveType = static_cast<uint8_t>(row.U("move_type"));
+        p.moveEvent = static_cast<uint8_t>(row.U("move_event"));
+        p.action = row.U("action");
+        const int chanceColumn = rs->ColumnIndex("action_chance");
+        p.actionChance = chanceColumn >= 0 ? static_cast<uint8_t>(rs->GetUInt32(chanceColumn)) : 100;
+        p.waypointGuid = row.U("wpguid");
         p.sourcePoint = p.point;
         p.sourceExists = true;
         out.points.push_back(std::move(p));
@@ -518,6 +564,16 @@ bool SaveWaypointPathInTransaction(IDatabase& db, const WaypointPath& path, DbEr
     return true;
 }
 
+bool EnableWaypointMotionInTransaction(IDatabase& db, uint32_t guid, DbError& err)
+{
+    const std::set<std::string> creatureCols = sql::ExistingCols(db, "creature");
+    std::string set = "MovementType=2";
+    if (HasColumn(creatureCols, "wander_distance"))
+        set += ", wander_distance=0";
+    return ExecuteWaypointStep(db, "UPDATE creature SET " + set + " WHERE guid=" +
+                                   std::to_string(guid), err);
+}
+
 bool BindCreatureWaypointPathInTransaction(IDatabase& db, uint32_t guid, uint32_t entry,
                                             uint32_t pathId, bool enableWaypointMotion, DbError& err)
 {
@@ -526,25 +582,50 @@ bool BindCreatureWaypointPathInTransaction(IDatabase& db, uint32_t guid, uint32_
         SetWaypointSaveError(err, "A creature guid, entry, and non-zero waypoint path id are required.");
         return false;
     }
-    // ON DUPLICATE KEY UPDATE changes only path_id on an existing spawn addon. For a fresh row,
-    // SELECT ... LEFT JOIN copies every standard template-addon visual field first. TrinityCore uses
-    // a creature_addon row wholesale (rather than merging it field-by-field), so this copy is vital:
-    // creating a local route must not make a mounted/aura-equipped template NPC lose its appearance.
+
+    const std::set<std::string> addonCols = sql::ExistingCols(db, "creature_addon");
+    const std::set<std::string> templateAddonCols = sql::ExistingCols(db, "creature_template_addon");
+    struct AddonField { const char* name; const char* fallback; };
+    // TrinityCore's extended appearance fields and AzerothCore's bytes/anim-kit fields are both
+    // represented. Only fields physically present in creature_addon are inserted; fields absent
+    // from the template addon receive their documented/default literal instead of breaking INSERT.
+    static const AddonField kFields[] = {
+        {"mount", "0"}, {"bytes1", "0"}, {"bytes2", "1"}, {"emote", "0"},
+        {"aiAnimKit", "0"}, {"movementAnimKit", "0"}, {"meleeAnimKit", "0"},
+        {"MountCreatureID", "0"}, {"StandState", "0"}, {"AnimTier", "0"},
+        {"VisFlags", "0"}, {"SheathState", "1"}, {"PvPFlags", "0"},
+        {"visibilityDistanceType", "0"}, {"auras", "''"},
+    };
+
+    std::vector<std::string> columns = {"`guid`", "`path_id`"};
+    std::vector<std::string> values = {std::to_string(guid), std::to_string(pathId)};
+    for (const AddonField& field : kFields)
+    {
+        // When schema metadata is unavailable (offline export with no read source), retain a
+        // conservative guid/path_id-only insert instead of guessing one core's required fields.
+        if (addonCols.empty() || !HasColumn(addonCols, field.name))
+            continue;
+        columns.emplace_back(std::string("`") + field.name + "`");
+        if (!templateAddonCols.empty() && HasColumn(templateAddonCols, field.name))
+            values.emplace_back(std::string("COALESCE(cta.`") + field.name + "`," + field.fallback + ")");
+        else
+            values.emplace_back(field.fallback);
+    }
+
+    std::string columnSql, valueSql;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (i) { columnSql += ", "; valueSql += ", "; }
+        columnSql += columns[i];
+        valueSql += values[i];
+    }
     const std::string sql =
-        "INSERT INTO creature_addon (guid, path_id, mount, MountCreatureID, StandState, AnimTier, "
-        "VisFlags, SheathState, PvPFlags, emote, visibilityDistanceType, auras) "
-        "SELECT " + std::to_string(guid) + ", " + std::to_string(pathId) +
-        ", COALESCE(cta.mount,0), COALESCE(cta.MountCreatureID,0), COALESCE(cta.StandState,0), "
-        "COALESCE(cta.AnimTier,0), COALESCE(cta.VisFlags,0), COALESCE(cta.SheathState,1), "
-        "COALESCE(cta.PvPFlags,0), COALESCE(cta.emote,0), COALESCE(cta.visibilityDistanceType,0), "
-        "COALESCE(cta.auras,'') FROM (SELECT 1) AS singleton "
-        "LEFT JOIN creature_template_addon cta ON cta.entry=" + std::to_string(entry) +
-        " ON DUPLICATE KEY UPDATE path_id=VALUES(path_id)";
+        "INSERT INTO creature_addon (" + columnSql + ") SELECT " + valueSql +
+        " FROM (SELECT 1) AS singleton LEFT JOIN creature_template_addon cta ON cta.entry=" +
+        std::to_string(entry) + " ON DUPLICATE KEY UPDATE path_id=VALUES(path_id)";
     if (!ExecuteWaypointStep(db, sql, err))
         return false;
-    if (enableWaypointMotion &&
-        !ExecuteWaypointStep(db, "UPDATE creature SET MovementType=2, wander_distance=0 WHERE guid=" +
-                                 std::to_string(guid), err))
+    if (enableWaypointMotion && !EnableWaypointMotionInTransaction(db, guid, err))
         return false;
     return true;
 }
@@ -600,9 +681,7 @@ DbError MapSpawnRepository::EnableCreatureWaypointMotion(IDatabase& db, uint32_t
         return DbError{false, "A creature guid is required."};
     db.BeginTransaction();
     DbError err;
-    db.Execute("UPDATE creature SET MovementType=2, wander_distance=0 WHERE guid=" +
-               std::to_string(guid), err);
-    if (!err.ok)
+    if (!EnableWaypointMotionInTransaction(db, guid, err))
     {
         db.Rollback();
         return err;
@@ -645,13 +724,22 @@ DbError MapSpawnRepository::LoadGameObjectsForMap(IDatabase& db, uint32_t mapId,
                                                  std::vector<MapGameObject>& out) const
 {
     out.clear();
-
+    const std::set<std::string> spawnCols = sql::ExistingCols(db, "gameobject");
+    const std::set<std::string> templateCols = sql::ExistingCols(db, "gameobject_template");
+    const std::string entryCol = SpawnEntryColumn(spawnCols);
     const std::string sql =
-        "SELECT g.guid, g.id, g.position_x, g.position_y, g.position_z, g.orientation, "
-        "g.rotation0, g.rotation1, g.rotation2, g.rotation3, g.state, "
-        "gt.displayId, gt.type, gt.size, g.phaseMask, g.spawnMask "
-        "FROM gameobject g "
-        "JOIN gameobject_template gt ON gt.entry = g.id "
+        "SELECT g.guid, g.`" + entryCol + "`, g.position_x, g.position_y, g.position_z, g.orientation, " +
+        ColumnOr("g", spawnCols, "rotation0", "0") + ", " +
+        ColumnOr("g", spawnCols, "rotation1", "0") + ", " +
+        ColumnOr("g", spawnCols, "rotation2", "0") + ", " +
+        ColumnOr("g", spawnCols, "rotation3", "0") + ", " +
+        ColumnOr("g", spawnCols, "state", "1") + ", " +
+        ColumnOr("gt", templateCols, "displayId", "0") + ", " +
+        ColumnOr("gt", templateCols, "type", "0") + ", " +
+        ColumnOr("gt", templateCols, "size", "1") + ", " +
+        ColumnOr("g", spawnCols, "phaseMask", "1") + ", " +
+        ColumnOr("g", spawnCols, "spawnMask", "1") +
+        " FROM gameobject g JOIN gameobject_template gt ON gt.entry = g.`" + entryCol + "` " +
         "WHERE g.map = " + std::to_string(mapId);
 
     DbError err;
@@ -790,40 +878,39 @@ DbError MapSpawnRepository::LoadCreatureSpawn(IDatabase& db, uint32_t guid, Crea
 {
     out = CreatureSpawn{};
     DbError e;
-    auto rs = db.Query(
-        "SELECT map, zoneId, areaId, spawnMask, phaseMask, modelid, equipment_id, position_x, "
-        "position_y, position_z, orientation, spawntimesecs, wander_distance, currentwaypoint, "
-        "curhealth, curmana, MovementType, npcflag, unit_flags, dynamicflags, ScriptName, StringId, "
-        "VerifiedBuild FROM creature WHERE guid = " + std::to_string(guid), e);
+    auto rs = db.Query("SELECT * FROM creature WHERE guid = " + std::to_string(guid), e);
     if (!rs)
         return e.ok ? DbError{false, "creature spawn query failed"} : e;
     if (!rs->Next())
         return DbError{false, "creature spawn " + std::to_string(guid) + " not found"};
-    int i = 0;
+
+    // id/modelid/StringId differ across supported cores, so read the canonical spawn fields by name.
+    // sql::Row returns a harmless default for omitted columns (for example AzerothCore's modelid).
+    sql::Row row(*rs);
     out.guid = guid;
-    out.map = static_cast<uint16_t>(rs->GetUInt32(i++));
-    out.zoneId = static_cast<uint16_t>(rs->GetUInt32(i++));
-    out.areaId = static_cast<uint16_t>(rs->GetUInt32(i++));
-    out.spawnMask = static_cast<uint8_t>(rs->GetUInt32(i++));
-    out.phaseMask = rs->GetUInt32(i++);
-    out.modelId = rs->GetUInt32(i++);
-    out.equipmentId = static_cast<int8_t>(rs->GetInt32(i++));
-    out.x = rs->GetFloat(i++);
-    out.y = rs->GetFloat(i++);
-    out.z = rs->GetFloat(i++);
-    out.o = rs->GetFloat(i++);
-    out.spawnTimeSecs = rs->GetUInt32(i++);
-    out.wanderDistance = rs->GetFloat(i++);
-    out.currentWaypoint = rs->GetUInt32(i++);
-    out.curHealth = rs->GetUInt32(i++);
-    out.curMana = rs->GetUInt32(i++);
-    out.movementType = static_cast<uint8_t>(rs->GetUInt32(i++));
-    out.npcflag = rs->GetUInt32(i++);
-    out.unitFlags = rs->GetUInt32(i++);
-    out.dynamicFlags = rs->GetUInt32(i++);
-    out.scriptName = rs->GetString(i++);
-    out.stringId = rs->GetString(i++);
-    out.verifiedBuild = rs->GetInt32(i++);
+    out.map = static_cast<uint16_t>(row.U("map"));
+    out.zoneId = static_cast<uint16_t>(row.U("zoneId"));
+    out.areaId = static_cast<uint16_t>(row.U("areaId"));
+    out.spawnMask = static_cast<uint8_t>(row.U("spawnMask"));
+    out.phaseMask = row.U("phaseMask");
+    out.modelId = row.U("modelid");
+    out.equipmentId = static_cast<int8_t>(row.I("equipment_id"));
+    out.x = row.F("position_x");
+    out.y = row.F("position_y");
+    out.z = row.F("position_z");
+    out.o = row.F("orientation");
+    out.spawnTimeSecs = row.U("spawntimesecs");
+    out.wanderDistance = row.F("wander_distance");
+    out.currentWaypoint = row.U("currentwaypoint");
+    out.curHealth = row.U("curhealth");
+    out.curMana = row.U("curmana");
+    out.movementType = static_cast<uint8_t>(row.U("MovementType"));
+    out.npcflag = row.U("npcflag");
+    out.unitFlags = row.U("unit_flags");
+    out.dynamicFlags = row.U("dynamicflags");
+    out.scriptName = row.S("ScriptName");
+    out.stringId = row.S("StringId");
+    out.verifiedBuild = row.I("VerifiedBuild");
     return DbError{};
 }
 
@@ -892,35 +979,32 @@ DbError MapSpawnRepository::LoadGameObjectSpawn(IDatabase& db, uint32_t guid,
 {
     out = GameObjectSpawn{};
     DbError e;
-    auto rs = db.Query(
-        "SELECT map, zoneId, areaId, spawnMask, phaseMask, position_x, position_y, position_z, "
-        "orientation, rotation0, rotation1, rotation2, rotation3, spawntimesecs, animprogress, state, "
-        "ScriptName, StringId, VerifiedBuild FROM gameobject WHERE guid = " + std::to_string(guid), e);
+    auto rs = db.Query("SELECT * FROM gameobject WHERE guid = " + std::to_string(guid), e);
     if (!rs)
         return e.ok ? DbError{false, "gameobject spawn query failed"} : e;
     if (!rs->Next())
         return DbError{false, "gameobject spawn " + std::to_string(guid) + " not found"};
-    int i = 0;
+    sql::Row row(*rs);
     out.guid = guid;
-    out.map = static_cast<uint16_t>(rs->GetUInt32(i++));
-    out.zoneId = static_cast<uint16_t>(rs->GetUInt32(i++));
-    out.areaId = static_cast<uint16_t>(rs->GetUInt32(i++));
-    out.spawnMask = static_cast<uint8_t>(rs->GetUInt32(i++));
-    out.phaseMask = rs->GetUInt32(i++);
-    out.x = rs->GetFloat(i++);
-    out.y = rs->GetFloat(i++);
-    out.z = rs->GetFloat(i++);
-    out.o = rs->GetFloat(i++);
-    out.rotation[0] = rs->GetFloat(i++);
-    out.rotation[1] = rs->GetFloat(i++);
-    out.rotation[2] = rs->GetFloat(i++);
-    out.rotation[3] = rs->GetFloat(i++);
-    out.spawnTimeSecs = rs->GetInt32(i++);
-    out.animProgress = static_cast<uint8_t>(rs->GetUInt32(i++));
-    out.state = static_cast<uint8_t>(rs->GetUInt32(i++));
-    out.scriptName = rs->GetString(i++);
-    out.stringId = rs->GetString(i++);
-    out.verifiedBuild = rs->GetInt32(i++);
+    out.map = static_cast<uint16_t>(row.U("map"));
+    out.zoneId = static_cast<uint16_t>(row.U("zoneId"));
+    out.areaId = static_cast<uint16_t>(row.U("areaId"));
+    out.spawnMask = static_cast<uint8_t>(row.U("spawnMask"));
+    out.phaseMask = row.U("phaseMask");
+    out.x = row.F("position_x");
+    out.y = row.F("position_y");
+    out.z = row.F("position_z");
+    out.o = row.F("orientation");
+    out.rotation[0] = row.F("rotation0");
+    out.rotation[1] = row.F("rotation1");
+    out.rotation[2] = row.F("rotation2");
+    out.rotation[3] = row.F("rotation3");
+    out.spawnTimeSecs = row.I("spawntimesecs");
+    out.animProgress = static_cast<uint8_t>(row.U("animprogress"));
+    out.state = static_cast<uint8_t>(row.U("state"));
+    out.scriptName = row.S("ScriptName");
+    out.stringId = row.S("StringId");
+    out.verifiedBuild = row.I("VerifiedBuild");
     return DbError{};
 }
 
@@ -1008,18 +1092,25 @@ DbError MapSpawnRepository::InsertCreatureSpawn(IDatabase& db, uint32_t mapId, u
         return e.ok ? DbError{false, "creature guid allocation failed"} : e;
     const uint32_t outGuid = guid;
 
-    static const std::vector<std::string> cols = sql::SplitCols(
-        "guid, id, map, zoneId, areaId, spawnMask, phaseMask, modelid, equipment_id, position_x, "
-        "position_y, position_z, orientation, spawntimesecs, wander_distance, currentwaypoint, "
-        "curhealth, curmana, MovementType, npcflag, unit_flags, dynamicflags, ScriptName, StringId, "
-        "VerifiedBuild");
+    const std::set<std::string> existing = sql::ExistingCols(db, "creature");
+    const std::string entryCol = SpawnEntryColumn(existing);
+    std::vector<std::string> cols = {"guid", entryCol};
     sql::ValueList v(db);
-    v.UInt(outGuid); v.UInt(entry); v.UInt(mapId); v.UInt(0); v.UInt(0); v.UInt(1); v.UInt(1);
+    v.UInt(outGuid); v.UInt(entry);
+    // AzerothCore's current id1/id2/id3 spawn layout needs its secondary IDs explicitly set to 0
+    // on schemas where they are non-null/no-default. TrinityCore simply filters these columns out.
+    if (!existing.empty() && existing.count("id2") != 0) { cols.push_back("id2"); v.UInt(0); }
+    if (!existing.empty() && existing.count("id3") != 0) { cols.push_back("id3"); v.UInt(0); }
+    const std::vector<std::string> tail = {
+        "map", "zoneId", "areaId", "spawnMask", "phaseMask", "modelid", "equipment_id",
+        "position_x", "position_y", "position_z", "orientation", "spawntimesecs", "wander_distance",
+        "currentwaypoint", "curhealth", "curmana", "MovementType", "npcflag", "unit_flags",
+        "dynamicflags", "ScriptName", "StringId", "VerifiedBuild"};
+    cols.insert(cols.end(), tail.begin(), tail.end());
+    v.UInt(mapId); v.UInt(0); v.UInt(0); v.UInt(1); v.UInt(1);
     v.UInt(0); v.UInt(0); v.Float(x); v.Float(y); v.Float(z); v.Float(o);
     v.UInt(120); v.Float(0.0f); v.UInt(0); v.UInt(1); v.UInt(0); v.UInt(0); v.UInt(0); v.UInt(0);
     v.UInt(0); v.Text(""); v.Text(""); v.Int(0);
-
-    const std::set<std::string> existing = sql::ExistingCols(db, "creature");
     db.BeginTransaction();
     db.Execute(sql::FilteredInsert("INSERT", "creature", cols, v.tokens, existing), e);
     if (!e.ok)
@@ -1047,17 +1138,22 @@ DbError MapSpawnRepository::InsertGameObjectSpawn(IDatabase& db, uint32_t mapId,
         return e.ok ? DbError{false, "gameobject guid allocation failed"} : e;
     const uint32_t outGuid = guid;
 
-    static const std::vector<std::string> cols = sql::SplitCols(
-        "guid, id, map, zoneId, areaId, spawnMask, phaseMask, position_x, position_y, position_z, "
-        "orientation, rotation0, rotation1, rotation2, rotation3, spawntimesecs, animprogress, state, "
-        "ScriptName, StringId, VerifiedBuild");
+    const std::set<std::string> existing = sql::ExistingCols(db, "gameobject");
+    const std::string entryCol = SpawnEntryColumn(existing);
+    std::vector<std::string> cols = {"guid", entryCol};
     sql::ValueList v(db);
-    v.UInt(outGuid); v.UInt(entry); v.UInt(mapId); v.UInt(0); v.UInt(0); v.UInt(1); v.UInt(1);
+    v.UInt(outGuid); v.UInt(entry);
+    if (!existing.empty() && existing.count("id2") != 0) { cols.push_back("id2"); v.UInt(0); }
+    if (!existing.empty() && existing.count("id3") != 0) { cols.push_back("id3"); v.UInt(0); }
+    const std::vector<std::string> tail = {
+        "map", "zoneId", "areaId", "spawnMask", "phaseMask", "position_x", "position_y",
+        "position_z", "orientation", "rotation0", "rotation1", "rotation2", "rotation3",
+        "spawntimesecs", "animprogress", "state", "ScriptName", "StringId", "VerifiedBuild"};
+    cols.insert(cols.end(), tail.begin(), tail.end());
+    v.UInt(mapId); v.UInt(0); v.UInt(0); v.UInt(1); v.UInt(1);
     v.Float(x); v.Float(y); v.Float(z); v.Float(o);
     v.Float(rot[0]); v.Float(rot[1]); v.Float(rot[2]); v.Float(rot[3]);
     v.UInt(120); v.UInt(100); v.UInt(1); v.Text(""); v.Text(""); v.Int(0);
-
-    const std::set<std::string> existing = sql::ExistingCols(db, "gameobject");
     db.BeginTransaction();
     db.Execute(sql::FilteredInsert("INSERT", "gameobject", cols, v.tokens, existing), e);
     if (!e.ok)

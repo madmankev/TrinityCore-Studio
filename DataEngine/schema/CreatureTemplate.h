@@ -75,6 +75,17 @@ struct CreatureAddon
     bool     present = false;
     uint32_t pathId = 0;                 // `path_id` int unsigned
     uint32_t mount = 0;                  // `mount` int unsigned (mount display id)
+
+    // AzerothCore-compatible addon payload. AC stores unit visual state in bytes1/bytes2 and
+    // optional animation-kit ids; TrinityCore's expanded addon layout simply filters these out.
+    uint32_t bytes1 = 0;                 // `bytes1` int unsigned (AC)
+    uint32_t bytes2 = 1;                 // `bytes2` int unsigned (AC; sheath state is commonly 1)
+    int16_t  aiAnimKit = 0;              // `aiAnimKit` smallint (AC)
+    int16_t  movementAnimKit = 0;        // `movementAnimKit` smallint (AC)
+    int16_t  meleeAnimKit = 0;           // `meleeAnimKit` smallint (AC)
+
+    // TrinityCore expanded addon payload. AzerothCore filters these out when its bytes layout is
+    // present, so one schema struct can round-trip both cores through FilteredUpsert.
     uint32_t mountCreatureId = 0;        // `MountCreatureID` int unsigned
     uint8_t  standState = 0;             // `StandState` tinyint unsigned
     uint8_t  animTier = 0;               // `AnimTier` tinyint unsigned

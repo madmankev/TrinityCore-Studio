@@ -3,6 +3,7 @@
 
 #include "editors/creature/CreatureRepository.h"
 
+#include <algorithm>
 #include <memory>
 #include <set>
 #include <string>
@@ -42,6 +43,11 @@ bool ExecStep(IDatabase& db, const std::string& sql, DbError& err)
 {
     db.Execute(sql, err);
     return err.ok;
+}
+
+std::string SpawnEntryColumn(const std::set<std::string>& cols)
+{
+    return !cols.empty() && cols.count("id1") != 0 ? "id1" : "id";
 }
 
 // Load the rows of one *_loot_template slice for loot id `lootId`.
@@ -162,39 +168,39 @@ DbError CreatureRepository::LoadAssociated(IDatabase& db, uint32_t entry, Creatu
     LoadLootSlice(db, "pickpocketing_loot_template", out.tmpl.pickpocketLoot, out.pickpocketLoot);
     LoadLootSlice(db, "skinning_loot_template", out.tmpl.skinLoot, out.skinLoot);
 
-    // --- spawns (creature.id = entry) ------------------------------------
-    if (auto rs = db.Query("SELECT guid, map, zoneId, areaId, spawnMask, phaseMask, modelid, "
-                           "equipment_id, position_x, position_y, position_z, orientation, "
-                           "spawntimesecs, wander_distance, currentwaypoint, curhealth, curmana, "
-                           "MovementType, npcflag, unit_flags, dynamicflags, ScriptName, StringId, "
-                           "VerifiedBuild FROM creature WHERE id = " + idStr + " ORDER BY guid", err))
+    // --- spawns (TrinityCore creature.id / AzerothCore creature.id1) ---
+    const std::set<std::string> spawnCols = ExistingCols(db, "creature");
+    const std::string spawnEntryCol = SpawnEntryColumn(spawnCols);
+    if (auto rs = db.Query("SELECT * FROM creature WHERE `" + spawnEntryCol + "` = " + idStr +
+                           " ORDER BY guid", err))
         while (rs->Next())
         {
+            Row row(*rs);
             CreatureSpawn s;
-            s.guid = rs->GetUInt32(0);
-            s.map = static_cast<uint16_t>(rs->GetUInt32(1));
-            s.zoneId = static_cast<uint16_t>(rs->GetUInt32(2));
-            s.areaId = static_cast<uint16_t>(rs->GetUInt32(3));
-            s.spawnMask = static_cast<uint8_t>(rs->GetUInt32(4));
-            s.phaseMask = rs->GetUInt32(5);
-            s.modelId = rs->GetUInt32(6);
-            s.equipmentId = static_cast<int8_t>(rs->GetInt32(7));
-            s.x = rs->GetFloat(8);
-            s.y = rs->GetFloat(9);
-            s.z = rs->GetFloat(10);
-            s.o = rs->GetFloat(11);
-            s.spawnTimeSecs = rs->GetUInt32(12);
-            s.wanderDistance = rs->GetFloat(13);
-            s.currentWaypoint = rs->GetUInt32(14);
-            s.curHealth = rs->GetUInt32(15);
-            s.curMana = rs->GetUInt32(16);
-            s.movementType = static_cast<uint8_t>(rs->GetUInt32(17));
-            s.npcflag = rs->GetUInt32(18);
-            s.unitFlags = rs->GetUInt32(19);
-            s.dynamicFlags = rs->GetUInt32(20);
-            s.scriptName = rs->GetString(21);
-            s.stringId = rs->GetString(22);
-            s.verifiedBuild = rs->GetInt32(23);
+            s.guid = row.U("guid");
+            s.map = static_cast<uint16_t>(row.U("map"));
+            s.zoneId = static_cast<uint16_t>(row.U("zoneId"));
+            s.areaId = static_cast<uint16_t>(row.U("areaId"));
+            s.spawnMask = static_cast<uint8_t>(row.U("spawnMask"));
+            s.phaseMask = row.U("phaseMask");
+            s.modelId = row.U("modelid");
+            s.equipmentId = static_cast<int8_t>(row.I("equipment_id"));
+            s.x = row.F("position_x");
+            s.y = row.F("position_y");
+            s.z = row.F("position_z");
+            s.o = row.F("orientation");
+            s.spawnTimeSecs = row.U("spawntimesecs");
+            s.wanderDistance = row.F("wander_distance");
+            s.currentWaypoint = row.U("currentwaypoint");
+            s.curHealth = row.U("curhealth");
+            s.curMana = row.U("curmana");
+            s.movementType = static_cast<uint8_t>(row.U("MovementType"));
+            s.npcflag = row.U("npcflag");
+            s.unitFlags = row.U("unit_flags");
+            s.dynamicFlags = row.U("dynamicflags");
+            s.scriptName = row.S("ScriptName");
+            s.stringId = row.S("StringId");
+            s.verifiedBuild = row.I("VerifiedBuild");
             out.spawns.push_back(std::move(s));
         }
 
@@ -307,12 +313,29 @@ bool CreatureRepository::SaveAssociated(IDatabase& db, const Creature& c, DbErro
     // --- spawns (in-place per guid: delete / insert-new / replace-dirty) -
     if (all || c.spawnsDirty)
     {
-        static const std::vector<std::string> fullCols = SplitCols(kSpawnColsFull);
-        static const std::vector<std::string> newCols = SplitCols(kSpawnColsNew);
+        std::vector<std::string> fullCols = SplitCols(kSpawnColsFull);
+        std::vector<std::string> newCols = SplitCols(kSpawnColsNew);
         const std::set<std::string> existing = ExistingCols(db, "creature");
+        const std::string spawnEntryCol = SpawnEntryColumn(existing);
+        if (fullCols.size() > 1) fullCols[1] = spawnEntryCol;
+        if (!newCols.empty()) newCols[0] = spawnEntryCol;
+        const bool hasId2 = !existing.empty() && existing.count("id2") != 0;
+        const bool hasId3 = !existing.empty() && existing.count("id3") != 0;
+        if (hasId2)
+        {
+            fullCols.insert(fullCols.begin() + std::min<size_t>(2, fullCols.size()), "id2");
+            newCols.insert(newCols.begin() + std::min<size_t>(1, newCols.size()), "id2");
+        }
+        if (hasId3)
+        {
+            fullCols.insert(fullCols.begin() + std::min<size_t>(hasId2 ? 3 : 2, fullCols.size()), "id3");
+            newCols.insert(newCols.begin() + std::min<size_t>(hasId2 ? 2 : 1, newCols.size()), "id3");
+        }
         auto pushSpawnValues = [&](ValueList& v, const CreatureSpawn& s, bool withGuid) {
             if (withGuid) v.UInt(s.guid);
             v.UInt(id);
+            if (hasId2) v.UInt(0);
+            if (hasId3) v.UInt(0);
             v.UInt(s.map);
             v.UInt(s.zoneId);
             v.UInt(s.areaId);

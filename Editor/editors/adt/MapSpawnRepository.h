@@ -79,10 +79,10 @@ struct CreatureFormationMember
     uint32_t point2 = 0;
 };
 
-// Which addon supplied a creature's resolved waypoint path. TrinityCore uses a creature_addon row
-// wholesale when one exists (even path_id = 0), otherwise it uses creature_template_addon. Keeping
-// that distinction prevents the World Editor from incorrectly claiming a spawn inherits a template
-// route while its own addon row actually disables it.
+// Which addon supplied a creature's resolved waypoint path. TrinityCore and AzerothCore both use a
+// creature_addon row wholesale when one exists (even path_id = 0), otherwise they use
+// creature_template_addon. Keeping that distinction prevents the World Editor from incorrectly
+// claiming a spawn inherits a template route while its own addon row actually disables it.
 enum class WaypointPathSource : uint8_t
 {
     None,
@@ -163,7 +163,9 @@ class MapSpawnRepository
 {
 public:
     // Load every creature spawn on `mapId`, joined to its template (model/scale/speed), its
-    // template addon, and its optional creature_addon spawn override. `out` is replaced.
+    // template addon, and its optional creature_addon spawn override. Dynamically resolves
+    // TrinityCore creature.id or AzerothCore creature.id1 (and analogous GameObject columns).
+    // `out` is replaced.
     DbError LoadSpawnsForMap(IDatabase& db, uint32_t mapId, std::vector<MapSpawn>& out) const;
 
     // Load formations whose member spawn belongs to `mapId`; a missing formation table is reported

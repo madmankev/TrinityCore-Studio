@@ -38,9 +38,13 @@ constexpr const char* kCreatureTemplateCols =
     "DamageModifier, ExperienceModifier, RacialLeader, movementId, RegenHealth, mechanic_immune_mask, "
     "spell_school_immune_mask, flags_extra, ScriptName, StringId, VerifiedBuild";
 
+// Superset of TrinityCore's expanded addon fields and AzerothCore's bytes/animation-kit layout.
+// FilteredUpsert emits only fields the connected schema actually has, preserving round-trip data on
+// both cores without forcing users to maintain two editor documents.
 constexpr const char* kAddonCols =
-    "entry, path_id, mount, MountCreatureID, StandState, AnimTier, VisFlags, SheathState, PvPFlags, "
-    "emote, visibilityDistanceType, auras";
+    "entry, path_id, mount, bytes1, bytes2, aiAnimKit, movementAnimKit, meleeAnimKit, "
+    "MountCreatureID, StandState, AnimTier, VisFlags, SheathState, PvPFlags, emote, "
+    "visibilityDistanceType, auras";
 
 constexpr const char* kMovementCols =
     "CreatureId, Ground, Swim, Flight, Rooted, Chase, Random, InteractionPauseTimer";
@@ -210,11 +214,18 @@ DbError CreatureRepository::LoadCreature(IDatabase& db, uint32_t entry, Creature
         {
             ResultSet& r = *rs;
             auto U = [&](const char* n) { int c = r.ColumnIndex(n); return c >= 0 ? r.GetUInt32(c) : 0u; };
+            auto I = [&](const char* n) { int c = r.ColumnIndex(n); return c >= 0 ? r.GetInt32(c) : 0; };
             auto S = [&](const char* n) { int c = r.ColumnIndex(n); return c >= 0 ? r.GetString(c) : std::string(); };
             CreatureAddon& a = out.addon;
             a.present = true;
             a.pathId = U("path_id");
             a.mount = U("mount");
+            a.bytes1 = U("bytes1");
+            a.bytes2 = U("bytes2");
+            if (r.ColumnIndex("bytes2") < 0) a.bytes2 = 1; // TrinityCore layout has no bytes2
+            a.aiAnimKit = static_cast<int16_t>(I("aiAnimKit"));
+            a.movementAnimKit = static_cast<int16_t>(I("movementAnimKit"));
+            a.meleeAnimKit = static_cast<int16_t>(I("meleeAnimKit"));
             a.mountCreatureId = U("MountCreatureID");
             a.standState = static_cast<uint8_t>(U("StandState"));
             a.animTier = static_cast<uint8_t>(U("AnimTier"));
@@ -403,6 +414,11 @@ DbError CreatureRepository::SaveCreature(IDatabase& db, const Creature& c)
         v.UInt(id);
         v.UInt(a.pathId);
         v.UInt(a.mount);
+        v.UInt(a.bytes1);
+        v.UInt(a.bytes2);
+        v.Int(a.aiAnimKit);
+        v.Int(a.movementAnimKit);
+        v.Int(a.meleeAnimKit);
         v.UInt(a.mountCreatureId);
         v.UInt(a.standState);
         v.UInt(a.animTier);

@@ -33,6 +33,12 @@ struct ProjectConfig
 
     std::string clientDataPath;    // WoW 3.3.5a Data folder (or loose DBFilesClient/Interface)
 
+    // Optional server checkout/install root. It is used to recognize TrinityCore vs AzerothCore
+    // layouts (including AzerothCore's env/dist/etc or env/dist/configs) and can import
+    // WorldDatabaseInfo from worldserver.conf; clientDataPath remains the actual WoW client Data path.
+    CoreFlavor coreFlavor = CoreFlavor::Auto;
+    std::string coreRoot;
+
     WriteMode writeMode = WriteMode::Live;
     std::string exportPath;        // used in SqlExport mode; default "<location>/export.sql"
 

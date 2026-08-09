@@ -1,7 +1,7 @@
 # TrinityCore Studio
 
-A desktop world-building toolkit for browsing and editing World of Warcraft data in a
-**TrinityCore 3.3.5a (build 12340)** *world* database. It combines record editors for
+A desktop world-building toolkit for browsing and editing World of Warcraft data in
+**TrinityCore 3.3.5a (build 12340)** and **AzerothCore 3.3.5a** *world* databases. It combines record editors for
 quests, items, creatures, gameobjects, scripting, conditions, loot, and reference tables
 with a streamed **3D World Editor**. It resolves item / creature / gameobject / faction /
 spell IDs to names and can either write changes **live** (transactional) or **export a
@@ -104,6 +104,22 @@ Point the app at a WoW 3.3.5a `Data` folder (MPQ archives) to unlock item/spell
 WMOs, and NPC/GameObject models), name resolution for factions / spells / areas / skills /
 titles / faction templates, and the **Blizzard parchment theme** + UI font. Record editors
 still work without it - you just get IDs instead of names and the dark theme.
+
+### Core compatibility: TrinityCore + AzerothCore
+
+Projects now carry a **Core** profile: Auto-detect, TrinityCore, or AzerothCore. Auto-detect
+probes a live database before editor modules load. It recognizes the current AzerothCore
+`creature.id1` / `gameobject.id1` spawn layout, its `bytes1` / `bytes2` creature-addon
+layout, and reduced `waypoint_data` variants; TrinityCore layouts continue to use `id` and
+expanded addon fields. World Editor spawn placement, outliner, paths, formation data, and
+creature/gameobject associated-spawn panels adapt their entry-column and optional-field SQL
+at runtime.
+
+For an AzerothCore project, optionally set **Core root** in the project form. Studio detects
+common `env/dist/etc` and `env/dist/configs` layouts, can import `WorldDatabaseInfo` from
+`worldserver.conf`, and still keeps your **WoW client `Data` folder** separate from the
+server's extracted `Data` directory. Core-specific columns are schema-filtered on save, so
+one project file can safely target either core.
 
 ## Build
 

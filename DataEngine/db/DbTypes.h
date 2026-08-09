@@ -37,4 +37,15 @@ enum class WriteMode
     Live,
     SqlExport
 };
+
+// The world-schema family a project targets. Auto is the safe default: the app probes a connected
+// database and falls back to TrinityCore-style names when no live schema is available (for example
+// an offline SQL-export session). Both supported cores target WoW 3.3.5a client data, but their
+// world tables and installation layouts have meaningful differences.
+enum class CoreFlavor
+{
+    Auto,
+    TrinityCore,
+    AzerothCore,
+};
 } // namespace we

@@ -8,6 +8,8 @@
 
 #include <json.hpp>
 
+#include "data/CoreSupport.h"
+
 namespace we
 {
 using nlohmann::json;
@@ -35,6 +37,8 @@ json ToJson(const ProjectConfig& p)
     if (p.savePassword)
         node["password"] = p.conn.password;
     node["clientDataPath"] = p.clientDataPath;
+    node["coreFlavor"] = CoreFlavorName(p.coreFlavor);
+    node["coreRoot"] = p.coreRoot;
     node["writeMode"] = (p.writeMode == WriteMode::SqlExport) ? "sqlexport" : "live";
     node["exportPath"] = p.exportPath;
     node["reloadAfterSave"] = p.reloadAfterSave;
@@ -63,6 +67,8 @@ ProjectConfig FromJson(const json& node, const std::string& location)
     p.savePassword = node.value("savePassword", false);
     p.conn.password = node.value("password", std::string());
     p.clientDataPath = node.value("clientDataPath", std::string());
+    p.coreFlavor = ParseCoreFlavor(node.value("coreFlavor", std::string("auto")));
+    p.coreRoot = node.value("coreRoot", std::string());
     p.writeMode = (node.value("writeMode", std::string("live")) == "sqlexport")
                       ? WriteMode::SqlExport
                       : WriteMode::Live;

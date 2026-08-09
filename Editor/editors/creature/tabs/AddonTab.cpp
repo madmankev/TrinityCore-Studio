@@ -6,6 +6,8 @@
 
 #include "imgui.h"
 
+#include <algorithm>
+
 #include "schema/Creature.h"
 #include "data/LookupCache.h"
 
@@ -51,6 +53,28 @@ void DrawCreatureAddonTab(CreatureEditorContext& ctx)
         FieldRow("auras", "space-separated spell ids applied on spawn");
         if (InputTextString("##auras", a.auras)) md();
         EndFieldTable();
+    }
+
+    if (ImGui::CollapsingHeader("AzerothCore bytes / animation kits"))
+    {
+        ImGui::TextDisabled("These values are written only when the connected addon schema has the matching columns.");
+        if (BeginFieldTable("qe_cr_addon_ac"))
+        {
+            FieldRow("bytes1", "AzerothCore creature addon visual-state byte field.");
+            if (InputU32("##bytes1", a.bytes1)) md();
+            FieldRow("bytes2", "AzerothCore sheath/visual byte field (commonly 1 for melee)." );
+            if (InputU32("##bytes2", a.bytes2)) md();
+            int32_t ai = a.aiAnimKit;
+            FieldRow("aiAnimKit");
+            if (InputI32("##aiAnimKit", ai)) { a.aiAnimKit = static_cast<int16_t>(std::clamp(ai, -32768, 32767)); md(); }
+            int32_t movement = a.movementAnimKit;
+            FieldRow("movementAnimKit");
+            if (InputI32("##movementAnimKit", movement)) { a.movementAnimKit = static_cast<int16_t>(std::clamp(movement, -32768, 32767)); md(); }
+            int32_t melee = a.meleeAnimKit;
+            FieldRow("meleeAnimKit");
+            if (InputI32("##meleeAnimKit", melee)) { a.meleeAnimKit = static_cast<int16_t>(std::clamp(melee, -32768, 32767)); md(); }
+            EndFieldTable();
+        }
     }
 }
 } // namespace we

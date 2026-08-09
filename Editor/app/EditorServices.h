@@ -30,6 +30,12 @@ struct EditorServices
     WriteMode   mode = WriteMode::Live;
     std::string exportPath;
 
+    // Resolved core/schema profile for the active project. Auto is used only while disconnected;
+    // after a successful connection the shell probes creature/gameobject columns and resolves it.
+    CoreFlavor coreFlavor = CoreFlavor::Auto;
+    std::string coreRoot;
+    std::string coreSchemaSummary;
+
     // Per-project loose edit folder (<project location>/edited-client) where DBC editors
     // save edited files; ClientData reads it as an overlay so edits win + round-trip.
     // Empty when no project is open.

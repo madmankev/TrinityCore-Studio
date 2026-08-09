@@ -11,6 +11,7 @@
 
 #include "ui/Widgets.h"
 #include "util/FileDialog.h"
+#include "data/CoreSupport.h"
 
 namespace we
 {
@@ -38,6 +39,7 @@ void ProjectSelectScreen::BeginCreate()
     originalLocation.clear();
     formError.clear();
     testStatus.clear();
+    coreLayoutStatus.clear();
     requestForm = true;
 }
 
@@ -48,6 +50,7 @@ void ProjectSelectScreen::BeginSettings(const ProjectConfig& p)
     originalLocation = p.location;
     formError.clear();
     testStatus.clear();
+    coreLayoutStatus.clear();
     requestForm = true;
 }
 
@@ -244,6 +247,58 @@ void ProjectSelectScreen::DrawProjectForm(ProjectSelectCallbacks& cb, float dpiS
                 form.clientDataPath = picked;
         }
     }
+
+    ImGui::SeparatorText("Core compatibility (optional)");
+    ImGui::TextDisabled("Choose a profile or point at a TrinityCore/AzerothCore install to import its WorldDatabaseInfo.");
+    static const char* kCoreFlavors[] = {"Auto-detect from database", "TrinityCore 3.3.5", "AzerothCore 3.3.5"};
+    int core = form.coreFlavor == CoreFlavor::TrinityCore ? 1
+             : form.coreFlavor == CoreFlavor::AzerothCore ? 2 : 0;
+    if (ImGui::Combo("Core", &core, kCoreFlavors, IM_ARRAYSIZE(kCoreFlavors)))
+        form.coreFlavor = core == 1 ? CoreFlavor::TrinityCore
+                         : core == 2 ? CoreFlavor::AzerothCore : CoreFlavor::Auto;
+    {
+        const float browseW = 90 * dpiScale;
+        ImGui::TextUnformatted("Core root");
+        ImGui::SetNextItemWidth(-(browseW + ImGui::GetStyle().ItemSpacing.x));
+        InputTextString("##pcoreroot", form.coreRoot);
+        ImGui::SameLine();
+        if (ImGui::Button("Browse...##corebrowse", ImVec2(browseW, 0)))
+        {
+            std::string picked = PickFolderDialog("Select a TrinityCore or AzerothCore root folder");
+            if (!picked.empty())
+                form.coreRoot = picked;
+        }
+    }
+    if (ImGui::Button("Detect layout"))
+    {
+        const CoreInstallLayout layout = ResolveCoreInstallLayout(form.coreRoot, form.coreFlavor);
+        if (!layout.found)
+            coreLayoutStatus = "No known worldserver config/bin layout found under this root.";
+        else
+        {
+            if (form.coreFlavor == CoreFlavor::Auto && layout.flavor != CoreFlavor::Auto)
+                form.coreFlavor = layout.flavor;
+            coreLayoutStatus = std::string("Detected ") + CoreFlavorName(layout.flavor) +
+                               (layout.worldserverConfig.empty() ? " layout." :
+                                " config: " + layout.worldserverConfig);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Import WorldDatabaseInfo"))
+    {
+        const CoreInstallLayout layout = ResolveCoreInstallLayout(form.coreRoot, form.coreFlavor);
+        ConnectionConfig imported;
+        std::string error;
+        if (ImportWorldDatabaseInfo(layout, imported, error))
+        {
+            form.conn = imported;
+            coreLayoutStatus = "Imported WorldDatabaseInfo from " + layout.worldserverConfig;
+        }
+        else
+            coreLayoutStatus = "Import failed: " + error;
+    }
+    if (!coreLayoutStatus.empty())
+        ImGui::TextDisabled("%s", coreLayoutStatus.c_str());
 
     ImGui::SeparatorText("Write mode");
     int wm = (form.writeMode == WriteMode::SqlExport) ? 1 : 0;

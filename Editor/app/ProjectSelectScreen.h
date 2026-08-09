@@ -69,6 +69,7 @@ private:
     std::string originalLocation;   // settings: detect a moved project folder
     std::string formError;          // validation message shown in the form
     std::string testStatus;         // last "Test connection" result
+    std::string coreLayoutStatus;   // detected config/bin layout or import result
 
     // Delete target.
     std::string deleteName;
