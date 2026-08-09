@@ -98,6 +98,69 @@ std::unordered_map<uint32_t, std::string> LoadNameDbc(const ClientData& cd, cons
     }
     return out;
 }
+
+bool LooksLikeModelPath(const std::string& value)
+{
+    if (value.size() < 4 || (value.find('\\') == std::string::npos && value.find('/') == std::string::npos))
+        return false;
+    std::string lower = value;
+    for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const size_t dot = lower.find_last_of('.');
+    if (dot == std::string::npos)
+        return false;
+    const std::string ext = lower.substr(dot);
+    return ext == ".m2" || ext == ".mdx" || ext == ".mdl";
+}
+
+uint32_t DetectCreatureModelPathField(const Dbc& dbc)
+{
+    if (dbc.FieldCount() <= 1 || dbc.RecordCount() == 0)
+        return UINT32_MAX;
+    const uint32_t sample = std::min<uint32_t>(dbc.RecordCount(), 400);
+    const uint32_t stride = std::max<uint32_t>(dbc.RecordCount() / sample, 1);
+    uint32_t bestField = UINT32_MAX;
+    uint32_t bestScore = 0;
+    for (uint32_t field = 1; field < dbc.FieldCount(); ++field)
+    {
+        uint32_t score = 0;
+        for (uint32_t i = 0; i < sample; ++i)
+            if (LooksLikeModelPath(dbc.GetString(i * stride, field)))
+                ++score;
+        if (score > bestScore)
+        {
+            bestScore = score;
+            bestField = field;
+        }
+    }
+    return bestScore > 0 ? bestField : UINT32_MAX;
+}
+
+uint32_t DetectCreatureDisplayModelField(const Dbc& dbc,
+                                         const std::unordered_map<uint32_t, std::string>& modelPaths)
+{
+    if (modelPaths.empty() || dbc.RecordCount() == 0)
+        return 1;
+    const uint32_t sample = std::min<uint32_t>(dbc.RecordCount(), 500);
+    const uint32_t stride = std::max<uint32_t>(dbc.RecordCount() / sample, 1);
+    uint32_t bestField = 1;
+    uint32_t bestScore = 0;
+    // Model id sits near the front in every known 3.3.5 display layout; keep the scan narrow so
+    // random fields that happen to share a numeric range cannot beat a real model-id column.
+    const uint32_t end = std::min<uint32_t>(dbc.FieldCount(), 6);
+    for (uint32_t field = 1; field < end; ++field)
+    {
+        uint32_t score = 0;
+        for (uint32_t i = 0; i < sample; ++i)
+            if (modelPaths.count(dbc.GetUInt(i * stride, field)) != 0)
+                ++score;
+        if (score > bestScore)
+        {
+            bestScore = score;
+            bestField = field;
+        }
+    }
+    return bestScore > 0 ? bestField : 1;
+}
 } // namespace
 
 bool Dbc::Load(const std::vector<uint8_t>& bytes)
@@ -333,16 +396,23 @@ std::unordered_map<uint32_t, std::string> DbcStore::LoadSpellNames(const ClientD
 
 std::unordered_map<uint32_t, std::string> DbcStore::LoadCreatureModelPaths(const ClientData& cd) const
 {
-    // CreatureModelData.dbc: id=0, ModelName (path) = field 2. The DBC stores an .mdx/
-    // .mdl path; normalize to .m2 (the actual on-disk WotLK model).
+    // CreatureModelData.dbc normally stores ModelName at field 2. Some extracted/translated client
+    // packs shift fields, so detect the column containing real M2/MDX paths before giving up. This
+    // matters to the World Editor: paths may have waypoints and DB spawns even when all NPC meshes
+    // silently fail to resolve.
     std::unordered_map<uint32_t, std::string> out;
     Dbc dbc;
-    if (!dbc.Load(cd.ReadFile("DBFilesClient\\CreatureModelData.dbc")) || dbc.FieldCount() <= 2)
+    if (!dbc.Load(cd.ReadFile("DBFilesClient\\CreatureModelData.dbc")))
+        return out;
+    uint32_t pathField = dbc.FieldCount() > 2 ? 2u : UINT32_MAX;
+    if (pathField == UINT32_MAX || !LooksLikeModelPath(dbc.GetString(0, pathField)))
+        pathField = DetectCreatureModelPathField(dbc);
+    if (pathField == UINT32_MAX)
         return out;
     for (uint32_t r = 0; r < dbc.RecordCount(); ++r)
     {
-        std::string path = dbc.GetString(r, 2);
-        if (path.empty())
+        std::string path = dbc.GetString(r, pathField);
+        if (!LooksLikeModelPath(path))
             continue;
         size_t dot = path.find_last_of('.');
         if (dot != std::string::npos)
@@ -357,14 +427,17 @@ std::unordered_map<uint32_t, DbcStore::CreatureDisplay>
 DbcStore::LoadCreatureDisplays(const ClientData& cd) const
 {
     // CreatureDisplayInfo.dbc: id=0, ModelId=1, ExtendedDisplayInfoID=3, TextureVariation[3]=6,7,8.
+    // Validate the model-id field against CreatureModelData rather than assuming every extracted
+    // 3.3.5 client pack preserves the exact field position.
     std::unordered_map<uint32_t, CreatureDisplay> out;
     Dbc dbc;
     if (!dbc.Load(cd.ReadFile("DBFilesClient\\CreatureDisplayInfo.dbc")) || dbc.FieldCount() <= 8)
         return out;
+    const uint32_t modelField = DetectCreatureDisplayModelField(dbc, LoadCreatureModelPaths(cd));
     for (uint32_t r = 0; r < dbc.RecordCount(); ++r)
     {
         CreatureDisplay d;
-        d.modelId = dbc.GetUInt(r, 1);
+        d.modelId = dbc.GetUInt(r, modelField);
         d.extendedDisplayId = dbc.GetUInt(r, 3);   // -> CreatureDisplayInfoExtra (character NPCs)
         d.skins[0] = dbc.GetString(r, 6);
         d.skins[1] = dbc.GetString(r, 7);

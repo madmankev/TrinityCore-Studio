@@ -102,8 +102,10 @@ turn on **Edit**:
 Point the app at a WoW 3.3.5a `Data` folder (MPQ archives) to unlock item/spell
 **icons**, quest **POI zone maps**, the streamed 3D **World Editor** (ADT terrain, M2s,
 WMOs, and NPC/GameObject models), name resolution for factions / spells / areas / skills /
-titles / faction templates, and the **Blizzard parchment theme** + UI font. Record editors
-still work without it - you just get IDs instead of names and the dark theme.
+titles / faction templates, and the **Blizzard parchment theme** + UI font. A core server's
+extracted `Data` folder is not a substitute for a full WoW client Data folder: Studio now shows
+selectable NPC map markers plus model diagnostics when creature M2/DBC files are missing. Record
+editors still work without client data - you just get IDs instead of names and the dark theme.
 
 ### Core compatibility: TrinityCore + AzerothCore
 

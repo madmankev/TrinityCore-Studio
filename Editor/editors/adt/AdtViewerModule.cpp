@@ -1508,9 +1508,28 @@ void AdtViewerModule::DrawViewportPanel()
         ImGui::SameLine();
         ImGui::TextDisabled("%d/%d NPCs%s", npcLayer_.drawnCount(), npcLayer_.spawnCount(),
                             npcLayer_.cappedLastFrame() ? " (capped)" : "");
+        ImGui::SameLine();
+        ImGui::Checkbox("NPC markers", &showNpcMarkers_);
+        ImGui::SameLine();
+        ImGui::Checkbox("NPC labels", &showNpcMarkerLabels_);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(110);
+        ImGui::SliderInt("Marker cap", &npcMarkerMax_, 50, 1000);
     }
 
-    ImGui::SameLine();
+    if (!npcLayer_.modelDataReady() && npcLayer_.spawnCount() > 0)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.22f, 1.0f),
+                           "NPC M2 data unavailable (%d display rows, %d model paths). Use a full WoW 3.3.5 client Data folder; AzerothCore server Data alone does not contain creature M2 assets.",
+                           npcLayer_.displayInfoCount(), npcLayer_.modelPathCount());
+    }
+    else if (npcLayer_.failedDisplayCount() > 0 || npcLayer_.directModelFallbackCount() > 0)
+    {
+        ImGui::TextDisabled("NPC model diagnostics: %d uploaded, %d failed display(s), %d direct-model fallback(s). Markers remain selectable when a custom M2 cannot load.",
+                            npcLayer_.modelCount(), npcLayer_.failedDisplayCount(),
+                            npcLayer_.directModelFallbackCount());
+    }
+
     ImGui::Checkbox("Formations", &showFormations_);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Draw creature_formations leader/member links for the open map.");
@@ -1619,6 +1638,7 @@ void AdtViewerModule::DrawViewportPanel()
     // Assemble the live spawn-visibility filter once; picking, rendering, and the World Outliner
     // share this exact interpretation of phases/difficulty/events/pools/groups.
     const SpawnFilter filter = CurrentSpawnFilter();
+    BuildNpcMarkerCache(view, proj, p0, w, h, focus, filter);
 
     // Selection: hover-highlight + click-to-select, then seed the gizmo from the live object.
     // Highlights must be set BEFORE BuildFrame / the layers' Build consume them below. Picking is
@@ -1714,6 +1734,7 @@ void AdtViewerModule::DrawViewportPanel()
     // It stays visible in read-only view mode; point picking/terrain tools still require Edit.
     DrawWaypointOverlay(view, proj, p0, w, h);
     DrawFormationOverlay(view, proj, p0, w, h);
+    DrawNpcMarkerOverlay();
     DrawTerrainBrushOverlay(view, proj, p0, w, h, hovered);
 
     // Transform gizmo: drawn ON TOP of the blitted image, on THIS window's draw list, with the SAME
@@ -2387,6 +2408,95 @@ void AdtViewerModule::DrawWaypointOverlay(const glm::mat4& view, const glm::mat4
         const std::string label = std::to_string(waypointEdit_.points[i].point);
         draw->AddText(ImVec2(projected[i].x + 8.0f, projected[i].y - 8.0f), IM_COL32(255, 255, 255, 245),
                       label.c_str());
+    }
+}
+
+void AdtViewerModule::BuildNpcMarkerCache(const glm::mat4& view, const glm::mat4& proj,
+                                                const ImVec2& p0, int w, int h,
+                                                const glm::vec3& focus, const SpawnFilter& filter)
+{
+    npcMarkers_.clear();
+    if (!showNpcMarkers_ || !showNpcs_)
+        return;
+    std::vector<MapSpawn> spawns;
+    npcLayer_.SnapshotSpawns(spawns);
+    const glm::vec3 origin = streamer_.origin();
+    const glm::vec3 worldFocus = focus + origin;
+    const float maxRange = std::max(npcCullDist_, 100.0f);
+    const float maxRange2 = maxRange * maxRange;
+    for (const MapSpawn& spawn : spawns)
+    {
+        if (!filter.Visible(spawn.phaseMask, spawn.spawnMask, spawn.eventEntry,
+                            spawn.poolHidden, spawn.groupManual))
+            continue;
+        const glm::vec3 d(spawn.x - worldFocus.x, spawn.y - worldFocus.y, spawn.z - worldFocus.z);
+        const float dist2 = glm::dot(d, d);
+        if (dist2 > maxRange2)
+            continue;
+        NpcMarker marker;
+        marker.guid = spawn.guid;
+        marker.entry = spawn.entry;
+        marker.dist2 = dist2;
+        if (!ProjectWorldPoint(glm::vec3(spawn.x, spawn.y, spawn.z), origin, view, proj, p0, w, h,
+                               marker.screen))
+            continue;
+        npcMarkers_.push_back(marker);
+    }
+    std::sort(npcMarkers_.begin(), npcMarkers_.end(), [](const NpcMarker& a, const NpcMarker& b) {
+        return a.dist2 < b.dist2;
+    });
+    if (static_cast<int>(npcMarkers_.size()) > npcMarkerMax_)
+        npcMarkers_.resize(std::max(npcMarkerMax_, 0));
+}
+
+bool AdtViewerModule::TrySelectNpcMarkerOverlay(bool viewportHovered)
+{
+    if (!viewportHovered || npcMarkers_.empty() || !ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+        return false;
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const NpcMarker* best = nullptr;
+    float bestD2 = 11.0f * 11.0f;
+    for (const NpcMarker& marker : npcMarkers_)
+    {
+        const float dx = marker.screen.x - mouse.x;
+        const float dy = marker.screen.y - mouse.y;
+        const float d2 = dx * dx + dy * dy;
+        if (d2 < bestD2)
+        {
+            bestD2 = d2;
+            best = &marker;
+        }
+    }
+    if (!best)
+        return false;
+    SelectObject(SelKind::Npc, 0, 0, best->guid);
+    return true;
+}
+
+void AdtViewerModule::DrawNpcMarkerOverlay()
+{
+    if (npcMarkers_.empty())
+        return;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    for (const NpcMarker& marker : npcMarkers_)
+    {
+        const bool selected = selKind_ == SelKind::Npc && selGuid_ == marker.guid;
+        const ImU32 fill = selected ? IM_COL32(255, 198, 64, 245) : IM_COL32(86, 230, 122, 220);
+        const ImU32 outline = selected ? IM_COL32(255, 245, 210, 255) : IM_COL32(220, 255, 230, 235);
+        const float r = selected ? 6.5f : 5.0f;
+        draw->AddCircleFilled(marker.screen, r, fill, 12);
+        draw->AddCircle(marker.screen, r, outline, 12, 1.5f);
+        // A small "head" dot differentiates an NPC proxy from waypoint/formation markers.
+        draw->AddCircleFilled(ImVec2(marker.screen.x, marker.screen.y - r * 0.35f), r * 0.28f,
+                              IM_COL32(25, 55, 32, 255), 8);
+        if (showNpcMarkerLabels_)
+        {
+            const std::string label = svc_ && svc_->lookups
+                ? svc_->lookups->LabelCreature(marker.entry)
+                : ("entry " + std::to_string(marker.entry));
+            draw->AddText(ImVec2(marker.screen.x + r + 3.0f, marker.screen.y - r),
+                          IM_COL32(230, 255, 236, 245), label.c_str());
+        }
     }
 }
 
@@ -3185,6 +3295,8 @@ void AdtViewerModule::UpdateHoverAndSelection(const glm::mat4& view, const glm::
     // Route markers have priority over world-model picking. Otherwise a click on a waypoint sitting
     // inside an NPC's model would deselect the route instead of selecting its point for terrain moves.
     if (TrySelectWaypointOverlay(view, proj, p0, w, h, viewportHovered))
+        return;
+    if (TrySelectNpcMarkerOverlay(viewportHovered))
         return;
 
     ImGuiIO& io = ImGui::GetIO();

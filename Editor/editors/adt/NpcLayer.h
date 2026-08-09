@@ -64,6 +64,15 @@ public:
     int modelCount() const { return static_cast<int>(models_.size()); }
     bool cappedLastFrame() const { return cappedLastFrame_; }
 
+    // Diagnostics for the World Editor when spawn markers/waypoints appear but client M2 models do
+    // not. A terrain-capable AzerothCore server Data directory is not a replacement for a full WoW
+    // client Data directory containing CreatureDisplayInfo/CreatureModelData and M2 assets.
+    bool modelDataReady() const { return displayMapsLoaded_ && !modelPaths_.empty(); }
+    int displayInfoCount() const { return static_cast<int>(displays_.size()); }
+    int modelPathCount() const { return static_cast<int>(modelPaths_.size()); }
+    int failedDisplayCount() const { return static_cast<int>(failedDisplays_.size()); }
+    int directModelFallbackCount() const { return static_cast<int>(directModelFallbacks_.size()); }
+
     // Copy the map's canonical spawn homes for UI tooling such as the World Outliner. This is
     // intentionally a snapshot (rather than exposing Npc internals), so callers cannot mutate the
     // simulation state without going through the explicit edit methods below.
@@ -184,6 +193,9 @@ private:
     std::vector<Npc> npcs_;
     std::unordered_map<uint32_t, NpcModel> models_;   // by displayId
     std::unordered_set<uint32_t> failedDisplays_;     // displayIds that couldn't resolve/load
+    // Custom databases occasionally store a CreatureModelData id directly instead of a
+    // CreatureDisplayInfo id. We support that non-standard but useful fallback and expose its count.
+    std::unordered_set<uint32_t> directModelFallbacks_;
     std::unordered_map<std::string, HeldModel> heldModels_;   // by held-model path (shared weapons)
     std::unordered_set<std::string> failedHeld_;              // held-model paths that couldn't load
 

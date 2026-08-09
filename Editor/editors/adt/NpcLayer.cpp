@@ -116,6 +116,7 @@ void NpcLayer::Clear()
     }
     models_.clear();
     failedDisplays_.clear();
+    directModelFallbacks_.clear();
     heldModels_.clear();
     failedHeld_.clear();
     npcs_.clear();
@@ -207,14 +208,21 @@ NpcLayer::NpcModel* NpcLayer::EnsureModel(uint32_t displayId)
     if (modelBudget_ <= 0 || static_cast<int>(models_.size()) >= kMaxModels)
         return nullptr;   // try again a later frame (budget) — not a failure
 
-    // displayId -> modelId -> .m2 path (+ skins).
+    // Normal path: CreatureDisplayInfo display id -> CreatureModelData model id -> .m2 path.
+    // A few custom/legacy database packs use a CreatureModelData id directly in modelid1 instead;
+    // fall back to that direct lookup so those NPCs remain visible instead of silently disappearing.
+    const DbcStore::CreatureDisplay* display = nullptr;
+    uint32_t modelId = displayId;
     auto dit = displays_.find(displayId);
-    if (dit == displays_.end())
+    if (dit != displays_.end())
     {
-        failedDisplays_.insert(displayId);
-        return nullptr;
+        display = &dit->second;
+        modelId = display->modelId;
     }
-    auto mp = modelPaths_.find(dit->second.modelId);
+    else
+        directModelFallbacks_.insert(displayId);
+
+    auto mp = modelPaths_.find(modelId);
     if (mp == modelPaths_.end())
     {
         failedDisplays_.insert(displayId);
@@ -237,9 +245,9 @@ NpcLayer::NpcModel* NpcLayer::EnsureModel(uint32_t displayId)
     int bodySlot = -1;               // index of the type-1 body texture slot (-1 = not a character)
     std::vector<uint8_t> geosetVisible;   // per-submesh visibility for hair/facial/armour geosets
     const DbcStore::CreatureDisplayExtra* extra = nullptr;
-    if (dit->second.extendedDisplayId && ClassifyModel(path) == ModelClass::Character)
+    if (display && display->extendedDisplayId && ClassifyModel(path) == ModelClass::Character)
     {
-        auto eit = displayExtras_.find(dit->second.extendedDisplayId);
+        auto eit = displayExtras_.find(display->extendedDisplayId);
         if (eit != displayExtras_.end())
             extra = &eit->second;
     }
@@ -249,7 +257,8 @@ NpcLayer::NpcModel* NpcLayer::EnsureModel(uint32_t displayId)
     }
     else if (dresser_)
     {
-        dresser_->ApplyCreatureSkins(path, dit->second.skins, model);
+        const std::string blankSkins[3] = {};
+        dresser_->ApplyCreatureSkins(path, display ? display->skins : blankSkins, model);
         dresser_->ResolveDefaultTextures(path, model);
     }
 

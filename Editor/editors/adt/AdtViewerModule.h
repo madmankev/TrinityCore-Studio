@@ -257,6 +257,14 @@ private:
     void DrawTerrainBrushOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
                                  int w, int h, bool viewportHovered);
 
+    // NPC model fallbacks: map markers remain visible/selectable when a custom display ID cannot be
+    // resolved to an M2, and make a missing WoW client-model pack immediately diagnosable.
+    struct NpcMarker { uint32_t guid = 0, entry = 0; ImVec2 screen{}; float dist2 = 0.0f; };
+    void BuildNpcMarkerCache(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
+                             int w, int h, const glm::vec3& focus, const SpawnFilter& filter);
+    bool TrySelectNpcMarkerOverlay(bool viewportHovered);
+    void DrawNpcMarkerOverlay();
+
     EditorServices* svc_ = nullptr;
     AdtStreamer streamer_;
     bool streamerInit_ = false;
@@ -287,6 +295,10 @@ private:
     int   npcMaxDraw_ = 200;       // cap on animated NPCs (nearest first)
     float npcCullDist_ = 300.0f;   // yards: simulate/draw NPCs within this of the camera
     std::string npcStatus_;
+    bool  showNpcMarkers_ = true;  // selectable overlay fallback when a creature M2 is unavailable
+    bool  showNpcMarkerLabels_ = false;
+    int   npcMarkerMax_ = 500;
+    std::vector<NpcMarker> npcMarkers_;
 
     // GameObject layer: DB gameobject spawns rendered (M2 + WMO) on the terrain.
     GameObjectLayer goLayer_;
