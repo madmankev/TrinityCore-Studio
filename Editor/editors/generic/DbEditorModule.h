@@ -86,6 +86,9 @@ private:
     const CompositeDbTableSchema* compSchema_ = nullptr;
     RuntimeTableSchema            runtime_;   // owns strings when introspected
     bool                          curated_ = false;
+    // AzerothCore and custom packs can evolve curated TrinityCore layouts independently. Use
+    // SHOW COLUMNS by default for AzerothCore; users may force it for any database/table.
+    bool                          forceLiveSchema_ = false;
 
     // Row browser + loaded record.
     std::vector<DbRecord>    list_;

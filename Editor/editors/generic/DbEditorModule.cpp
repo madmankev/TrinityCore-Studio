@@ -133,7 +133,9 @@ void DbEditorModule::OpenTable(const std::string& table)
     list_.clear();
     listLoaded_ = false;
 
-    CuratedDbSchema cur = LookupDbSchema(table);
+    const bool coreRequiresLiveSchema = svc_->coreFlavor == CoreFlavor::AzerothCore;
+    CuratedDbSchema cur = (forceLiveSchema_ || coreRequiresLiveSchema) ? CuratedDbSchema{}
+                                                                         : LookupDbSchema(table);
     if (cur.single)
     {
         curated_ = true;
@@ -343,6 +345,24 @@ void DbEditorModule::DrawBrowser()
             OpenTable(t);
     }
     ImGui::EndChild();
+
+    const bool autoLive = svc_->coreFlavor == CoreFlavor::AzerothCore;
+    bool live = forceLiveSchema_ || autoLive;
+    ImGui::BeginDisabled(autoLive);
+    if (ImGui::Checkbox("Use live schema", &live))
+    {
+        forceLiveSchema_ = live;
+        if (!activeTable_.empty())
+            OpenTable(activeTable_);
+    }
+    ImGui::EndDisabled();
+    if (autoLive && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("AzerothCore uses live SHOW COLUMNS metadata by default so every table follows the connected revision.");
+    if (autoLive)
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled("AzerothCore live schema");
+    }
 
     // Row browser for the active table.
     if (mode_ != Mode::None)

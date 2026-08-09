@@ -118,10 +118,15 @@ creature/gameobject associated-spawn panels adapt their entry-column and optiona
 at runtime.
 
 For an AzerothCore project, optionally set **Core root** in the project form. Studio detects
-common `env/dist/etc` and `env/dist/configs` layouts, can import `WorldDatabaseInfo` from
-`worldserver.conf`, and still keeps your **WoW client `Data` folder** separate from the
-server's extracted `Data` directory. Core-specific columns are schema-filtered on save, so
-one project file can safely target either core.
+common `env/dist/etc`, `env/dist/configs`, and Windows build `configs` layouts, can import
+`WorldDatabaseInfo` from `worldserver.conf`, and still keeps your **WoW client `Data` folder**
+separate from the server's extracted `Data` directory. Core-specific columns are schema-filtered
+on save, so one project file can safely target either core.
+
+The universal **DB Editor** uses `SHOW TABLES` / `SHOW COLUMNS` metadata for every
+AzerothCore table by default—rather than assuming a curated TrinityCore column list. That means
+module-added and revision-specific tables, composite keys, optional columns, and current AzerothCore
+layouts are browsed and saved against the schema actually connected to Studio.
 
 ## Build
 
