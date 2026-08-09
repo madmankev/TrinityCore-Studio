@@ -81,6 +81,10 @@ public:
     struct CreatureDisplay
     {
         uint32_t modelId = 0;
+        // CreatureDisplayInfo.CreatureModelScale. This is sent/applied with the display by the
+        // client and multiplies the server template/model scale; keep it with the display rather
+        // than baking geometry so one M2 can still serve differently sized display ids.
+        float scale = 1.0f;
         std::string skins[3];
         uint32_t particleColorId = 0;   // -> ParticleColor.dbc (tints particle emitters)
         uint32_t extendedDisplayId = 0; // -> CreatureDisplayInfoExtra (character-model NPCs); 0 = none

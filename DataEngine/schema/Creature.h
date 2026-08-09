@@ -69,7 +69,10 @@ struct CreatureSpawn
     uint16_t areaId = 0;         // `areaId` smallint unsigned
     uint8_t  spawnMask = 1;      // `spawnMask` tinyint unsigned
     uint32_t phaseMask = 1;      // `phaseMask` int unsigned
-    uint32_t modelId = 0;        // `modelid` int unsigned (0 = use template)
+    // Persistent per-spawn CreatureDisplayInfo id. TrinityCore stores it as `modelid`; custom
+    // server layouts may expose the same server-sent value as `displayid`/`display_id`.
+    // 0 = use the template's selected model.
+    uint32_t modelId = 0;
     int8_t   equipmentId = 0;    // `equipment_id` tinyint
     float    x = 0, y = 0, z = 0;// `position_x/y/z` float
     float    o = 0;              // `orientation` float

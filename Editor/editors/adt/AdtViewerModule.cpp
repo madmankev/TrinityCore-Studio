@@ -225,8 +225,30 @@ void AdtViewerModule::LoadNpcSpawns()
         return;
     }
     const size_t n = spawns.size();
+    size_t serverOverrides = 0, templateModelRows = 0, legacyModels = 0, unresolvedModels = 0,
+           eventOverrides = 0;
+    for (const MapSpawn& spawn : spawns)
+    {
+        switch (spawn.displaySource)
+        {
+            case CreatureDisplaySource::SpawnOverride: ++serverOverrides; break;
+            case CreatureDisplaySource::TemplateModel: ++templateModelRows; break;
+            case CreatureDisplaySource::LegacyTemplate: ++legacyModels; break;
+            default: break;
+        }
+        if (spawn.displayId == 0)
+            ++unresolvedModels;
+        if (!spawn.eventDisplayOverrides.empty())
+            ++eventOverrides;
+    }
     npcLayer_.SetSpawns(std::move(spawns));
-    npcStatus_ = std::to_string(n) + " NPC spawns on this map.";
+    npcStatus_ = std::to_string(n) + " NPC spawns on this map (" +
+                 std::to_string(serverOverrides) + " server overrides, " +
+                 std::to_string(templateModelRows) + " template-model, " +
+                 std::to_string(legacyModels) + " legacy" +
+                 (eventOverrides ? (", " + std::to_string(eventOverrides) + " event-model") : "") + ").";
+    if (unresolvedModels)
+        npcStatus_ += " " + std::to_string(unresolvedModels) + " have no resolved display ID.";
     outlinerDirty_ = true;
 }
 
@@ -448,7 +470,8 @@ void AdtViewerModule::FrameSelection()
     if (selKind_ == SelKind::Npc)
     {
         if (const MapSpawn* s = npcLayer_.FindSpawn(selGuid_))
-            FrameWorldPosition(glm::vec3(s->x, s->y, s->z), std::max(25.0f, s->scale * 18.0f));
+            FrameWorldPosition(glm::vec3(s->x, s->y, s->z),
+                               std::max(25.0f, s->scale * s->displayScale * 18.0f));
     }
     else if (selKind_ == SelKind::GameObject)
     {
@@ -618,6 +641,13 @@ void AdtViewerModule::DrawOutlinerPanel()
                 ImGui::BeginTooltip();
                 ImGui::Text("guid %u  entry %u", e.guid, e.entry);
                 ImGui::Text("X %.2f  Y %.2f  Z %.2f", e.world.x, e.world.y, e.world.z);
+                if (e.kind == SelKind::Npc)
+                    if (const MapSpawn* spawn = npcLayer_.FindSpawn(e.guid))
+                    {
+                        const ResolvedCreatureDisplay display = spawn->ResolveDisplay(CurrentSpawnFilter());
+                        ImGui::TextDisabled("display %u  (%s)", display.displayId,
+                                            CreatureDisplaySourceName(display.source));
+                    }
                 ImGui::TextDisabled("phase 0x%X  spawn 0x%X", e.phaseMask, e.spawnMask);
                 if (e.eventEntry)
                     ImGui::TextDisabled("game event %d", e.eventEntry);
@@ -1822,6 +1852,35 @@ void AdtViewerModule::DrawNpcInstancePanel()
         svc_->lookups ? svc_->lookups->LabelCreature(selEntry_) : ("entry " + std::to_string(selEntry_));
     ImGui::TextUnformatted(title.c_str());
     ImGui::TextDisabled("guid %u  (map %u)", npcEdit_.guid, static_cast<unsigned>(npcEdit_.map));
+    bool hasSpawnDisplayOverrideColumn = true;
+    if (const MapSpawn* visualSpawn = npcLayer_.FindSpawn(selGuid_))
+    {
+        hasSpawnDisplayOverrideColumn = visualSpawn->hasSpawnDisplayOverrideColumn;
+        const ResolvedCreatureDisplay visual = visualSpawn->ResolveDisplay(CurrentSpawnFilter());
+        ImGui::SeparatorText("World appearance");
+        if (visual.displayId != 0)
+        {
+            ImGui::Text("Rendered display ID: %u", visual.displayId);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%s)", CreatureDisplaySourceName(visual.source));
+            if (visual.eventEntry != 0)
+                ImGui::TextDisabled("Event #%d is replacing this NPC's normal server display in the active preview.",
+                                    visual.eventEntry);
+            if (visual.source == CreatureDisplaySource::TemplateModel)
+                ImGui::TextDisabled("AzerothCore model idx %u (%u template rows); server display scale %.3g.",
+                                    static_cast<unsigned>(visualSpawn->templateDisplayIndex),
+                                    static_cast<unsigned>(visualSpawn->templateDisplayCount), visual.serverScale);
+            else
+                ImGui::TextDisabled("Server display scale %.3g; template scale %.3g.",
+                                    visual.serverScale, visualSpawn->scale);
+        }
+        else
+        {
+            ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.22f, 1.0f),
+                               "No server CreatureDisplayInfo id resolved for this spawn.");
+            ImGui::TextDisabled("Set a spawn model id or add a template model row, then reload the map.");
+        }
+    }
     ImGui::Separator();
 
     ImGui::BeginDisabled(!npcEditDirty_);
@@ -1885,7 +1944,13 @@ void AdtViewerModule::DrawNpcInstancePanel()
     if (ImGui::CollapsingHeader("Appearance / Equipment"))
         if (BeginFieldTable("npcapp"))
         {
-            FieldRow("Model id (0 = template)"); ch |= InputU32("##mid", s.modelId);
+            FieldRow("Server display ID (0 = template)",
+                     "Stored as creature.modelid/displayid on schemas that support a per-spawn visual override. This is a CreatureDisplayInfo.dbc id, not a CreatureModelData id.");
+            ImGui::BeginDisabled(!hasSpawnDisplayOverrideColumn);
+            ch |= InputU32("##mid", s.modelId);
+            ImGui::EndDisabled();
+            if (!hasSpawnDisplayOverrideColumn)
+                ImGui::TextDisabled("This core stores NPC displays in creature_template_model; edit that template row instead.");
             int32_t eq = s.equipmentId;
             FieldRow("Equipment id");
             if (InputI32("##eq", eq)) { s.equipmentId = static_cast<int8_t>(eq); ch = true; }
@@ -1974,10 +2039,29 @@ void AdtViewerModule::ApplyRenderFromSpawn(const CreatureSpawn& s)
     f.wanderDistance = s.wanderDistance;
     f.phaseMask = s.phaseMask;
     f.spawnMask = s.spawnMask;
-    // Resolved model: a nonzero modelid override wins. Reverting an override to 0 keeps the current
-    // display until the map reloads (recomputing the template fallback would need a requery).
+    // Modelid/displayid is a persistent server-side spawn override. Keep the template fallback
+    // captured by MapSpawn so reverting the override to 0 immediately restores the correct
+    // creature_template_model (AzerothCore) or modelid1..4 (TrinityCore) visual without a map reload.
+    const uint32_t previousSpawnDisplay = f.spawnDisplayId;
+    f.spawnDisplayId = s.modelId;
     if (s.modelId != 0)
+    {
+        // A loaded override already carries its exact creature_template_model DisplayScale. A newly
+        // typed id is conservatively shown at 1 until the next map reload verifies its template row;
+        // choosing the current fallback's scale would be visibly wrong for a different display.
+        if (s.modelId != previousSpawnDisplay)
+            f.spawnDisplayScale = s.modelId == f.templateDisplayId ? f.templateDisplayScale : 1.0f;
         f.displayId = s.modelId;
+        f.displayScale = f.spawnDisplayScale > 0.0f ? f.spawnDisplayScale : 1.0f;
+        f.displaySource = CreatureDisplaySource::SpawnOverride;
+    }
+    else
+    {
+        f.spawnDisplayScale = 1.0f;
+        f.displayId = f.templateDisplayId;
+        f.displayScale = f.templateDisplayScale > 0.0f ? f.templateDisplayScale : 1.0f;
+        f.displaySource = f.templateDisplaySource;
+    }
     npcLayer_.UpdateSpawnEditable(s.guid, f);
     outlinerDirty_ = true;
 }
@@ -3783,11 +3867,18 @@ void AdtViewerModule::CreateObject(const AdtObjectDesc& d)
     else if (d.kind == SelKind::Npc)
     {
         uint32_t guid = d.guid, disp = 0;
+        float serverDisplayScale = 1.0f;
+        CreatureDisplaySource displaySource = CreatureDisplaySource::None;
         spawnRepo_.InsertCreatureSpawn(*svc_->activeDb, currentMapId_, d.entry, d.x, d.y, d.z, d.o,
-                                       guid, disp);
+                                       guid, disp, &serverDisplayScale, &displaySource);
         MapSpawn s;
         s.guid = d.guid; s.entry = d.entry; s.x = d.x; s.y = d.y; s.z = d.z; s.o = d.o;
         s.displayId = d.displayId ? d.displayId : disp;
+        s.displayScale = serverDisplayScale > 0.0f ? serverDisplayScale : 1.0f;
+        s.displaySource = displaySource;
+        s.templateDisplayId = s.displayId;
+        s.templateDisplayScale = s.displayScale;
+        s.templateDisplaySource = displaySource;
         s.scale = d.size > 0.0f ? d.size : 1.0f; s.phaseMask = 1; s.spawnMask = 1;
         npcLayer_.AddSpawn(s);
         outlinerDirty_ = true;
@@ -4159,8 +4250,11 @@ bool AdtViewerModule::PerformAddNpcAt(uint32_t entry, const glm::vec3& world, fl
         return false;
     }
     uint32_t guid = 0, displayId = 0;
+    float serverDisplayScale = 1.0f;
+    CreatureDisplaySource displaySource = CreatureDisplaySource::None;
     DbError e = spawnRepo_.InsertCreatureSpawn(*svc_->activeDb, currentMapId_, entry, world.x, world.y,
-                                               world.z, yaw, guid, displayId);
+                                               world.z, yaw, guid, displayId, &serverDisplayScale,
+                                               &displaySource);
     if (!e.ok || guid == 0)
     {
         saveStatus_ = "Add NPC failed: " + e.message;
@@ -4169,7 +4263,13 @@ bool AdtViewerModule::PerformAddNpcAt(uint32_t entry, const glm::vec3& world, fl
     MapSpawn s;
     s.guid = guid; s.entry = entry;
     s.x = world.x; s.y = world.y; s.z = world.z; s.o = yaw;
-    s.displayId = displayId; s.scale = 1.0f; s.phaseMask = 1; s.spawnMask = 1;
+    s.displayId = displayId;
+    s.displayScale = serverDisplayScale > 0.0f ? serverDisplayScale : 1.0f;
+    s.displaySource = displaySource;
+    s.templateDisplayId = displayId;
+    s.templateDisplayScale = s.displayScale;
+    s.templateDisplaySource = displaySource;
+    s.scale = 1.0f; s.phaseMask = 1; s.spawnMask = 1;
     npcLayer_.AddSpawn(s);
     outlinerDirty_ = true;
     saveStatus_ = "Added creature guid " + std::to_string(guid) + " (entry " + std::to_string(entry) + ").";

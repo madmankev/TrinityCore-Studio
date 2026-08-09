@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 
 namespace we
@@ -438,6 +439,8 @@ DbcStore::LoadCreatureDisplays(const ClientData& cd) const
     {
         CreatureDisplay d;
         d.modelId = dbc.GetUInt(r, modelField);
+        const float displayScale = dbc.GetFloat(r, 4);  // CreatureModelScale (12340)
+        d.scale = std::isfinite(displayScale) && displayScale > 0.0f ? displayScale : 1.0f;
         d.extendedDisplayId = dbc.GetUInt(r, 3);   // -> CreatureDisplayInfoExtra (character NPCs)
         d.skins[0] = dbc.GetString(r, 6);
         d.skins[1] = dbc.GetString(r, 7);

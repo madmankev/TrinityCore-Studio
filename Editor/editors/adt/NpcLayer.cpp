@@ -310,6 +310,9 @@ NpcLayer::NpcModel* NpcLayer::EnsureModel(uint32_t displayId)
     NpcModel nm;
     nm.handle = h;
     nm.m2 = std::make_shared<m2::M2Model>(std::move(model));
+    nm.displayScale = (display && std::isfinite(display->scale) && display->scale > 0.0f)
+                          ? display->scale
+                          : 1.0f;
     nm.boundsCenter = nm.m2->boundsCenter;
     nm.boundsRadius = nm.m2->boundsRadius;
     nm.boundsMin = aabbMin;
@@ -494,11 +497,18 @@ const NpcLayer::HeldModel* NpcLayer::EnsureHeldModel(const std::string& path, co
     return &res.first->second;
 }
 
-void NpcLayer::EnsureAttachments(Npc& n, const NpcModel& /*parent*/)
+void NpcLayer::EnsureAttachments(Npc& n, const NpcModel& /*parent*/, uint32_t parentDisplayId)
 {
-    if (n.attachTried || !dresser_)
+    if (!dresser_)
         return;
+    if (n.attachTried && n.attachmentParentDisplayId == parentDisplayId)
+        return;
+    // A game-event display override can replace the parent M2 but leave this spawn's equipment
+    // unchanged. Re-resolve attachment IDs against the new model so held weapons do not remain
+    // tied to bones from the old body.
     n.attachTried = true;
+    n.attachmentParentDisplayId = parentDisplayId;
+    n.attachments.clear();
     // spawn.weaponDisplay[0..2] = main / off / ranged ItemDisplayInfo ids.
     static const EquipSlot kSlots[3] = { EquipSlot::MainHand, EquipSlot::OffHand, EquipSlot::Ranged };
     auto componentFolder = [](EquipSlot s) -> const char* {
@@ -573,7 +583,11 @@ void NpcLayer::Build(const glm::vec3& focus, const glm::vec3& origin, const glm:
     for (int k = 0; k < limit; ++k)
     {
         Npc& n = npcs_[near_[k].second];
-        NpcModel* m = EnsureModel(n.spawn.displayId);
+        // Resolve the display the server would currently send for this spawn. The base value comes
+        // from creature.modelid/displayid or its template model row; a selected game event may
+        // temporarily replace it through game_event_model_equip.
+        const ResolvedCreatureDisplay display = n.spawn.ResolveDisplay(filter);
+        NpcModel* m = EnsureModel(display.displayId);
         if (!m)
             continue;   // pending model creation (budget) or unresolved display
 
@@ -593,8 +607,14 @@ void NpcLayer::Build(const glm::vec3& focus, const glm::vec3& origin, const glm:
         glm::mat4 X(1.0f);
         X = glm::translate(X, local);
         X = glm::rotate(X, n.heading + kHeadingOffset, glm::vec3(0.0f, 0.0f, 1.0f));
-        if (n.spawn.scale != 1.0f && n.spawn.scale > 0.0f)
-            X = glm::scale(X, glm::vec3(n.spawn.scale));
+        // Worldserver template scale, AzerothCore's selected DisplayScale, and the client's own
+        // CreatureDisplayInfo scale all multiply. Applying all three is what keeps an NPC rendered
+        // from a server display id at the same physical size as it has in-game.
+        const float templateScale = n.spawn.scale > 0.0f ? n.spawn.scale : 1.0f;
+        const float serverDisplayScale = display.serverScale > 0.0f ? display.serverScale : 1.0f;
+        const float visualScale = templateScale * serverDisplayScale * m->displayScale;
+        if (visualScale != 1.0f)
+            X = glm::scale(X, glm::vec3(visualScale));
         for (glm::mat4& b : n.palette)
             b = X * b;
 
@@ -622,7 +642,7 @@ void NpcLayer::Build(const glm::vec3& focus, const glm::vec3& origin, const glm:
         // bone and append as its own instance. n.palette is world-space here, so n.palette[att.bone]
         // is the attachment bone's world matrix.
         if (modelBudget_ > 0)
-            EnsureAttachments(n, *m);
+            EnsureAttachments(n, *m, display.displayId);
         for (NpcAttach& at : n.attachments)
         {
             if (!at.model || !at.model->handle)
@@ -674,13 +694,19 @@ uint32_t NpcLayer::Pick(const glm::vec3& ro, const glm::vec3& rd, const glm::vec
         if (dd.x * dd.x + dd.y * dd.y + dd.z * dd.z > cull2)
             continue;
         // Pick against the model where it is drawn (current simulated position), tight ray-vs-OBB.
-        const float scale = (n.spawn.scale > 0.0f) ? n.spawn.scale : 1.0f;
+        // Use the same event-aware display and all server/client display scales as Build so a
+        // selected override never has a visibly offset or undersized pick volume.
+        const ResolvedCreatureDisplay display = n.spawn.ResolveDisplay(filter);
+        auto it = models_.find(display.displayId);
+        const float templateScale = n.spawn.scale > 0.0f ? n.spawn.scale : 1.0f;
+        const float serverScale = display.serverScale > 0.0f ? display.serverScale : 1.0f;
+        const float clientScale = it != models_.end() ? it->second.displayScale : 1.0f;
+        const float scale = templateScale * serverScale * clientScale;
         const glm::vec3 local(n.pos.x - origin.x, n.pos.y - origin.y, n.pos.z);
         glm::mat4 X(1.0f);
         X = glm::translate(X, local);
         X = glm::rotate(X, n.heading + kHeadingOffset, glm::vec3(0.0f, 0.0f, 1.0f));
         X = glm::scale(X, glm::vec3(scale));
-        auto it = models_.find(n.spawn.displayId);
         const glm::vec3 bmin = (it != models_.end()) ? it->second.boundsMin : glm::vec3(-0.5f);
         const glm::vec3 bmax = (it != models_.end()) ? it->second.boundsMax : glm::vec3(0.5f);
         const float t = RayObb(ro, rd, X, bmin, bmax);
@@ -704,7 +730,15 @@ bool NpcLayer::HomeMatrix(uint32_t guid, const glm::vec3& origin, glm::mat4& out
     {
         if (n.spawn.guid != guid)
             continue;
-        const float scale = (n.spawn.scale > 0.0f) ? n.spawn.scale : 1.0f;
+        // Gizmo transforms use the persistent/home display (events do not alter a spawn's saved
+        // placement). Include the server template-model scale and the known client display scale
+        // so the visual transform remains consistent with a normally rendered NPC.
+        const ResolvedCreatureDisplay display = n.spawn.ResolveDisplay(SpawnFilter{});
+        const auto model = models_.find(display.displayId);
+        const float templateScale = n.spawn.scale > 0.0f ? n.spawn.scale : 1.0f;
+        const float serverScale = display.serverScale > 0.0f ? display.serverScale : 1.0f;
+        const float clientScale = model != models_.end() ? model->second.displayScale : 1.0f;
+        const float scale = templateScale * serverScale * clientScale;
         const glm::vec3 local(n.spawn.x - origin.x, n.spawn.y - origin.y, n.spawn.z);
         glm::mat4 X(1.0f);
         X = glm::translate(X, local);
@@ -752,7 +786,32 @@ bool NpcLayer::UpdateSpawnEditable(uint32_t guid, const MapSpawn& fields)
         n.spawn.wanderDistance = fields.wanderDistance;
         n.spawn.phaseMask = fields.phaseMask;   // filter reads these live each frame
         n.spawn.spawnMask = fields.spawnMask;
-        n.spawn.displayId = fields.displayId;   // caller-resolved; Build re-fetches the model
+        const bool displayChanged = n.spawn.displayId != fields.displayId ||
+                                    n.spawn.displayScale != fields.displayScale ||
+                                    n.spawn.displaySource != fields.displaySource ||
+                                    n.spawn.spawnDisplayId != fields.spawnDisplayId ||
+                                    n.spawn.spawnDisplayScale != fields.spawnDisplayScale ||
+                                    n.spawn.templateDisplayId != fields.templateDisplayId ||
+                                    n.spawn.templateDisplayScale != fields.templateDisplayScale ||
+                                    n.spawn.templateDisplaySource != fields.templateDisplaySource;
+        n.spawn.displayId = fields.displayId;   // caller-resolved; Build chooses event override per frame
+        n.spawn.displayScale = fields.displayScale;
+        n.spawn.displaySource = fields.displaySource;
+        n.spawn.spawnDisplayId = fields.spawnDisplayId;
+        n.spawn.hasSpawnDisplayOverrideColumn = fields.hasSpawnDisplayOverrideColumn;
+        n.spawn.spawnDisplayScale = fields.spawnDisplayScale;
+        n.spawn.templateDisplayId = fields.templateDisplayId;
+        n.spawn.templateDisplayScale = fields.templateDisplayScale;
+        n.spawn.templateDisplaySource = fields.templateDisplaySource;
+        n.spawn.templateDisplayIndex = fields.templateDisplayIndex;
+        n.spawn.templateDisplayCount = fields.templateDisplayCount;
+        n.spawn.eventDisplayOverrides = fields.eventDisplayOverrides;
+        if (displayChanged)
+        {
+            n.attachTried = false;
+            n.attachmentParentDisplayId = 0;
+            n.attachments.clear();
+        }
         // Re-seed the simulation when the home or movement behaviour changed so the change shows.
         if (moved || behaviourChanged)
         {

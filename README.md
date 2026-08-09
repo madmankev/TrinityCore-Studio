@@ -80,6 +80,18 @@ turn on **Edit**:
    columns survive point moves/reordering. A spawn addon row takes precedence over template addon
    data in TrinityCore; clearing its `path_id` keeps its other addon fields and intentionally
    leaves that spawn without a route.
+9. **Verify server appearance:** select an NPC and inspect **NPC Instance → World appearance**.
+   The renderer resolves the server's `CreatureDisplayInfo` id in this order: persistent spawn
+   `displayid`/`modelid`, modern AzerothCore `creature_template_model.CreatureDisplayID`, then
+   legacy TrinityCore `creature_template.modelid1..4`. It applies the selected
+   `DisplayScale` plus the client DBC display scale, and switches to
+   `game_event_model_equip.modelid` while that event is selected in the World Editor. Weighted
+   template rows are sampled deterministically per spawn for a stable offline preview; an arbitrary
+   live-server random roll is not persisted by the world DB. The panel shows the exact display id
+   and source currently rendered; on schemas with a per-spawn
+   `modelid`/`displayid` column, **Server display ID** gives one spawn an explicit persistent
+   override. Script-only runtime `SetDisplayId` changes are not
+   stored in a world database, so they need a persistent spawn/event row to be available offline.
 
 ### Shared features
 
@@ -112,10 +124,10 @@ editors still work without client data - you just get IDs instead of names and t
 Projects now carry a **Core** profile: Auto-detect, TrinityCore, or AzerothCore. Auto-detect
 probes a live database before editor modules load. It recognizes the current AzerothCore
 `creature.id1` / `gameobject.id1` spawn layout, its `bytes1` / `bytes2` creature-addon
-layout, and reduced `waypoint_data` variants; TrinityCore layouts continue to use `id` and
-expanded addon fields. World Editor spawn placement, outliner, paths, formation data, and
-creature/gameobject associated-spawn panels adapt their entry-column and optional-field SQL
-at runtime.
+layout, current `creature_template_model` display rows, and reduced `waypoint_data` variants;
+TrinityCore layouts continue to use `id`, `modelid1..4`, and expanded addon fields. World Editor
+spawn placement, outliner, paths, formation data, server display rendering, and creature/gameobject
+associated-spawn panels adapt their entry-column and optional-field SQL at runtime.
 
 For an AzerothCore project, optionally set **Core root** in the project form. Studio detects
 common `env/dist/etc`, `env/dist/configs`, and Windows build `configs` layouts, can import

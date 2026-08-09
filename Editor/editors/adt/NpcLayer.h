@@ -115,6 +115,10 @@ private:
         m2::M2Animator animator;
         int standSeq = 0;   // sequence index for AnimationData "Stand" (id 0)
         int walkSeq = 0;    // sequence index for "Walk" (id 4), fallback run/stand
+        // CreatureDisplayInfo.CreatureModelScale for this exact display id. The same raw M2 can
+        // appear under multiple display ids with different visual size, so it belongs in the
+        // display-keyed cache rather than the shared M2 data.
+        float     displayScale = 1.0f;
         glm::vec3 boundsCenter{0.0f};   // model-space bounding sphere (for distance/cull)
         float     boundsRadius = 1.0f;
         glm::vec3 boundsMin{0.0f};      // model-space AABB (for tight ray-vs-OBB picking)
@@ -159,8 +163,11 @@ private:
         std::vector<uint8_t>   pathMoveType;    // 0 walk, 1 run, 2 land, 3 take off
         int   pathIdx = 0;
         std::vector<glm::mat4> palette;     // per-frame folded palette (SceneInstanceGpu points here)
-        // Held weapons (resolved once when first drawn from spawn.weaponDisplay).
+        // Held weapons are resolved for the currently selected parent display. Event display
+        // overrides can replace the body M2 at runtime, so invalidate/rebuild attachment points
+        // when that display changes instead of leaving equipment bound to stale bones.
         bool  attachTried = false;
+        uint32_t attachmentParentDisplayId = 0;
         std::vector<NpcAttach> attachments;
     };
 
@@ -175,7 +182,7 @@ private:
     // Load (or fetch) a held weapon/shield model, apply its object skin, and cache its bind pose.
     const HeldModel* EnsureHeldModel(const std::string& path, const std::string& objectSkin);
     // Resolve an NPC's held weapons from spawn.weaponDisplay into n.attachments (once, budgeted).
-    void EnsureAttachments(Npc& n, const NpcModel& parent);
+    void EnsureAttachments(Npc& n, const NpcModel& parent, uint32_t parentDisplayId);
     void Simulate(Npc& n, float dtMs, IDatabase* db);
     static int FindSequence(const m2::M2Model& m, uint16_t animationId);
 

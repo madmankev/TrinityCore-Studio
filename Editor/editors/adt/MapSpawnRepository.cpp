@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <initializer_list>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -118,6 +119,234 @@ std::string SpawnEntryColumn(const std::set<std::string>& cols)
         return "id1";
     return "id";
 }
+
+// Return the first physical column matching one of a family of server/custom-schema spellings.
+// ExistingCols lowercases names, and MySQL treats column names case-insensitively, so the lowercase
+// spelling is safe to quote in emitted SQL. An empty metadata set means introspection was unavailable;
+// callers must choose an established legacy fallback instead of guessing optional custom columns.
+std::string FirstColumn(const std::set<std::string>& cols,
+                        std::initializer_list<const char*> candidates)
+{
+    if (cols.empty())
+        return {};
+    for (const char* candidate : candidates)
+        if (cols.count(LowerColumn(candidate)) != 0)
+            return LowerColumn(candidate);
+    return {};
+}
+
+std::string DisplayColumnOr(const char* alias, const std::set<std::string>& cols,
+                            bool legacySpawnFallback)
+{
+    // A few custom server packs call this persistent server display field displayid/display_id;
+    // TrinityCore calls the exact same CreatureDisplayInfo id modelid. Prefer an explicit display
+    // column when it exists, then retain modelid as the documented TrinityCore fallback.
+    std::string column = FirstColumn(cols, {"displayid", "display_id", "modelid"});
+    if (!column.empty())
+        return std::string(alias) + ".`" + column + "`";
+    if (cols.empty() && legacySpawnFallback)
+        return std::string(alias) + ".`modelid`";
+    return "0";
+}
+
+float PositiveScale(float value)
+{
+    return std::isfinite(value) && value > 0.0f ? value : 1.0f;
+}
+
+// A stable hash lets the editor preview one member of a weighted server model list without model
+// popping every frame/reload. A real worldserver rolls this when it creates the creature; persistent
+// spawn/event overrides still win exactly and need no approximation.
+uint32_t StableDisplayHash(uint32_t guid, uint32_t entry)
+{
+    uint32_t x = guid ? guid : entry * 0x9E3779B9u;
+    x ^= entry + 0x85EBCA6Bu + (x << 6) + (x >> 2);
+    x ^= x >> 16;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return x;
+}
+
+struct TemplateDisplayRow
+{
+    uint32_t entry = 0;
+    uint32_t displayId = 0;
+    uint32_t index = 0;
+    float scale = 1.0f;
+    float probability = 0.0f;
+};
+
+const TemplateDisplayRow* ChooseTemplateDisplay(const std::vector<TemplateDisplayRow>& rows,
+                                                 uint32_t guid, uint32_t entry)
+{
+    if (rows.empty())
+        return nullptr;
+    double total = 0.0;
+    for (const TemplateDisplayRow& row : rows)
+        if (std::isfinite(row.probability) && row.probability > 0.0f)
+            total += row.probability;
+    if (total <= 0.0)
+        return &rows.front();   // malformed/legacy zero-weight rows: server's first defined model
+
+    const double roll = (static_cast<double>(StableDisplayHash(guid, entry)) /
+                         4294967296.0) * total;
+    double cursor = 0.0;
+    for (const TemplateDisplayRow& row : rows)
+    {
+        if (!std::isfinite(row.probability) || row.probability <= 0.0f)
+            continue;
+        cursor += row.probability;
+        if (roll < cursor)
+            return &row;
+    }
+    return &rows.back();   // guards float round-off at the top of the interval
+}
+
+void ResolveBaseDisplay(MapSpawn& spawn)
+{
+    if (spawn.spawnDisplayId != 0)
+    {
+        spawn.displayId = spawn.spawnDisplayId;
+        spawn.displayScale = PositiveScale(spawn.spawnDisplayScale);
+        spawn.displaySource = CreatureDisplaySource::SpawnOverride;
+        return;
+    }
+    spawn.displayId = spawn.templateDisplayId;
+    spawn.displayScale = PositiveScale(spawn.templateDisplayScale);
+    spawn.displaySource = spawn.templateDisplaySource;
+}
+
+// Modern AzerothCore moved template visual rows out of creature_template.modelid1..4. Load all
+// rows once, pick a stable weighted preview per spawn, and preserve the selected DisplayScale so
+// World Editor geometry matches the scale the server supplies to the client.
+void ApplyTemplateModelDisplays(IDatabase& db, std::vector<MapSpawn>& spawns)
+{
+    const std::set<std::string> cols = sql::ExistingCols(db, "creature_template_model");
+    const std::string entryCol = FirstColumn(cols, {"creatureid", "creature_id", "entry"});
+    const std::string displayCol = FirstColumn(cols, {"creaturedisplayid", "displayid", "display_id", "modelid"});
+    if (entryCol.empty() || displayCol.empty() || spawns.empty())
+        return;  // old TrinityCore or a custom schema that does not expose server model rows
+    const std::string indexCol = FirstColumn(cols, {"idx", "index", "modelindex"});
+    const std::string scaleCol = FirstColumn(cols, {"displayscale", "display_scale", "scale"});
+    const std::string probabilityCol = FirstColumn(cols, {"probability", "chance"});
+
+    // Do not read every model row in a large AzerothCore world DB on every map switch. The map
+    // may have many spawn GUIDs but usually far fewer distinct template entries, so a compact IN
+    // list gives the database an indexed, one-pass lookup without duplicating model rows per spawn.
+    std::set<uint32_t> requestedEntries;
+    for (const MapSpawn& spawn : spawns)
+        if (spawn.entry != 0)
+            requestedEntries.insert(spawn.entry);
+    if (requestedEntries.empty())
+        return;
+    std::string inList;
+    for (uint32_t entry : requestedEntries)
+    {
+        if (!inList.empty())
+            inList += ',';
+        inList += std::to_string(entry);
+    }
+    const std::string query = "SELECT `" + entryCol + "`, " +
+        (indexCol.empty() ? "0" : ("`" + indexCol + "`")) + ", `" + displayCol + "`, " +
+        (scaleCol.empty() ? "1" : ("`" + scaleCol + "`")) + ", " +
+        (probabilityCol.empty() ? "1" : ("`" + probabilityCol + "`")) +
+        " FROM creature_template_model WHERE `" + entryCol + "` IN (" + inList + ")";
+    DbError err;
+    auto rs = db.Query(query, err);
+    if (!rs)
+        return;  // optional table; never prevent the rest of the map from opening
+
+    std::unordered_map<uint32_t, std::vector<TemplateDisplayRow>> rowsByEntry;
+    while (rs->Next())
+    {
+        TemplateDisplayRow row;
+        row.entry = rs->GetUInt32(0);
+        row.index = rs->GetUInt32(1);
+        row.displayId = rs->GetUInt32(2);
+        row.scale = PositiveScale(rs->GetFloat(3));
+        row.probability = rs->GetFloat(4);
+        if (row.entry != 0 && row.displayId != 0)
+            rowsByEntry[row.entry].push_back(std::move(row));
+    }
+    for (auto& pair : rowsByEntry)
+        std::sort(pair.second.begin(), pair.second.end(), [](const TemplateDisplayRow& a,
+                                                              const TemplateDisplayRow& b) {
+            if (a.index != b.index)
+                return a.index < b.index;
+            return a.displayId < b.displayId;
+        });
+
+    for (MapSpawn& spawn : spawns)
+    {
+        const auto found = rowsByEntry.find(spawn.entry);
+        if (found == rowsByEntry.end())
+            continue;
+        const std::vector<TemplateDisplayRow>& rows = found->second;
+        const TemplateDisplayRow* selected = ChooseTemplateDisplay(rows, spawn.guid, spawn.entry);
+        if (!selected)
+            continue;
+        // AzerothCore honors a creature.displayid only when it names one of this template's
+        // CreatureDisplayID rows. When it does, that row's DisplayScale is the one delivered to
+        // the client—not the scale of whichever random fallback row we chose for the preview.
+        for (const TemplateDisplayRow& row : rows)
+            if (spawn.spawnDisplayId != 0 && row.displayId == spawn.spawnDisplayId)
+            {
+                spawn.spawnDisplayScale = row.scale;
+                break;
+            }
+        spawn.templateDisplayId = selected->displayId;
+        spawn.templateDisplayScale = selected->scale;
+        spawn.templateDisplaySource = CreatureDisplaySource::TemplateModel;
+        spawn.templateDisplayIndex = static_cast<uint16_t>(std::min<uint32_t>(selected->index, 0xFFFFu));
+        spawn.templateDisplayCount = static_cast<uint16_t>(std::min<size_t>(rows.size(), 0xFFFFu));
+        ResolveBaseDisplay(spawn);
+    }
+}
+
+// game_event_model_equip is the DB-backed server path that changes a loaded NPC's display id at
+// runtime. Keep all event alternatives on the spawn so changing the World Editor's Events filter
+// immediately switches the same M2/display skin without a map reload.
+void ApplyEventModelDisplays(IDatabase& db, uint32_t mapId, std::vector<MapSpawn>& spawns)
+{
+    const std::set<std::string> cols = sql::ExistingCols(db, "game_event_model_equip");
+    const std::string guidCol = FirstColumn(cols, {"guid", "spawnid"});
+    const std::string eventCol = FirstColumn(cols, {"evententry", "event_entry"});
+    const std::string displayCol = FirstColumn(cols, {"modelid", "displayid", "display_id"});
+    if (guidCol.empty() || eventCol.empty() || displayCol.empty() || spawns.empty())
+        return;
+
+    std::unordered_map<uint32_t, MapSpawn*> byGuid;
+    byGuid.reserve(spawns.size());
+    for (MapSpawn& spawn : spawns)
+        byGuid[spawn.guid] = &spawn;
+
+    const std::string query = "SELECT e.`" + guidCol + "`, e.`" + eventCol + "`, e.`" +
+        displayCol + "` FROM game_event_model_equip e JOIN creature c ON c.guid=e.`" + guidCol +
+        "` WHERE c.map=" + std::to_string(mapId);
+    DbError err;
+    auto rs = db.Query(query, err);
+    if (!rs)
+        return;
+    while (rs->Next())
+    {
+        const auto it = byGuid.find(rs->GetUInt32(0));
+        const int32_t eventEntry = rs->GetInt32(1);
+        const uint32_t displayId = rs->GetUInt32(2);
+        if (it == byGuid.end() || eventEntry == 0 || displayId == 0)
+            continue;
+        it->second->eventDisplayOverrides.push_back({eventEntry, displayId});
+    }
+    for (MapSpawn& spawn : spawns)
+        std::sort(spawn.eventDisplayOverrides.begin(), spawn.eventDisplayOverrides.end(),
+                  [](const GameEventCreatureDisplayOverride& a,
+                     const GameEventCreatureDisplayOverride& b) {
+                      if (a.eventEntry != b.eventEntry)
+                          return a.eventEntry < b.eventEntry;
+                      return a.displayId < b.displayId;
+                  });
+}
 } // namespace
 
 DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
@@ -133,12 +362,19 @@ DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
 
     // Alias every projected field into a stable position. This accommodates TrinityCore's id/modelid
     // spawn shape and AzerothCore's id1/id2/id3 shape without making the renderer/UI care which core
-    // supplied the map. Optional values use a SQL literal rather than referencing a missing column.
+    // supplied the map. In addition to the legacy names, accept custom server-side displayid fields:
+    // they already contain a CreatureDisplayInfo id sent to clients and therefore must beat a template
+    // fallback. Modern AzerothCore template rows are resolved in a second pass below so their 1:N
+    // model list never duplicates map spawns in this primary query.
+    const std::string spawnDisplay = DisplayColumnOr("c", creatureCols, true);
+    const bool hasSpawnDisplayColumn = creatureCols.empty() ||
+        !FirstColumn(creatureCols, {"displayid", "display_id", "modelid"}).empty();
+    const std::string templateDirectDisplay = DisplayColumnOr("ct", templateCols, false);
     const std::string sql =
         "SELECT c.guid, c.`" + entryCol + "`, c.position_x, c.position_y, c.position_z, c.orientation, " +
         ColumnOr("c", creatureCols, "MovementType", "0") + ", " +
         ColumnOr("c", creatureCols, "wander_distance", "0") + ", " +
-        ColumnOr("c", creatureCols, "modelid", "0") + ", " +
+        spawnDisplay + ", " + templateDirectDisplay + ", " +
         ColumnOr("ct", templateCols, "modelid1", "0") + ", " +
         ColumnOr("ct", templateCols, "modelid2", "0") + ", " +
         ColumnOr("ct", templateCols, "modelid3", "0") + ", " +
@@ -172,38 +408,50 @@ DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
         s.movementType = static_cast<uint8_t>(rs->GetUInt32(6));
         s.wanderDistance = rs->GetFloat(7);
 
-        // Resolve the display id: a TrinityCore spawn modelid override wins when present; current
-        // AzerothCore spawns generally omit that column, so the first template display wins.
-        uint32_t display = rs->GetUInt32(8);
-        if (display == 0)
-            for (int col = 9; col <= 12; ++col)
+        // Resolve the legacy/default template display now. A nonzero persistent server-side spawn
+        // override wins over it; ApplyTemplateModelDisplays below then replaces only the template
+        // fallback with the authoritative AzerothCore creature_template_model row when available.
+        s.spawnDisplayId = rs->GetUInt32(8);
+        s.hasSpawnDisplayOverrideColumn = hasSpawnDisplayColumn;
+        s.templateDisplayId = rs->GetUInt32(9);   // custom creature_template.displayid/modelid, if any
+        if (s.templateDisplayId == 0)
+            for (int col = 10; col <= 13; ++col)
             {
                 const uint32_t model = rs->GetUInt32(col);
-                if (model != 0) { display = model; break; }
+                if (model != 0) { s.templateDisplayId = model; break; }
             }
-        s.displayId = display;
+        s.templateDisplayScale = 1.0f;
+        s.templateDisplaySource = s.templateDisplayId != 0
+                                      ? CreatureDisplaySource::LegacyTemplate
+                                      : CreatureDisplaySource::None;
+        ResolveBaseDisplay(s);
 
-        s.scale = rs->GetFloat(13);
-        if (s.scale <= 0.0f)
-            s.scale = 1.0f;
-        s.speedWalk = rs->GetFloat(14);
-        if (s.speedWalk <= 0.0f)
+        s.scale = PositiveScale(rs->GetFloat(14));
+        s.speedWalk = rs->GetFloat(15);
+        if (!std::isfinite(s.speedWalk) || s.speedWalk <= 0.0f)
             s.speedWalk = 1.0f;
-        s.speedRun = rs->GetFloat(15);
-        if (s.speedRun <= 0.0f)
+        s.speedRun = rs->GetFloat(16);
+        if (!std::isfinite(s.speedRun) || s.speedRun <= 0.0f)
             s.speedRun = 1.14286f;
-        s.templatePathId = rs->GetUInt32(16);
-        s.hasSpawnAddon = !rs->IsNull(17);
-        s.spawnPathId = rs->GetUInt32(18);
+        s.templatePathId = rs->GetUInt32(17);
+        s.hasSpawnAddon = !rs->IsNull(18);
+        s.spawnPathId = rs->GetUInt32(19);
         s.pathId = s.hasSpawnAddon ? s.spawnPathId : s.templatePathId;
-        s.phaseMask = rs->GetUInt32(19);
+        s.phaseMask = rs->GetUInt32(20);
         if (s.phaseMask == 0)
             s.phaseMask = 1;
-        s.spawnMask = rs->GetUInt32(20);
+        s.spawnMask = rs->GetUInt32(21);
         if (s.spawnMask == 0)
             s.spawnMask = 1;
         out.push_back(std::move(s));
     }
+
+    // Resolve server-owned model sources after the one-row-per-spawn query. This is essential for
+    // AzerothCore: its current schema stores visual display ids in creature_template_model rather
+    // than the legacy creature_template.modelid1..4 fields. Event replacements stay attached to
+    // each spawn and are selected live by SpawnFilter in NpcLayer.
+    ApplyTemplateModelDisplays(db, out);
+    ApplyEventModelDisplays(db, mapId, out);
 
     // Merge game-event / pool / spawn-group gating (spawn_group spawnType 0 = creature).
     ApplyAssociations(db, "game_event_creature", "pool_creature", 0, out);
@@ -893,7 +1141,7 @@ DbError MapSpawnRepository::LoadCreatureSpawn(IDatabase& db, uint32_t guid, Crea
     out.areaId = static_cast<uint16_t>(row.U("areaId"));
     out.spawnMask = static_cast<uint8_t>(row.U("spawnMask"));
     out.phaseMask = row.U("phaseMask");
-    out.modelId = row.U("modelid");
+    out.modelId = row.Ua({"displayid", "display_id", "modelid"});
     out.equipmentId = static_cast<int8_t>(row.I("equipment_id"));
     out.x = row.F("position_x");
     out.y = row.F("position_y");
@@ -943,7 +1191,13 @@ DbError MapSpawnRepository::UpdateCreatureSpawn(IDatabase& db, const CreatureSpa
     add("areaId", std::to_string(s.areaId));
     add("spawnMask", std::to_string(s.spawnMask));
     add("phaseMask", std::to_string(s.phaseMask));
-    add("modelid", std::to_string(s.modelId));
+    // Prefer an explicit server displayid column over the legacy modelid spelling, matching the
+    // reader and World Editor render resolver. In offline/export mode use modelid as TrinityCore's
+    // stable documented column rather than guessing a project-specific alias.
+    std::string displayColumn = FirstColumn(existing, {"displayid", "display_id", "modelid"});
+    if (displayColumn.empty())
+        displayColumn = "modelid";
+    add(displayColumn.c_str(), std::to_string(s.modelId));
     add("equipment_id", std::to_string(static_cast<int>(s.equipmentId)));
     add("position_x", Num(s.x));
     add("position_y", Num(s.y));
@@ -1070,21 +1324,57 @@ uint32_t QueryU32(IDatabase& db, const std::string& sql, DbError& e)
     auto rs = db.Query(sql, e);
     return (rs && rs->Next()) ? rs->GetUInt32(0) : 0u;
 }
+
+ResolvedCreatureDisplay ResolveTemplateDisplayForNewSpawn(IDatabase& db, uint32_t entry, uint32_t guid)
+{
+    // Reuse the exact map-load resolver for a just-added actor so a new AzerothCore NPC is visible
+    // immediately, rather than waiting for the next map reload to discover creature_template_model.
+    MapSpawn preview;
+    preview.entry = entry;
+    preview.guid = guid;
+    const std::set<std::string> templateCols = sql::ExistingCols(db, "creature_template");
+    const std::string query = "SELECT " + DisplayColumnOr("ct", templateCols, false) + ", " +
+        ColumnOr("ct", templateCols, "modelid1", "0") + ", " +
+        ColumnOr("ct", templateCols, "modelid2", "0") + ", " +
+        ColumnOr("ct", templateCols, "modelid3", "0") + ", " +
+        ColumnOr("ct", templateCols, "modelid4", "0") +
+        " FROM creature_template ct WHERE ct.entry=" + std::to_string(entry);
+    DbError lookup;
+    if (auto rs = db.Query(query, lookup))
+        if (rs->Next())
+        {
+            preview.templateDisplayId = rs->GetUInt32(0);
+            if (preview.templateDisplayId == 0)
+                for (int col = 1; col <= 4; ++col)
+                {
+                    const uint32_t display = rs->GetUInt32(col);
+                    if (display != 0) { preview.templateDisplayId = display; break; }
+                }
+        }
+    preview.templateDisplayScale = 1.0f;
+    preview.templateDisplaySource = preview.templateDisplayId != 0
+                                        ? CreatureDisplaySource::LegacyTemplate
+                                        : CreatureDisplaySource::None;
+    ResolveBaseDisplay(preview);
+    std::vector<MapSpawn> singleton;
+    singleton.push_back(std::move(preview));
+    ApplyTemplateModelDisplays(db, singleton);
+    return singleton.front().ResolveDisplay(SpawnFilter{});
+}
 } // namespace
 
 DbError MapSpawnRepository::InsertCreatureSpawn(IDatabase& db, uint32_t mapId, uint32_t entry,
                                                 float x, float y, float z, float o,
-                                                uint32_t& guid, uint32_t& outDisplayId) const
+                                                uint32_t& guid, uint32_t& outDisplayId,
+                                                float* outServerDisplayScale,
+                                                CreatureDisplaySource* outDisplaySource) const
 {
     outDisplayId = 0;
+    if (outServerDisplayScale)
+        *outServerDisplayScale = 1.0f;
+    if (outDisplaySource)
+        *outDisplaySource = CreatureDisplaySource::None;
     DbError e;
-    // Resolve a display id for the viewer (first non-zero modelid1..4); the spawn's own modelid stays
-    // 0 so the core picks at runtime.
-    if (auto rs = db.Query("SELECT modelid1, modelid2, modelid3, modelid4 FROM creature_template "
-                           "WHERE entry = " + std::to_string(entry), e))
-        if (rs->Next())
-            for (int i = 0; i < 4 && outDisplayId == 0; ++i)
-                outDisplayId = rs->GetUInt32(i);
 
     if (guid == 0)   // 0 = allocate; a specific guid comes from undo/redo re-insert
         guid = QueryU32(db, "SELECT COALESCE(MAX(guid),0)+1 FROM creature", e);
@@ -1092,8 +1382,18 @@ DbError MapSpawnRepository::InsertCreatureSpawn(IDatabase& db, uint32_t mapId, u
         return e.ok ? DbError{false, "creature guid allocation failed"} : e;
     const uint32_t outGuid = guid;
 
+    const ResolvedCreatureDisplay preview = ResolveTemplateDisplayForNewSpawn(db, entry, guid);
+    outDisplayId = preview.displayId;
+    if (outServerDisplayScale)
+        *outServerDisplayScale = preview.serverScale;
+    if (outDisplaySource)
+        *outDisplaySource = preview.source;
+
     const std::set<std::string> existing = sql::ExistingCols(db, "creature");
     const std::string entryCol = SpawnEntryColumn(existing);
+    std::string spawnDisplayColumn = FirstColumn(existing, {"displayid", "display_id", "modelid"});
+    if (spawnDisplayColumn.empty())
+        spawnDisplayColumn = "modelid";  // offline TrinityCore-compatible export fallback
     std::vector<std::string> cols = {"guid", entryCol};
     sql::ValueList v(db);
     v.UInt(outGuid); v.UInt(entry);
@@ -1102,7 +1402,7 @@ DbError MapSpawnRepository::InsertCreatureSpawn(IDatabase& db, uint32_t mapId, u
     if (!existing.empty() && existing.count("id2") != 0) { cols.push_back("id2"); v.UInt(0); }
     if (!existing.empty() && existing.count("id3") != 0) { cols.push_back("id3"); v.UInt(0); }
     const std::vector<std::string> tail = {
-        "map", "zoneId", "areaId", "spawnMask", "phaseMask", "modelid", "equipment_id",
+        "map", "zoneId", "areaId", "spawnMask", "phaseMask", spawnDisplayColumn, "equipment_id",
         "position_x", "position_y", "position_z", "orientation", "spawntimesecs", "wander_distance",
         "currentwaypoint", "curhealth", "curmana", "MovementType", "npcflag", "unit_flags",
         "dynamicflags", "ScriptName", "StringId", "VerifiedBuild"};

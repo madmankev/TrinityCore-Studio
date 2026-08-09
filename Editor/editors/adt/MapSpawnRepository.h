@@ -90,8 +90,50 @@ enum class WaypointPathSource : uint8_t
     TemplateAddon,
 };
 
-// One creature spawn resolved enough to render + simulate it: position/orientation,
-// movement behaviour, and the CreatureDisplayInfo displayId to turn into an M2 model.
+// Where the World Editor obtained a creature's base CreatureDisplayInfo id. The client needs this
+// id — not a CreatureModelData id — to select the matching M2, skin variations and character-NPC
+// customization. `creature_template_model` is the authoritative modern AzerothCore source, whereas
+// older TrinityCore layouts keep the same ids in creature_template.modelid1..4.
+enum class CreatureDisplaySource : uint8_t
+{
+    None,
+    SpawnOverride,        // persistent per-spawn modelid/displayid supplied by the server DB
+    TemplateModel,        // creature_template_model.CreatureDisplayID (modern AzerothCore)
+    LegacyTemplate,       // creature_template.modelid1..4 or a custom template displayid column
+    EventOverride,        // game_event_model_equip.modelid while its event is previewed
+};
+
+inline const char* CreatureDisplaySourceName(CreatureDisplaySource source)
+{
+    switch (source)
+    {
+        case CreatureDisplaySource::SpawnOverride: return "spawn display override";
+        case CreatureDisplaySource::TemplateModel: return "creature_template_model";
+        case CreatureDisplaySource::LegacyTemplate: return "legacy template model";
+        case CreatureDisplaySource::EventOverride: return "game-event display override";
+        default: return "no display assigned";
+    }
+}
+
+// A server-side display replacement applied while a game event is active. The world database does
+// not persist arbitrary script-time SetDisplayId calls, but game_event_model_equip is a durable,
+// server-owned runtime visual override that can be previewed faithfully from the DB.
+struct GameEventCreatureDisplayOverride
+{
+    int32_t  eventEntry = 0;
+    uint32_t displayId = 0;      // CreatureDisplayInfo.dbc id
+};
+
+struct ResolvedCreatureDisplay
+{
+    uint32_t displayId = 0;
+    float    serverScale = 1.0f; // creature_template_model.DisplayScale; template scale is separate
+    CreatureDisplaySource source = CreatureDisplaySource::None;
+    int32_t  eventEntry = 0;     // non-zero only for an active game-event replacement
+};
+
+// One creature spawn resolved enough to render + simulate it: position/orientation, movement
+// behaviour, and the server-selected CreatureDisplayInfo displayId to turn into an M2 model.
 struct MapSpawn
 {
     uint32_t guid = 0;           // creature.guid
@@ -100,7 +142,56 @@ struct MapSpawn
     float    o = 0;              // creature.orientation (radians)
     uint8_t  movementType = 0;   // creature.MovementType (0 idle, 1 random, 2 waypoint)
     float    wanderDistance = 0; // creature.wander_distance (random-movement radius)
-    uint32_t displayId = 0;      // resolved model: spawn modelid, else first template modelid
+    // `displayId` remains the resolved base value for existing callers. Use ResolveDisplay(filter)
+    // when rendering/picking: it applies a selected game-event model as the server would.
+    uint32_t displayId = 0;
+    float    displayScale = 1.0f;
+    CreatureDisplaySource displaySource = CreatureDisplaySource::None;
+    // Keep the template fallback alongside a per-spawn override. This lets the NPC Instance panel
+    // immediately restore the right AzerothCore/Trinity model when its modelid is changed back to 0,
+    // without forcing a whole-map reload.
+    uint32_t templateDisplayId = 0;
+    float    templateDisplayScale = 1.0f;
+    CreatureDisplaySource templateDisplaySource = CreatureDisplaySource::None;
+    uint32_t spawnDisplayId = 0;
+    bool     hasSpawnDisplayOverrideColumn = true; // false on current AzerothCore creature layout
+    // A per-spawn display override can name a different row in creature_template_model. Keep that
+    // row's own DisplayScale instead of accidentally borrowing the weighted fallback's scale.
+    float    spawnDisplayScale = 1.0f;
+    uint16_t templateDisplayIndex = 0;  // selected idx from creature_template_model, if applicable
+    uint16_t templateDisplayCount = 0;  // available server model rows for this template
+    std::vector<GameEventCreatureDisplayOverride> eventDisplayOverrides;
+
+    ResolvedCreatureDisplay ResolveDisplay(const SpawnFilter& filter) const
+    {
+        ResolvedCreatureDisplay out;
+        out.displayId = displayId;
+        out.serverScale = displayScale > 0.0f ? displayScale : 1.0f;
+        out.source = displaySource;
+        if (filter.activeEvent == 0 || eventDisplayOverrides.empty())
+            return out;
+
+        // One named event has an exact match. "All events" is a diagnostic/preview mode rather
+        // than a server state, so choose the lowest event id deterministically instead of making
+        // the visual flicker between rows each frame.
+        const GameEventCreatureDisplayOverride* chosen = nullptr;
+        for (const GameEventCreatureDisplayOverride& row : eventDisplayOverrides)
+        {
+            if (row.displayId == 0)
+                continue;
+            if (filter.activeEvent != -1 && row.eventEntry != filter.activeEvent)
+                continue;
+            if (!chosen || row.eventEntry < chosen->eventEntry)
+                chosen = &row;
+        }
+        if (chosen)
+        {
+            out.displayId = chosen->displayId;
+            out.source = CreatureDisplaySource::EventOverride;
+            out.eventEntry = chosen->eventEntry;
+        }
+        return out;
+    }
     // The resolved path used by this spawn. A creature_addon row (per-spawn) wins as a whole;
     // path_id = 0 on that row means no waypoint route, rather than a fallback to the template.
     uint32_t pathId = 0;
@@ -236,9 +327,13 @@ public:
 
     // Insert a NEW creature spawn of `entry` at (x,y,z,o) on `mapId`. `guid` is in/out: pass 0 to
     // allocate MAX+1 (returned in `guid`), or a specific guid (undo/redo re-inserts with the original
-    // guid for stable identity). Resolves the template display id into `outDisplayId` for rendering.
+    // guid for stable identity). Resolves the server template display into `outDisplayId` for
+    // rendering, including AzerothCore's creature_template_model layout. Optional outputs preserve
+    // that row's DisplayScale/source for a live preview before the next map refresh.
     DbError InsertCreatureSpawn(IDatabase& db, uint32_t mapId, uint32_t entry, float x, float y,
-                                float z, float o, uint32_t& guid, uint32_t& outDisplayId) const;
+                                float z, float o, uint32_t& guid, uint32_t& outDisplayId,
+                                float* outServerDisplayScale = nullptr,
+                                CreatureDisplaySource* outDisplaySource = nullptr) const;
     // Insert a NEW gameobject spawn. `rot` is the rotation0..3 quaternion (x,y,z,w); `guid` in/out as
     // above; displayId from gameobject_template.displayId.
     DbError InsertGameObjectSpawn(IDatabase& db, uint32_t mapId, uint32_t entry, float x, float y,
