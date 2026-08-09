@@ -263,6 +263,23 @@ NpcLayer::NpcModel* NpcLayer::EnsureModel(uint32_t displayId)
     }
 
     ModelUpload up = m2::BuildUpload(*cd_, model);
+    // Scene NPCs are placed by folding the world transform into their bone palette. Some static
+    // creature M2s (and a number of custom models) carry zero bones or zero vertex weights; unlike
+    // ADT instancing they have no separate instance matrix, so without this fallback they render at
+    // the world origin and appear missing. Give every unweighted vertex a root bone and retain a
+    // one-bone palette for such models.
+    if (up.boneCount == 0)
+        up.boneCount = 1;
+    for (ModelVertexGpu& v : up.vertices)
+    {
+        const float weight = v.boneWeights[0] + v.boneWeights[1] + v.boneWeights[2] + v.boneWeights[3];
+        if (weight <= 1e-6f)
+        {
+            v.boneIndices[0] = 0;
+            v.boneWeights[0] = 1.0f;
+            v.boneWeights[1] = v.boneWeights[2] = v.boneWeights[3] = 0.0f;
+        }
+    }
     // Character body: replace the decoded base-skin slot with the composited body (base skin +
     // face + underwear + armour regions), exactly as ModelViewerModule::Rebuild does.
     if (bodySlot >= 0 && bodyComposite.valid() && bodySlot < (int)up.textures.size())
@@ -448,6 +465,18 @@ const NpcLayer::HeldModel* NpcLayer::EnsureHeldModel(const std::string& path, co
     if (dresser_)
         dresser_->ApplyItemObjectSkin(path, objectSkin, model);   // type-2 object skin (else white)
     ModelUpload up = m2::BuildUpload(*cd_, model);
+    if (up.boneCount == 0)
+        up.boneCount = 1;
+    for (ModelVertexGpu& v : up.vertices)
+    {
+        const float weight = v.boneWeights[0] + v.boneWeights[1] + v.boneWeights[2] + v.boneWeights[3];
+        if (weight <= 1e-6f)
+        {
+            v.boneIndices[0] = 0;
+            v.boneWeights[0] = 1.0f;
+            v.boneWeights[1] = v.boneWeights[2] = v.boneWeights[3] = 0.0f;
+        }
+    }
     ModelHandle h = renderer_->CreateModel(up);
     if (!h)
     {
@@ -459,6 +488,8 @@ const NpcLayer::HeldModel* NpcLayer::EnsureHeldModel(const std::string& path, co
     m2::M2Animator anim;
     anim.SetModel(&model, cd_, path);
     anim.Evaluate(0, 0.0f, glm::mat4(1.0f), hm.localBones);   // static bind pose (weapons don't billboard)
+    if (hm.localBones.empty())
+        hm.localBones.assign(1, glm::mat4(1.0f));
     auto res = heldModels_.emplace(key, std::move(hm));
     return &res.first->second;
 }
@@ -552,6 +583,10 @@ void NpcLayer::Build(const glm::vec3& focus, const glm::vec3& origin, const glm:
         float dur = static_cast<float>(m->animator.Duration(seq));
         float t = dur > 0.0f ? std::fmod(n.animTime, dur) : 0.0f;
         m->animator.Evaluate(seq, t, view, n.palette);   // M2-local palette
+        // Static M2s may have no bones, but their upload has a synthesized root bone above so
+        // the world placement still reaches the vertex shader instead of leaving the mesh at origin.
+        if (n.palette.empty())
+            n.palette.assign(1, glm::mat4(1.0f));
 
         // Fold the world transform into the palette (world = local + origin; Z not offset).
         const glm::vec3 local(n.pos.x - origin.x, n.pos.y - origin.y, n.pos.z);
