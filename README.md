@@ -35,8 +35,8 @@ panel + log across the bottom.
 - **World Editor** - streams whole ADT maps from client data, renders terrain, doodads,
   WMOs, NPCs, GameObjects, transports, phases/events/pools, and provides a map overview,
   coordinate bookmarks, a searchable world outliner, precise transforms, rapid spawn brushes,
-  formation links, right-click placement, deletion, undo/redo, spawn-instance forms, and an
-  in-world **waypoint path editor** for NPC routes.
+  formation links, non-destructive **terrain height sculpting**, right-click placement, deletion,
+  undo/redo, spawn-instance forms, and an in-world **waypoint path editor** for NPC routes.
 
 ### World Editor workflow
 
@@ -61,17 +61,21 @@ turn on **Edit**:
 4. **Build formations:** select an NPC and use **Formation** to create a leader/self row, join a
    leader GUID, set distance/angle/group-AI/path-direction points, or remove membership. Purple
    world links make leader/member relationships visible and selectable in context.
-5. **Edit an NPC route:** select an NPC and open **Waypoint Path**. The panel identifies whether
+5. **Sculpt terrain safely:** use **Terrain Sculpt** to arm a Raise, Lower, or Flatten height
+   brush, then right-click the ground. Smooth radial strokes queue MCVT height changes and rebuilt
+   MCNR normals across every intersected existing ADT tile. Pending strokes support Ctrl+Z/Ctrl+Y;
+   **Save ADT edits** writes the project overlay and reloads streamed terrain.
+6. **Edit an NPC route:** select an NPC and open **Waypoint Path**. The panel identifies whether
    its route comes from the creature template (shared) or its `creature_addon` row (local). Use
    **Make local copy** before changing a shared route when the change is map/spawn-specific;
    creating that local addon carries over the template's visual addon settings so mounted/
    aura-equipped NPCs keep their appearance.
-6. **Author paths in 3D:** click blue numbered route markers to select a point. Add a point at
+7. **Author paths in 3D:** click blue numbered route markers to select a point. Add a point at
    the NPC home, arm **Place on terrain** and right-click ground to insert a point, or arm
    **Move selected on terrain** to reposition one. The route overlay, loop line, delays,
    orientation, walk/run mode, events, actions, chances, and `wpguid` all preview and edit in
    place. Route-table changes have local Ctrl+Z/Ctrl+Y before Save.
-7. **Save deliberately:** route edits are an unsaved live preview until **Save route**. Existing
+8. **Save deliberately:** route edits are an unsaved live preview until **Save route**. Existing
    `waypoint_data` rows are updated transactionally rather than replaced, so project-specific
    columns survive point moves/reordering. A spawn addon row takes precedence over template addon
    data in TrinityCore; clearing its `path_id` keeps its other addon fields and intentionally
@@ -109,6 +113,14 @@ premake5) are **vendored** in `third_party/` and `tools/` - nothing else to inst
 
 ```powershell
 .\build.ps1 Debug      # or: .\build.ps1 Release
+```
+
+If PowerShell blocks the unsigned local helper, use a process-only bypass (it resets when
+that terminal closes):
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+.\build.ps1 Release
 ```
 
 This runs `tools\premake5.exe vs2026` to generate `build\TrinityCoreStudio.slnx`, then

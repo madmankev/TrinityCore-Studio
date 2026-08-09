@@ -92,6 +92,10 @@ void AdtViewerModule::OnClientDataLoaded()
     formationDirty_ = false;
     brushPlacements_.clear();
     brushActive_ = false;
+    adtEdits_.SetMap("");
+    terrainSculptActive_ = false;
+    ++terrainHistoryGeneration_;
+    terrainStatus_.clear();
     outlinerDirty_ = true;
 }
 
@@ -319,6 +323,7 @@ void AdtViewerModule::DrawPanels()
     DrawNpcInstancePanel();
     DrawGoInstancePanel();
     DrawWaypointPathPanel();
+    DrawTerrainSculptPanel();
     DrawViewportPanel();
 }
 
@@ -1570,6 +1575,13 @@ void AdtViewerModule::DrawViewportPanel()
         ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.42f, 1.0f),
                            "Placement brush active: %s entry %u — right-click terrain; Esc stops.",
                            brushKind_ == 0 ? "NPC" : "GameObject", brushEntry_);
+    if (terrainSculptActive_)
+    {
+        static const char* kSculptNames[] = {"Raise", "Lower", "Flatten"};
+        ImGui::TextColored(ImVec4(0.94f, 0.52f, 0.18f, 1.0f),
+                           "Terrain sculpt active: %s, %.1f yd radius — right-click terrain; Esc stops.",
+                           kSculptNames[std::clamp(terrainSculptMode_, 0, 2)], terrainBrushRadius_);
+    }
 
     ImGui::TextDisabled("loaded %d tiles (%d pending), %d objects, %d models", streamer_.loadedTiles(),
                         streamer_.pendingTiles(), streamer_.objectCount(), streamer_.modelCount());
@@ -1621,13 +1633,18 @@ void AdtViewerModule::DrawViewportPanel()
         npcLayer_.SetOutline(0, glm::vec4(0.0f));
     }
 
-    // Right-click on terrain (no drag) opens the "add object here" popup, or places/moves an armed
-    // waypoint. Escape cancels the active terrain waypoint tool without changing the working route.
+    // Right-click on terrain (no drag) opens the add popup, stamps an armed spawn brush, or edits
+    // a path/terrain brush. Escape always disarms the most-specific active terrain tool first.
     if (editMode_)
         HandleRightClickAdd(view, proj, p0, w, h, hovered, focus, filter);
     if (editMode_ && hovered && ImGui::IsKeyPressed(ImGuiKey_Escape))
     {
-        if (waypointPlacementMode_ != WaypointPlacementMode::None)
+        if (terrainSculptActive_)
+        {
+            terrainSculptActive_ = false;
+            terrainStatus_ = "Terrain sculpt brush cancelled.";
+        }
+        else if (waypointPlacementMode_ != WaypointPlacementMode::None)
         {
             waypointPlacementMode_ = WaypointPlacementMode::None;
             waypointStatus_ = "Terrain waypoint tool cancelled.";
@@ -1689,6 +1706,7 @@ void AdtViewerModule::DrawViewportPanel()
     // It stays visible in read-only view mode; point picking/terrain tools still require Edit.
     DrawWaypointOverlay(view, proj, p0, w, h);
     DrawFormationOverlay(view, proj, p0, w, h);
+    DrawTerrainBrushOverlay(view, proj, p0, w, h, hovered);
 
     // Transform gizmo: drawn ON TOP of the blitted image, on THIS window's draw list, with the SAME
     // view/proj the scene was rendered with (so it stays locked to the model). Runs before the camera
@@ -2364,6 +2382,133 @@ void AdtViewerModule::DrawWaypointOverlay(const glm::mat4& view, const glm::mat4
     }
 }
 
+void AdtViewerModule::DrawTerrainSculptPanel()
+{
+    if (!ImGui::Begin("Terrain Sculpt"))
+    {
+        ImGui::End();
+        return;
+    }
+    const bool mapReady = streamerInit_ && !loadedName_.empty() && !streamer_.wmoOnly();
+    const bool canSave = svc_ && svc_->clientData && !svc_->editRoot.empty();
+    if (!mapReady)
+    {
+        ImGui::TextWrapped(streamer_.wmoOnly()
+            ? "Terrain sculpting is unavailable on global-WMO maps."
+            : "Open a terrain map before sculpting its ADT heightmap.");
+        ImGui::End();
+        return;
+    }
+    if (!canSave)
+        ImGui::TextColored(ImVec4(1.0f, 0.68f, 0.22f, 1.0f),
+                           "Open a project with an edited-client folder before sculpting terrain.");
+
+    ImGui::SeparatorText("Height brush");
+    ImGui::BeginDisabled(!canSave);
+    ImGui::RadioButton("Raise", &terrainSculptMode_, 0); ImGui::SameLine();
+    ImGui::RadioButton("Lower", &terrainSculptMode_, 1); ImGui::SameLine();
+    ImGui::RadioButton("Flatten", &terrainSculptMode_, 2);
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SliderFloat("Radius", &terrainBrushRadius_, 1.0f, 100.0f, "%.1f yd", ImGuiSliderFlags_Logarithmic);
+    if (terrainSculptMode_ == static_cast<int>(adt::TerrainBrushMode::Flatten))
+    {
+        ImGui::Checkbox("Sample target height from click", &terrainSampleFlattenZ_);
+        ImGui::BeginDisabled(terrainSampleFlattenZ_);
+        ImGui::SetNextItemWidth(180.0f);
+        ImGui::InputFloat("Target Z", &terrainFlattenZ_, 0.0f, 0.0f, "%.3f");
+        ImGui::EndDisabled();
+    }
+    else
+    {
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::SliderFloat("Strength per stroke", &terrainBrushStrength_, 0.05f, 30.0f,
+                           "%.2f yd", ImGuiSliderFlags_Logarithmic);
+    }
+
+    if (ImGui::Button(terrainSculptActive_ ? "Stop terrain brush" : "Arm terrain brush"))
+    {
+        terrainSculptActive_ = !terrainSculptActive_;
+        terrainStatus_ = terrainSculptActive_
+            ? "Terrain brush armed — right-click terrain to queue a smooth height stroke."
+            : "Terrain brush stopped.";
+    }
+    ImGui::EndDisabled();
+
+    const int pending = adtEdits_.terrainPendingCount();
+    ImGui::TextDisabled("%d pending terrain tile-stroke(s)", pending);
+    if (pending > 0)
+    {
+        ImGui::SameLine();
+        if (ImGui::Button("Discard pending terrain strokes"))
+        {
+            adtEdits_.ClearTerrainStrokes();
+            ++terrainHistoryGeneration_;  // stale undo/redo closures must not resurrect discarded work
+            terrainStatus_ = "Pending terrain strokes discarded.";
+        }
+    }
+    if (terrainSculptActive_)
+        ImGui::TextColored(ImVec4(0.94f, 0.52f, 0.18f, 1.0f),
+                           "Right-click terrain in the World Editor to sculpt. Escape cancels the brush.");
+    if (!terrainStatus_.empty())
+        ImGui::TextDisabled("%s", terrainStatus_.c_str());
+
+    ImGui::Separator();
+    ImGui::TextWrapped("Strokes patch the selected ADT tile's MCVT height values and rebuild its MCNR normals. They are staged in the project's edited-client overlay, just like doodad/WMO placement edits. Use \"Save ADT edits\" in the World Editor toolbar to write and reload terrain. Pending strokes support Ctrl+Z/Ctrl+Y; after a save, terrain history is intentionally frozen so a stroke cannot be applied twice.");
+    ImGui::End();
+}
+
+void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::mat4& proj,
+                                                    const ImVec2& p0, int w, int h,
+                                                    bool viewportHovered)
+{
+    if (!terrainSculptActive_ || !viewportHovered)
+        return;
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const float px = mouse.x - p0.x;
+    const float py = mouse.y - p0.y;
+    if (px < 0.0f || py < 0.0f || px >= static_cast<float>(w) || py >= static_cast<float>(h))
+        return;
+    const PickRay ray = MakePickRay(view, proj, px, py, static_cast<float>(w), static_cast<float>(h));
+    glm::vec3 center;
+    float centerT = -1.0f;
+    int tx = 0, ty = 0;
+    if (!streamer_.GroundHit(ray.origin, ray.dir, center, centerT, tx, ty))
+        return;
+
+    constexpr int kSegments = 32;
+    const glm::vec3 origin = streamer_.origin();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImVec2 previous{};
+    bool havePrevious = false;
+    for (int i = 0; i <= kSegments; ++i)
+    {
+        const float angle = (static_cast<float>(i) / kSegments) * 6.28318530718f;
+        glm::vec3 rim;
+        float rimT = -1.0f;
+        int rimTx = 0, rimTy = 0;
+        const glm::vec3 top(center.x + std::cos(angle) * terrainBrushRadius_,
+                            center.y + std::sin(angle) * terrainBrushRadius_, 10000.0f);
+        ImVec2 projected;
+        const bool hit = streamer_.GroundHit(top, glm::vec3(0.0f, 0.0f, -1.0f), rim, rimT, rimTx, rimTy) &&
+                         ProjectWorldPoint(glm::vec3(rim.x + origin.x, rim.y + origin.y, rim.z), origin,
+                                           view, proj, p0, w, h, projected);
+        if (hit && havePrevious)
+            draw->AddLine(previous, projected, IM_COL32(244, 139, 48, 225), 2.0f);
+        previous = projected;
+        havePrevious = hit;
+    }
+    ImVec2 centerScreen;
+    if (ProjectWorldPoint(glm::vec3(center.x + origin.x, center.y + origin.y, center.z), origin,
+                          view, proj, p0, w, h, centerScreen))
+    {
+        draw->AddCircleFilled(centerScreen, 4.0f, IM_COL32(255, 221, 160, 255), 10);
+        static const char* kModes[] = {"Raise", "Lower", "Flatten"};
+        draw->AddText(ImVec2(centerScreen.x + 8.0f, centerScreen.y + 6.0f),
+                      IM_COL32(255, 234, 204, 255),
+                      kModes[std::clamp(terrainSculptMode_, 0, 2)]);
+    }
+}
+
 void AdtViewerModule::DrawWaypointPathPanel()
 {
     if (!ImGui::Begin("Waypoint Path"))
@@ -2912,12 +3057,29 @@ void AdtViewerModule::DrawSelectionToolbar()
     // without a current selection.
     if (!adtEdits_.empty())
     {
+        const int terrainPending = adtEdits_.terrainPendingCount();
         const std::string label = "Save ADT edits (" + std::to_string(adtEdits_.pendingCount()) + ")";
         if (ImGui::Button(label.c_str()) && svc_ && svc_->clientData)
         {
             std::string status;
-            adtEdits_.Flush(*svc_->clientData, svc_->editRoot, status);
+            const bool saved = adtEdits_.Flush(*svc_->clientData, svc_->editRoot, status);
             saveStatus_ = status;
+            if (terrainPending > 0)
+            {
+                // Flush writes tiles one at a time. Even a later I/O failure can leave an earlier
+                // terrain tile safely persisted, so freeze old terrain undo closures on every save
+                // attempt rather than risk replaying an additive stroke twice on retry.
+                ++terrainHistoryGeneration_;
+                if (saved)
+                {
+                    // Terrain GPU meshes are immutable uploads. Reopen the current map so the
+                    // streamer rereads the just-written MCVT/MCNR overlay data.
+                    terrainStatus_ = "Terrain edits saved; reloading streamed tiles from the project overlay.";
+                    OpenMapDir(selectedMapDir_, false);
+                }
+                else
+                    terrainStatus_ = "Terrain save did not finish; inspect the status and retry pending edits if needed.";
+            }
             if (svc_->setStatus)
                 svc_->setStatus(status);
         }
@@ -3620,6 +3782,65 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
     int gtx = 0, gty = 0;
     if (!streamer_.GroundHit(ray.origin, ray.dir, gLocal, gT, gtx, gty))
         return;   // no ground under the cursor
+
+    // Terrain sculpting is deliberately highest-priority: an author armed it to modify the ground,
+    // even when a doodad/NPC happens to sit between the cursor and the terrain triangle. The actual
+    // MCVT/MCNR patch stays pending in AdtEditStore until "Save ADT edits" writes the loose overlay.
+    if (terrainSculptActive_)
+    {
+        const glm::vec3 world(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z);
+        adt::TerrainBrushStroke stroke;
+        stroke.mode = static_cast<adt::TerrainBrushMode>(std::clamp(terrainSculptMode_, 0, 2));
+        stroke.worldX = world.x;
+        stroke.worldY = world.y;
+        stroke.radius = terrainBrushRadius_;
+        stroke.strength = terrainBrushStrength_;
+        stroke.targetZ = terrainSampleFlattenZ_ ? world.z : terrainFlattenZ_;
+        if (terrainSampleFlattenZ_ && stroke.mode == adt::TerrainBrushMode::Flatten)
+            terrainFlattenZ_ = world.z;
+        // Duplicate a stroke only into neighboring ADTs whose terrain rectangle intersects the
+        // brush circle. This preserves seamless heights/normals across a streamed tile edge without
+        // attempting to create a missing WDT tile.
+        std::vector<AdtEditStore::TerrainStrokeRef> refs;
+        const float halfTile = adt::kTileSize * 0.5f;
+        for (int ty = std::max(0, gty - 1); ty <= std::min(63, gty + 1); ++ty)
+            for (int tx = std::max(0, gtx - 1); tx <= std::min(63, gtx + 1); ++tx)
+            {
+                bool exists = false;
+                for (const auto& tile : streamer_.world().tiles)
+                    if (tile.first == tx && tile.second == ty) { exists = true; break; }
+                if (!exists)
+                    continue;
+                const glm::vec2 tileCenter((31.5f - ty) * adt::kTileSize,
+                                           (31.5f - tx) * adt::kTileSize);
+                const float edgeX = std::max(std::fabs(world.x - tileCenter.x) - halfTile, 0.0f);
+                const float edgeY = std::max(std::fabs(world.y - tileCenter.y) - halfTile, 0.0f);
+                if (edgeX * edgeX + edgeY * edgeY > stroke.radius * stroke.radius)
+                    continue;
+                const AdtEditStore::TerrainStrokeRef ref = adtEdits_.RecordTerrainStroke(tx, ty, stroke);
+                if (ref.id != 0)
+                    refs.push_back(ref);
+            }
+        if (refs.empty())
+        {
+            terrainStatus_ = "Could not queue a terrain stroke for this tile.";
+            return;
+        }
+        const uint64_t generation = terrainHistoryGeneration_;
+        undo_.Push(MakeCommand(
+            [this, generation, refs]() {
+                if (generation == terrainHistoryGeneration_)
+                    for (const auto& ref : refs)
+                        adtEdits_.RemoveTerrainStroke(ref.id);
+            },
+            [this, generation, refs]() {
+                if (generation == terrainHistoryGeneration_)
+                    for (const auto& ref : refs)
+                        adtEdits_.RestoreTerrainStroke(ref);
+            }, "Sculpt terrain"));
+        terrainStatus_ = "Queued terrain stroke across " + std::to_string(refs.size()) + " tile(s) — save ADT edits to apply it.";
+        return;
+    }
 
     // Waypoint terrain tools intentionally take precedence over object context menus: a route often
     // runs through its owning NPC/model, and the user explicitly armed this mode in the Waypoint

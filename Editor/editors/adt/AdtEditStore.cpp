@@ -2,6 +2,9 @@
 
 #include "editors/adt/AdtEditStore.h"
 
+#include <algorithm>
+#include <unordered_set>
+
 #include "adt/AdtLoader.h"          // adt::TilePath
 #include "clientdata/ClientData.h"
 #include "clientdata/DbcOverlay.h"  // WriteLooseFile
@@ -21,6 +24,8 @@ void AdtEditStore::SetMap(const std::string& mapDir)
     {
         mapDir_ = mapDir;
         edits_.clear();
+        terrain_.clear();
+        nextTerrainStrokeId_ = 1;
     }
 }
 
@@ -38,17 +43,79 @@ void AdtEditStore::RecordRemove(uint64_t uniqueId, bool isWmo,
         edits_[TileKey(t.first, t.second)][uniqueId] = Edit{false, isWmo, {}, {}};
 }
 
+AdtEditStore::TerrainStrokeRef AdtEditStore::RecordTerrainStroke(
+    int tileX, int tileY, const adt::TerrainBrushStroke& stroke)
+{
+    TerrainStrokeRef ref;
+    if (tileX < 0 || tileX >= 64 || tileY < 0 || tileY >= 64)
+        return ref;
+    ref.id = nextTerrainStrokeId_++;
+    ref.tileX = tileX;
+    ref.tileY = tileY;
+    ref.stroke = stroke;
+    terrain_[TileKey(tileX, tileY)].push_back(ref);
+    return ref;
+}
+
+bool AdtEditStore::RemoveTerrainStroke(uint64_t id)
+{
+    if (id == 0)
+        return false;
+    for (auto it = terrain_.begin(); it != terrain_.end(); ++it)
+    {
+        std::vector<TerrainStrokeRef>& strokes = it->second;
+        const auto found = std::find_if(strokes.begin(), strokes.end(), [id](const TerrainStrokeRef& s) {
+            return s.id == id;
+        });
+        if (found == strokes.end())
+            continue;
+        strokes.erase(found);
+        if (strokes.empty())
+            terrain_.erase(it);
+        return true;
+    }
+    return false;
+}
+
+bool AdtEditStore::RestoreTerrainStroke(const TerrainStrokeRef& stroke)
+{
+    if (stroke.id == 0 || stroke.tileX < 0 || stroke.tileX >= 64 || stroke.tileY < 0 || stroke.tileY >= 64)
+        return false;
+    std::vector<TerrainStrokeRef>& strokes = terrain_[TileKey(stroke.tileX, stroke.tileY)];
+    if (std::find_if(strokes.begin(), strokes.end(), [&](const TerrainStrokeRef& s) { return s.id == stroke.id; }) !=
+        strokes.end())
+        return true;   // idempotent redo
+    const auto pos = std::lower_bound(strokes.begin(), strokes.end(), stroke.id,
+                                      [](const TerrainStrokeRef& s, uint64_t id) { return s.id < id; });
+    strokes.insert(pos, stroke);
+    nextTerrainStrokeId_ = std::max(nextTerrainStrokeId_, stroke.id + 1);
+    return true;
+}
+
+void AdtEditStore::ClearTerrainStrokes()
+{
+    terrain_.clear();
+}
+
+int AdtEditStore::terrainPendingCount() const
+{
+    int n = 0;
+    for (const auto& kv : terrain_)
+        n += static_cast<int>(kv.second.size());
+    return n;
+}
+
 int AdtEditStore::pendingCount() const
 {
     int n = 0;
     for (const auto& kv : edits_)
         n += static_cast<int>(kv.second.size());
-    return n;
+    return n + terrainPendingCount();
 }
 
 bool AdtEditStore::Flush(ClientData& cd, const std::string& editRoot, std::string& status)
 {
-    if (mapDir_.empty() || edits_.empty())
+    if (mapDir_.empty() || (edits_.empty() && terrain_.empty()))
     {
         status = "No ADT edits to save.";
         return true;
@@ -59,12 +126,20 @@ bool AdtEditStore::Flush(ClientData& cd, const std::string& editRoot, std::strin
         return false;
     }
 
+    // Copy keys before processing. Successful tiles are removed from their queues immediately so a
+    // later file-write failure can be retried safely: terrain strokes are additive and must never be
+    // replayed twice against an already-written overlay tile.
+    std::unordered_set<uint32_t> keys;
+    for (const auto& kv : edits_) keys.insert(kv.first);
+    for (const auto& kv : terrain_) keys.insert(kv.first);
+
     int tilesWritten = 0;
     int editsWritten = 0;
-    for (const auto& tkv : edits_)
+    int terrainVertices = 0;
+    for (uint32_t key : keys)
     {
-        const int x = TileX(tkv.first);
-        const int y = TileY(tkv.first);
+        const int x = TileX(key);
+        const int y = TileY(key);
         const std::string path = adt::TilePath(mapDir_, x, y);
 
         std::vector<uint8_t> bytes = cd.ReadFile(path);   // overlay-first, so edits accumulate
@@ -73,26 +148,41 @@ bool AdtEditStore::Flush(ClientData& cd, const std::string& editRoot, std::strin
             status = "Failed to read tile " + path;
             return false;
         }
-        for (const auto& ekv : tkv.second)
-        {
-            const uint64_t uid = ekv.first;
-            const Edit& ed = ekv.second;
-            bool ok = false;
-            if (!ed.present)
+
+        if (const auto pit = edits_.find(key); pit != edits_.end())
+            for (const auto& ekv : pit->second)
             {
-                ok = adt::RemovePlacement(bytes, uid, ed.isWmo);   // no-op if not present
+                const uint64_t uid = ekv.first;
+                const Edit& ed = ekv.second;
+                bool ok = false;
+                if (!ed.present)
+                {
+                    ok = adt::RemovePlacement(bytes, uid, ed.isWmo);   // no-op if not present
+                }
+                else if (adt::PatchTilePlacement(bytes, uid, ed.isWmo, ed.raw))
+                {
+                    ok = true;   // record existed -> updated in place
+                }
+                else if (!ed.path.empty())
+                {
+                    ok = adt::AddPlacement(bytes, uid, ed.isWmo, ed.path, ed.raw); // add-if-missing
+                }
+                if (ok)
+                    ++editsWritten;
             }
-            else if (adt::PatchTilePlacement(bytes, uid, ed.isWmo, ed.raw))
+
+        if (const auto tit = terrain_.find(key); tit != terrain_.end())
+            for (const TerrainStrokeRef& stroke : tit->second)
             {
-                ok = true;   // record existed -> updated in place
-            }
-            else if (!ed.path.empty())
-            {
-                ok = adt::AddPlacement(bytes, uid, ed.isWmo, ed.path, ed.raw);   // wasn't there -> add
-            }
-            if (ok)
+                adt::TerrainBrushResult sculpt;
+                if (!adt::SculptTerrain(bytes, stroke.stroke, &sculpt))
+                {
+                    status = "Terrain sculpt missed or could not patch tile " + path;
+                    return false;
+                }
                 ++editsWritten;
-        }
+                terrainVertices += sculpt.touchedVertices;
+            }
 
         std::string err;
         if (!WriteLooseFile(editRoot, path, bytes, err))
@@ -100,12 +190,18 @@ bool AdtEditStore::Flush(ClientData& cd, const std::string& editRoot, std::strin
             status = "Write failed for " + path + ": " + err;
             return false;
         }
+        // See the retry-safety note above. Placement edits are idempotent, but deleting them here
+        // also avoids repeating the same expensive tile rebuild on retry.
+        edits_.erase(key);
+        terrain_.erase(key);
         ++tilesWritten;
     }
 
-    edits_.clear();
     status = "Saved " + std::to_string(editsWritten) + " ADT edit(s) across " +
-             std::to_string(tilesWritten) + " tile(s).";
+             std::to_string(tilesWritten) + " tile(s)" +
+             (terrainVertices ? " (" + std::to_string(terrainVertices) + " terrain vertices sculpted)."
+                              : ".");
     return true;
 }
+
 } // namespace we

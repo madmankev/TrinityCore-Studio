@@ -3,8 +3,8 @@
 // AdtEditStore — accumulates pending ADT placement edits for the open map and flushes them to the
 // project's loose-file edit overlay. Batched by design: a Save groups edits by tile, reads each tile
 // once, applies all of that tile's edits, and writes it once (ADT tiles are multi-MB). This is the
-// extension point for future ADT editing (add/remove placements, terrain, textures) — new edit kinds
-// funnel through the same read-patch-write flush.
+// foundation for ADT editing (add/remove placements and terrain heights today; textures later) —
+// every edit kind funnels through the same overlay-first read-patch-write flush.
 
 #include <cstdint>
 #include <string>
@@ -37,6 +37,21 @@ public:
     // e.g. deleting a session-added object that was never saved).
     void RecordRemove(uint64_t uniqueId, bool isWmo, const std::vector<std::pair<int, int>>& tiles);
 
+    // A queued terrain brush stroke. `id` is chronological and stable so the World Editor can undo
+    // pending strokes without rewriting a multi-megabyte tile on every click. Strokes on a tile are
+    // replayed in id order during Flush.
+    struct TerrainStrokeRef
+    {
+        uint64_t id = 0;
+        int tileX = 0, tileY = 0;
+        adt::TerrainBrushStroke stroke;
+    };
+    TerrainStrokeRef RecordTerrainStroke(int tileX, int tileY, const adt::TerrainBrushStroke& stroke);
+    bool RemoveTerrainStroke(uint64_t id);
+    bool RestoreTerrainStroke(const TerrainStrokeRef& stroke);
+    void ClearTerrainStrokes();
+    int terrainPendingCount() const;
+
     int  pendingCount() const;
     bool empty() const { return pendingCount() == 0; }
 
@@ -54,7 +69,11 @@ private:
         std::string path;       // model path (for add-if-missing) — empty for a pure move
     };
     std::string mapDir_;
-    // tileKey (y*64 + x) -> uniqueId -> edit
+    // tileKey (y*64 + x) -> uniqueId -> placement intent
     std::unordered_map<uint32_t, std::unordered_map<uint64_t, Edit>> edits_;
+    // tileKey -> chronological terrain strokes. Unlike placement intents, strokes deliberately do
+    // not coalesce: Raise then Flatten is semantically different from the reverse sequence.
+    std::unordered_map<uint32_t, std::vector<TerrainStrokeRef>> terrain_;
+    uint64_t nextTerrainStrokeId_ = 1;
 };
 } // namespace we

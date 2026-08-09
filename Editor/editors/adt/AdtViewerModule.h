@@ -51,6 +51,7 @@ public:
                 {"NPC Instance", DockSlot::Left, true},
                 {"GameObject Instance", DockSlot::Left, true},
                 {"Waypoint Path", DockSlot::Bottom, true},
+                {"Terrain Sculpt", DockSlot::Bottom, true},
                 {"World Editor###ADT Viewer", DockSlot::Center, true}};
     }
     void DrawPanels() override;
@@ -237,6 +238,7 @@ private:
     // or overridden per spawn; the UI makes the source explicit and can clone a shared route locally.
     enum class WaypointPlacementMode { None, Add, MoveSelected };
     void DrawWaypointPathPanel();
+    void DrawTerrainSculptPanel();
     void SyncWaypointPathToSelection(bool discardCurrent = false);
     void ResetWaypointPathEditor();
     void MarkWaypointPathDirty();
@@ -252,6 +254,8 @@ private:
                                   int w, int h, bool viewportHovered);
     void DrawWaypointOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
                              int w, int h);
+    void DrawTerrainBrushOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
+                                 int w, int h, bool viewportHovered);
 
     EditorServices* svc_ = nullptr;
     AdtStreamer streamer_;
@@ -405,6 +409,18 @@ private:
 
     // Pending ADT placement edits (moved doodads/WMOs), flushed to the overlay by "Save ADT edits".
     AdtEditStore adtEdits_;
+
+    // Terrain height sculpting is deliberately staged alongside placement edits: right-clicking
+    // ground queues a lossless MCVT/MCNR patch in the project's loose overlay, and a Save reloads
+    // streamed tiles from that overlay. Undo/redo applies only while the stroke remains pending.
+    bool terrainSculptActive_ = false;
+    int terrainSculptMode_ = 0;       // adt::TerrainBrushMode (0 raise, 1 lower, 2 flatten)
+    float terrainBrushRadius_ = 10.0f;
+    float terrainBrushStrength_ = 2.0f;
+    float terrainFlattenZ_ = 0.0f;
+    bool terrainSampleFlattenZ_ = true;
+    uint64_t terrainHistoryGeneration_ = 1;
+    std::string terrainStatus_;
 
     // Right-click "add object here" flow.
     ImVec2    rightPressPos_{0, 0};

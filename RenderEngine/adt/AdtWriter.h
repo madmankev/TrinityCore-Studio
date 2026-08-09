@@ -5,8 +5,9 @@
 // bytes in place. MDDF (doodad, 36 B) and MODF (WMO, 64 B) records are fixed-size, so editing a
 // record never changes the file layout — no MHDR/MCIN fixups are needed (unlike add/remove, later).
 //
-// This is the foundation the ADT editor builds on: read the tile bytes via ClientData, apply edits
-// here, and persist with we::WriteLooseFile to the project's edit overlay.
+// This is the write foundation used by the World Editor: read tile bytes via ClientData, patch
+// placements or terrain MCVT/MCNR data here, then persist with we::WriteLooseFile to the project's
+// edit overlay.
 
 #include <cstdint>
 #include <string>
@@ -24,6 +25,41 @@ struct RawPlacement
     float rotation[3] = {0, 0, 0};
     float scale = 1.0f;
 };
+
+// A non-destructive terrain sculpt stroke over raw MCVT height values. Coordinates are the
+// TrinityCore/ADT world frame used by the World Editor (not streamer-local coordinates). A stroke
+// applies a smooth radial falloff to every terrain vertex it touches, then rebuilds MCNR normals for
+// affected MCNKs so a reload has correct lighting as well as the new silhouette.
+enum class TerrainBrushMode : uint8_t
+{
+    Raise,
+    Lower,
+    Flatten,
+};
+
+struct TerrainBrushStroke
+{
+    TerrainBrushMode mode = TerrainBrushMode::Raise;
+    float worldX = 0.0f;
+    float worldY = 0.0f;
+    float radius = 8.0f;       // yards
+    float strength = 1.0f;     // yards for Raise/Lower
+    float targetZ = 0.0f;      // world Z for Flatten
+};
+
+struct TerrainBrushResult
+{
+    int touchedVertices = 0;
+    int touchedChunks = 0;
+    float minWorldZ = 0.0f;
+    float maxWorldZ = 0.0f;
+};
+
+// Patch one terrain brush stroke into an ADT tile in-place. Only MCVT/MCNR payload bytes change;
+// chunk layout, placements, textures, and liquid data remain untouched. Returns false for malformed
+// tiles/strokes or when no vertex lies inside the brush radius.
+bool SculptTerrain(std::vector<uint8_t>& bytes, const TerrainBrushStroke& stroke,
+                   TerrainBrushResult* result = nullptr);
 
 // Invert PlacementMatrix (AdtLoader.cpp): turn a streamer-local placement matrix + the streamer
 // map origin back into MDDF/MODF raw fields. `localTransform` is the object's transform in the
