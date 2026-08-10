@@ -6,6 +6,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 
@@ -111,6 +112,19 @@ void AdtViewerModule::OnClientDataLoaded()
     aiPreviewTargetEnabled_ = false;
     aiPreviewTargetPlacementActive_ = false;
     aiPreviewTargetWorld_ = glm::vec3(0.0f);
+    scriptTriggerDrafts_.clear();
+    scriptTriggersEdit_.clear();
+    scriptTriggerRuntime_.clear();
+    scriptTriggerLog_.clear();
+    scriptTriggerMapDir_.clear();
+    scriptTriggersDirty_ = false;
+    selectedScriptTriggerId_ = 0;
+    scriptPreviewPlayerEnabled_ = false;
+    scriptPreviewPlayerFollowCamera_ = false;
+    scriptPreviewPlayerPlacementActive_ = false;
+    scriptTriggerCenterPlacementActive_ = false;
+    scriptInteractionMode_ = false;
+    scriptPreviewPlayerWorld_ = glm::vec3(0.0f);
     lightMarkers_.clear();
     outlinerDirty_ = true;
 }
@@ -194,6 +208,23 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
     lightingProfiles_.clear();
     lightingDrafts_.clear();
     aiBehaviorProfiles_.clear();
+    scriptTriggerProfiles_.clear();
+    scriptTriggerDrafts_.clear();
+    scriptTriggersEdit_.clear();
+    scriptTriggerRuntime_.clear();
+    scriptTriggerLog_.clear();
+    scriptTriggerMapDir_.clear();
+    scriptTriggersDirty_ = false;
+    selectedScriptTriggerId_ = 0;
+    nextScriptTriggerId_ = 1;
+    showScriptTriggerOverlay_ = true;
+    scriptPreviewPlayerEnabled_ = false;
+    scriptPreviewPlayerFollowCamera_ = false;
+    scriptPreviewPlayerPlacementActive_ = false;
+    scriptTriggerCenterPlacementActive_ = false;
+    scriptInteractionMode_ = false;
+    scriptPreviewPlayerWorld_ = glm::vec3(0.0f);
+    scriptPreviewTimeSeconds_ = 0.0f;
     aiBehaviorEdit_ = AiBehaviorProfileEntry{};
     aiBehaviorOrig_ = AiBehaviorProfileEntry{};
     aiBehaviorEditGuid_ = 0;
@@ -286,6 +317,54 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
                     }
                 }
         }
+        if (editorNode.contains("scriptTriggers") && editorNode["scriptTriggers"].is_object())
+        {
+            const nlohmann::json& triggers = editorNode["scriptTriggers"];
+            showScriptTriggerOverlay_ = triggers.value("showOverlay", true);
+            if (triggers.contains("profiles") && triggers["profiles"].is_array())
+                for (const nlohmann::json& p : triggers["profiles"])
+                {
+                    if (!p.is_object())
+                        continue;
+                    const std::string mapDir = p.value("mapDir", std::string());
+                    if (mapDir.empty() || !p.contains("triggers") || !p["triggers"].is_array())
+                        continue;
+                    auto& list = scriptTriggerProfiles_[mapDir];
+                    for (const nlohmann::json& row : p["triggers"])
+                    {
+                        if (!row.is_object() || list.size() >= 256)
+                            continue;
+                        ScriptEventTrigger trigger;
+                        trigger.id = row.value("id", uint64_t(0));
+                        if (trigger.id == 0)
+                            trigger.id = nextScriptTriggerId_++;
+                        trigger.name = row.value("name", std::string());
+                        trigger.enabled = row.value("enabled", true);
+                        trigger.type = static_cast<ScriptTriggerType>(std::clamp(row.value("type", 0), 0, 3));
+                        trigger.areaShape = static_cast<ScriptTriggerAreaShape>(std::clamp(row.value("areaShape", 0), 0, 1));
+                        trigger.center.x = finite(row.value("x", 0.0f), 0.0f);
+                        trigger.center.y = finite(row.value("y", 0.0f), 0.0f);
+                        trigger.center.z = finite(row.value("z", 0.0f), 0.0f);
+                        trigger.radius = std::clamp(finite(row.value("radius", 8.0f), 8.0f), 0.1f, 10000.0f);
+                        trigger.boxExtents.x = std::clamp(finite(row.value("extentX", 8.0f), 8.0f), 0.1f, 10000.0f);
+                        trigger.boxExtents.y = std::clamp(finite(row.value("extentY", 8.0f), 8.0f), 0.1f, 10000.0f);
+                        trigger.boxExtents.z = std::clamp(finite(row.value("extentZ", 4.0f), 4.0f), 0.1f, 10000.0f);
+                        trigger.height = std::max(0.0f, finite(row.value("height", 0.0f), 0.0f));
+                        trigger.targetKind = static_cast<ScriptTriggerObjectKind>(std::clamp(row.value("targetKind", 0), 0, 2));
+                        trigger.targetGuid = row.value("targetGuid", 0u);
+                        trigger.timerDelaySeconds = std::clamp(finite(row.value("timerDelay", 5.0f), 5.0f), 0.0f, 86400.0f);
+                        trigger.timerRepeatSeconds = std::clamp(finite(row.value("timerRepeat", 0.0f), 0.0f), 0.0f, 86400.0f);
+                        trigger.scriptHook = row.value("scriptHook", std::string());
+                        trigger.scriptEventId = row.value("scriptEventId", 0u);
+                        trigger.smartActionListId = row.value("smartActionListId", 0u);
+                        trigger.note = row.value("note", std::string());
+                        if (trigger.name.empty())
+                            trigger.name = "Trigger " + std::to_string(trigger.id);
+                        nextScriptTriggerId_ = std::max(nextScriptTriggerId_, trigger.id + 1);
+                        list.push_back(std::move(trigger));
+                    }
+                }
+        }
         if (profiles)
             for (const nlohmann::json& j : *profiles)
             {
@@ -363,7 +442,10 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
         // Keep valid bookmarks/profiles from a previous project out of a malformed settings node.
         bookmarks_.clear();
         lightingProfiles_.clear();
+        aiBehaviorProfiles_.clear();
+        scriptTriggerProfiles_.clear();
         nextWorldLightId_ = 1;
+        nextScriptTriggerId_ = 1;
     }
 }
 
@@ -451,6 +533,37 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
     }
     editorNode["aiBehavior"] = {{"showOverlay", showAiBehaviorOverlay_},
                                  {"profiles", std::move(behaviorProfiles)}};
+
+    nlohmann::json triggerProfiles = nlohmann::json::array();
+    std::vector<std::string> triggerMaps;
+    triggerMaps.reserve(scriptTriggerProfiles_.size());
+    for (const auto& pair : scriptTriggerProfiles_)
+        triggerMaps.push_back(pair.first);
+    std::sort(triggerMaps.begin(), triggerMaps.end());
+    for (const std::string& mapDir : triggerMaps)
+    {
+        nlohmann::json profile = {{"mapDir", mapDir}, {"triggers", nlohmann::json::array()}};
+        std::vector<ScriptEventTrigger> ordered = scriptTriggerProfiles_.at(mapDir);
+        std::sort(ordered.begin(), ordered.end(), [](const ScriptEventTrigger& a, const ScriptEventTrigger& b) {
+            return a.id < b.id;
+        });
+        for (const ScriptEventTrigger& trigger : ordered)
+            profile["triggers"].push_back({
+                {"id", trigger.id}, {"name", trigger.name}, {"enabled", trigger.enabled},
+                {"type", static_cast<int>(trigger.type)}, {"areaShape", static_cast<int>(trigger.areaShape)},
+                {"x", trigger.center.x}, {"y", trigger.center.y}, {"z", trigger.center.z},
+                {"radius", trigger.radius}, {"extentX", trigger.boxExtents.x},
+                {"extentY", trigger.boxExtents.y}, {"extentZ", trigger.boxExtents.z},
+                {"height", trigger.height}, {"targetKind", static_cast<int>(trigger.targetKind)},
+                {"targetGuid", trigger.targetGuid}, {"timerDelay", trigger.timerDelaySeconds},
+                {"timerRepeat", trigger.timerRepeatSeconds}, {"scriptHook", trigger.scriptHook},
+                {"scriptEventId", trigger.scriptEventId}, {"smartActionListId", trigger.smartActionListId},
+                {"note", trigger.note}
+            });
+        triggerProfiles.push_back(std::move(profile));
+    }
+    editorNode["scriptTriggers"] = {{"showOverlay", showScriptTriggerOverlay_},
+                                     {"profiles", std::move(triggerProfiles)}};
 }
 
 void AdtViewerModule::Undo()
@@ -628,6 +741,7 @@ void AdtViewerModule::DrawPanels()
     DrawTransformPanel();
     DrawFormationPanel();
     DrawAiBehaviorPanel();
+    DrawScriptTriggersPanel();
     DrawNpcInstancePanel();
     DrawGoInstancePanel();
     DrawWaypointPathPanel();
@@ -708,6 +822,18 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
         aiPreviewTargetEnabled_ = false;
         aiPreviewTargetPlacementActive_ = false;
         aiBehaviorStatus_.clear();
+        if (!scriptTriggerMapDir_.empty() && scriptTriggersDirty_)
+            scriptTriggerDrafts_[scriptTriggerMapDir_] = scriptTriggersEdit_;
+        scriptTriggersDirty_ = false;
+        selectedScriptTriggerId_ = 0;
+        scriptPreviewPlayerEnabled_ = false;
+        scriptPreviewPlayerPlacementActive_ = false;
+        scriptTriggerCenterPlacementActive_ = false;
+        scriptInteractionMode_ = false;
+        scriptTriggerRuntime_.clear();
+        scriptTriggerLog_.clear();
+        scriptPreviewTimeSeconds_ = 0.0f;
+        scriptTriggerStatus_.clear();
     }
     if (!streamer_.OpenMap(dir))
     {
@@ -717,6 +843,7 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
     }
     error_.clear();
     LoadLightingForMap(dir);
+    LoadScriptTriggersForMap(dir);
     loadedName_ = dir + (streamer_.wmoOnly() ? "  (WMO)" : "");
     if (pendingLocationFocus_ && pendingLocationMapDir_ == dir)
     {
@@ -2571,6 +2698,643 @@ void AdtViewerModule::DrawAiBehaviorPanel()
 
 
 
+void AdtViewerModule::LoadScriptTriggersForMap(const std::string& mapDir)
+{
+    if (mapDir.empty() || scriptTriggerMapDir_ == mapDir)
+        return;
+    if (!scriptTriggerMapDir_.empty() && scriptTriggersDirty_)
+        scriptTriggerDrafts_[scriptTriggerMapDir_] = scriptTriggersEdit_;
+
+    scriptTriggerMapDir_ = mapDir;
+    const auto draft = scriptTriggerDrafts_.find(mapDir);
+    if (draft != scriptTriggerDrafts_.end())
+    {
+        scriptTriggersEdit_ = draft->second;
+        scriptTriggersDirty_ = true;
+        scriptTriggerStatus_ = "Restored unsaved trigger definitions for " + mapDir + ".";
+    }
+    else
+    {
+        const auto saved = scriptTriggerProfiles_.find(mapDir);
+        scriptTriggersEdit_ = saved != scriptTriggerProfiles_.end() ? saved->second
+                                                                      : std::vector<ScriptEventTrigger>{};
+        scriptTriggersDirty_ = false;
+        scriptTriggerStatus_ = saved != scriptTriggerProfiles_.end()
+            ? "Loaded saved script trigger definitions for " + mapDir + "."
+            : "No script triggers authored for this map yet.";
+    }
+    selectedScriptTriggerId_ = scriptTriggersEdit_.empty() ? 0 : scriptTriggersEdit_.front().id;
+    scriptTriggerRuntime_.clear();
+    scriptTriggerLog_.clear();
+    scriptPreviewTimeSeconds_ = 0.0f;
+    scriptPreviewPlayerEnabled_ = false;
+    scriptPreviewPlayerFollowCamera_ = false;
+    scriptPreviewPlayerPlacementActive_ = false;
+    scriptTriggerCenterPlacementActive_ = false;
+    scriptInteractionMode_ = false;
+}
+
+void AdtViewerModule::SaveScriptTriggers()
+{
+    if (scriptTriggerMapDir_.empty())
+        return;
+    scriptTriggerProfiles_[scriptTriggerMapDir_] = scriptTriggersEdit_;
+    scriptTriggerDrafts_.erase(scriptTriggerMapDir_);
+    scriptTriggersDirty_ = false;
+    scriptTriggerStatus_ = "Saved " + std::to_string(scriptTriggersEdit_.size()) +
+                           " Studio script trigger(s) for " + scriptTriggerMapDir_ + ".";
+    if (svc_ && svc_->requestSaveSettings)
+        svc_->requestSaveSettings();
+    if (svc_ && svc_->setStatus)
+        svc_->setStatus(scriptTriggerStatus_);
+}
+
+void AdtViewerModule::RevertScriptTriggers()
+{
+    if (scriptTriggerMapDir_.empty())
+        return;
+    const auto saved = scriptTriggerProfiles_.find(scriptTriggerMapDir_);
+    scriptTriggersEdit_ = saved != scriptTriggerProfiles_.end() ? saved->second
+                                                                   : std::vector<ScriptEventTrigger>{};
+    scriptTriggerDrafts_.erase(scriptTriggerMapDir_);
+    scriptTriggersDirty_ = false;
+    selectedScriptTriggerId_ = scriptTriggersEdit_.empty() ? 0 : scriptTriggersEdit_.front().id;
+    scriptTriggerRuntime_.clear();
+    scriptTriggerLog_.clear();
+    scriptPreviewTimeSeconds_ = 0.0f;
+    scriptTriggerStatus_ = "Reverted script triggers to the saved Studio profile.";
+}
+
+void AdtViewerModule::MarkScriptTriggersDirty(const char* status)
+{
+    if (scriptTriggerMapDir_.empty())
+        return;
+    scriptTriggersDirty_ = true;
+    scriptTriggerDrafts_[scriptTriggerMapDir_] = scriptTriggersEdit_;
+    if (status)
+        scriptTriggerStatus_ = status;
+}
+
+bool AdtViewerModule::TryPlaceScriptPreviewPlayer(const glm::vec3& world)
+{
+    if (!scriptPreviewPlayerPlacementActive_)
+        return false;
+    scriptPreviewPlayerWorld_ = world;
+    scriptPreviewPlayerEnabled_ = true;
+    scriptPreviewPlayerPlacementActive_ = false;
+    scriptTriggerStatus_ = "Placed script preview player. Cross area/proximity volumes to test events.";
+    return true;
+}
+
+bool AdtViewerModule::TryPlaceScriptTriggerCenter(const glm::vec3& world)
+{
+    if (!scriptTriggerCenterPlacementActive_ || selectedScriptTriggerId_ == 0)
+        return false;
+    for (ScriptEventTrigger& trigger : scriptTriggersEdit_)
+        if (trigger.id == selectedScriptTriggerId_)
+        {
+            trigger.center = world;
+            scriptTriggerCenterPlacementActive_ = false;
+            scriptTriggerRuntime_.erase(trigger.id);
+            MarkScriptTriggersDirty("Placed trigger center on terrain.");
+            return true;
+        }
+    scriptTriggerCenterPlacementActive_ = false;
+    return false;
+}
+
+void AdtViewerModule::FireScriptTrigger(uint64_t triggerId, const char* reason)
+{
+    const auto found = std::find_if(scriptTriggersEdit_.begin(), scriptTriggersEdit_.end(),
+                                    [triggerId](const ScriptEventTrigger& t) { return t.id == triggerId; });
+    if (found == scriptTriggersEdit_.end() || !found->enabled)
+        return;
+    const ScriptEventTrigger& trigger = *found;
+    std::string detail = reason ? reason : "triggered";
+    detail += " — " + trigger.name;
+    if (!trigger.scriptHook.empty())
+        detail += " | hook: " + trigger.scriptHook;
+    if (trigger.scriptEventId != 0)
+        detail += " | event: " + std::to_string(trigger.scriptEventId);
+    if (trigger.smartActionListId != 0)
+        detail += " | SmartAI list: " + std::to_string(trigger.smartActionListId);
+    if (trigger.scriptHook.empty() && trigger.scriptEventId == 0 && trigger.smartActionListId == 0)
+        detail += " | no server hook bound (preview event only)";
+    scriptTriggerLog_.push_back({trigger.id, scriptPreviewTimeSeconds_, std::move(detail)});
+    if (scriptTriggerLog_.size() > 100)
+        scriptTriggerLog_.erase(scriptTriggerLog_.begin(), scriptTriggerLog_.begin() +
+                                 static_cast<std::ptrdiff_t>(scriptTriggerLog_.size() - 100));
+    scriptTriggerStatus_ = scriptTriggerLog_.back().text;
+    if (svc_ && svc_->setStatus)
+        svc_->setStatus(scriptTriggerStatus_);
+}
+
+void AdtViewerModule::FireInteractionTriggers(int objectKind, uint32_t guid)
+{
+    if (!scriptInteractionMode_ || guid == 0)
+        return;
+    for (const ScriptEventTrigger& trigger : scriptTriggersEdit_)
+        if (trigger.enabled && trigger.type == ScriptTriggerType::Interaction &&
+            (trigger.targetKind == ScriptTriggerObjectKind::None ||
+             (static_cast<int>(trigger.targetKind) == objectKind && trigger.targetGuid == guid)))
+            FireScriptTrigger(trigger.id, "interaction");
+}
+
+void AdtViewerModule::EvaluateScriptTriggers(float dtMs)
+{
+    const float dt = std::clamp(dtMs, 0.0f, 250.0f) / 1000.0f;
+    scriptPreviewTimeSeconds_ += dt;
+    auto targetPosition = [&](ScriptTriggerObjectKind kind, uint32_t guid, glm::vec3& out) {
+        if (kind == ScriptTriggerObjectKind::Npc)
+        {
+            NpcLayer::AiPreviewState state;
+            if (npcLayer_.GetAiPreviewState(guid, state))
+            {
+                out = state.position;
+                return true;
+            }
+        }
+        else if (kind == ScriptTriggerObjectKind::GameObject)
+        {
+            if (const MapGameObject* spawn = goLayer_.FindSpawn(guid))
+            {
+                out = glm::vec3(spawn->x, spawn->y, spawn->z);
+                return true;
+            }
+        }
+        return false;
+    };
+
+    for (const ScriptEventTrigger& trigger : scriptTriggersEdit_)
+    {
+        ScriptTriggerRuntime& runtime = scriptTriggerRuntime_[trigger.id];
+        if (!trigger.enabled)
+        {
+            runtime = ScriptTriggerRuntime{};
+            continue;
+        }
+        if (trigger.type == ScriptTriggerType::Area)
+        {
+            bool inside = false;
+            if (scriptPreviewPlayerEnabled_)
+            {
+                const glm::vec3 d = scriptPreviewPlayerWorld_ - trigger.center;
+                if (trigger.areaShape == ScriptTriggerAreaShape::Circle)
+                    inside = d.x * d.x + d.y * d.y <= trigger.radius * trigger.radius &&
+                             (trigger.height <= 0.0f || std::fabs(d.z) <= trigger.height);
+                else
+                    inside = std::fabs(d.x) <= trigger.boxExtents.x && std::fabs(d.y) <= trigger.boxExtents.y &&
+                             std::fabs(d.z) <= trigger.boxExtents.z;
+            }
+            if (inside && !runtime.areaInside)
+                FireScriptTrigger(trigger.id, "area enter");
+            else if (!inside && runtime.areaInside)
+                FireScriptTrigger(trigger.id, "area exit");
+            runtime.areaInside = inside;
+        }
+        else if (trigger.type == ScriptTriggerType::Proximity)
+        {
+            bool inside = false;
+            glm::vec3 object;
+            if (scriptPreviewPlayerEnabled_ && targetPosition(trigger.targetKind, trigger.targetGuid, object))
+            {
+                const glm::vec3 d = scriptPreviewPlayerWorld_ - object;
+                inside = glm::dot(d, d) <= trigger.radius * trigger.radius;
+            }
+            if (inside && !runtime.proximityInside)
+                FireScriptTrigger(trigger.id, "proximity enter");
+            else if (!inside && runtime.proximityInside)
+                FireScriptTrigger(trigger.id, "proximity exit");
+            runtime.proximityInside = inside;
+        }
+        else if (trigger.type == ScriptTriggerType::Timer)
+        {
+            runtime.timerElapsed += dt;
+            const float delay = std::max(trigger.timerDelaySeconds, 0.0f);
+            if (!runtime.timerFired)
+            {
+                if (runtime.timerElapsed >= delay)
+                {
+                    FireScriptTrigger(trigger.id, "timer elapsed");
+                    runtime.timerFired = true;
+                    runtime.timerElapsed = 0.0f;
+                }
+            }
+            else if (trigger.timerRepeatSeconds > 0.0f && runtime.timerElapsed >= trigger.timerRepeatSeconds)
+            {
+                FireScriptTrigger(trigger.id, "timer repeat");
+                runtime.timerElapsed = 0.0f;
+            }
+        }
+    }
+}
+
+void AdtViewerModule::DrawScriptTriggerOverlay(const glm::mat4& view, const glm::mat4& proj,
+                                                const ImVec2& p0, int w, int h)
+{
+    if (!showScriptTriggerOverlay_ || scriptTriggersEdit_.empty())
+        return;
+    const glm::vec3 origin = streamer_.origin();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    auto project = [&](const glm::vec3& world, ImVec2& screen) {
+        return ProjectWorldPoint(world, origin, view, proj, p0, w, h, screen);
+    };
+    auto objectPosition = [&](ScriptTriggerObjectKind kind, uint32_t guid, glm::vec3& out) {
+        if (kind == ScriptTriggerObjectKind::Npc)
+        {
+            NpcLayer::AiPreviewState state;
+            if (npcLayer_.GetAiPreviewState(guid, state)) { out = state.position; return true; }
+        }
+        if (kind == ScriptTriggerObjectKind::GameObject)
+            if (const MapGameObject* spawn = goLayer_.FindSpawn(guid)) { out = {spawn->x, spawn->y, spawn->z}; return true; }
+        return false;
+    };
+    auto ring = [&](const glm::vec3& center, float radius, ImU32 color, float thickness) {
+        constexpr int segments = 40;
+        ImVec2 previous{};
+        bool havePrevious = false;
+        for (int i = 0; i <= segments; ++i)
+        {
+            const float angle = (static_cast<float>(i) / segments) * 6.28318530718f;
+            ImVec2 at;
+            const bool visible = project(center + glm::vec3(std::cos(angle) * radius,
+                                                             std::sin(angle) * radius, 0.0f), at);
+            if (visible && havePrevious)
+                draw->AddLine(previous, at, color, thickness);
+            previous = at;
+            havePrevious = visible;
+        }
+    };
+
+    for (const ScriptEventTrigger& trigger : scriptTriggersEdit_)
+    {
+        const bool selected = trigger.id == selectedScriptTriggerId_;
+        const ImU32 color = trigger.type == ScriptTriggerType::Area ? IM_COL32(255, 183, 65, 180) :
+                           trigger.type == ScriptTriggerType::Interaction ? IM_COL32(95, 206, 255, 210) :
+                           trigger.type == ScriptTriggerType::Proximity ? IM_COL32(126, 240, 127, 190) :
+                                                                           IM_COL32(214, 110, 255, 190);
+        if (trigger.type == ScriptTriggerType::Area)
+        {
+            if (trigger.areaShape == ScriptTriggerAreaShape::Circle)
+                ring(trigger.center, trigger.radius, color, selected ? 2.5f : 1.2f);
+            else
+            {
+                const glm::vec3 e = trigger.boxExtents;
+                glm::vec3 corners[5] = {
+                    trigger.center + glm::vec3(-e.x, -e.y, 0), trigger.center + glm::vec3(e.x, -e.y, 0),
+                    trigger.center + glm::vec3(e.x, e.y, 0), trigger.center + glm::vec3(-e.x, e.y, 0),
+                    trigger.center + glm::vec3(-e.x, -e.y, 0)};
+                for (int i = 1; i < 5; ++i)
+                {
+                    ImVec2 a, b;
+                    if (project(corners[i - 1], a) && project(corners[i], b))
+                        draw->AddLine(a, b, color, selected ? 2.5f : 1.2f);
+                }
+            }
+        }
+        else if (trigger.type == ScriptTriggerType::Proximity)
+        {
+            glm::vec3 object;
+            if (objectPosition(trigger.targetKind, trigger.targetGuid, object))
+                ring(object, trigger.radius, color, selected ? 2.5f : 1.2f);
+        }
+
+        glm::vec3 labelPos = trigger.center;
+        if ((trigger.type == ScriptTriggerType::Interaction || trigger.type == ScriptTriggerType::Proximity) &&
+            !objectPosition(trigger.targetKind, trigger.targetGuid, labelPos))
+            labelPos = trigger.center;
+        ImVec2 at;
+        if (project(labelPos, at))
+        {
+            const char* kind = trigger.type == ScriptTriggerType::Area ? "AREA" :
+                               trigger.type == ScriptTriggerType::Interaction ? "INTERACT" :
+                               trigger.type == ScriptTriggerType::Proximity ? "NEAR" : "TIMER";
+            const std::string label = std::string(kind) + "  " + trigger.name;
+            draw->AddCircleFilled(at, selected ? 6.0f : 4.0f, color, 12);
+            if (selected)
+                draw->AddText(ImVec2(at.x + 8.0f, at.y - 10.0f), IM_COL32(255, 247, 213, 255), label.c_str());
+        }
+    }
+
+    if (scriptPreviewPlayerEnabled_)
+    {
+        ImVec2 at;
+        if (project(scriptPreviewPlayerWorld_, at))
+        {
+            draw->AddCircleFilled(at, 7.0f, IM_COL32(76, 238, 226, 240), 14);
+            draw->AddCircle(at, 7.0f, IM_COL32(220, 255, 251, 255), 14, 1.5f);
+            draw->AddText(ImVec2(at.x + 9.0f, at.y - 8.0f), IM_COL32(214, 255, 252, 255), "Script player");
+        }
+    }
+}
+
+void AdtViewerModule::DrawScriptTriggersPanel()
+{
+    if (!ImGui::Begin("Script Triggers"))
+    {
+        ImGui::End();
+        return;
+    }
+    const bool mapReady = streamerInit_ && !loadedName_.empty() && !scriptTriggerMapDir_.empty();
+    if (!mapReady)
+    {
+        ImGui::TextWrapped("Open a map to author and preview area, interaction, proximity, and timer-based script event triggers.");
+        ImGui::End();
+        return;
+    }
+    ImGui::BeginDisabled(!scriptTriggersDirty_);
+    if (ImGui::Button("Save triggers"))
+        SaveScriptTriggers();
+    ImGui::SameLine();
+    if (ImGui::Button("Revert triggers"))
+        RevertScriptTriggers();
+    ImGui::EndDisabled();
+    if (scriptTriggersDirty_)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.20f, 1.0f), "unsaved preview");
+    }
+    if (!scriptTriggerStatus_.empty())
+        ImGui::TextDisabled("%s", scriptTriggerStatus_.c_str());
+
+    ImGui::SeparatorText("Preview player / interaction");
+    if (ImGui::Checkbox("Enable script player", &scriptPreviewPlayerEnabled_))
+        scriptTriggerRuntime_.clear();
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Player follows camera", &scriptPreviewPlayerFollowCamera_))
+        scriptPreviewPlayerEnabled_ = true;
+    if (BeginFieldTable("scriptplayer", 150.0f))
+    {
+        FieldRow("Player X"); InputFloatField("##spx", scriptPreviewPlayerWorld_.x);
+        FieldRow("Player Y"); InputFloatField("##spy", scriptPreviewPlayerWorld_.y);
+        FieldRow("Player Z"); InputFloatField("##spz", scriptPreviewPlayerWorld_.z);
+        EndFieldTable();
+    }
+    if (ImGui::Button(scriptPreviewPlayerPlacementActive_ ? "Stop placing player" : "Place player on terrain"))
+    {
+        scriptPreviewPlayerPlacementActive_ = !scriptPreviewPlayerPlacementActive_;
+        if (scriptPreviewPlayerPlacementActive_)
+        {
+            inGameViewMode_ = false;
+            editMode_ = true;
+            terrainSculptActive_ = false;
+            lightPlacementActive_ = false;
+            aiPreviewTargetPlacementActive_ = false;
+            brushActive_ = false;
+            waypointPlacementMode_ = WaypointPlacementMode::None;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Player at camera"))
+    {
+        const glm::vec3 local = camera_.mode() == ViewportCamera::Mode::Fly ? camera_.Eye() : camera_.center();
+        const glm::vec3 origin = streamer_.origin();
+        scriptPreviewPlayerWorld_ = glm::vec3(local.x + origin.x, local.y + origin.y, local.z);
+        scriptPreviewPlayerEnabled_ = true;
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Click-to-interact", &scriptInteractionMode_);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("With this armed, clicking an NPC or GameObject in Edit mode dispatches matching Interaction triggers.");
+    if (ImGui::Checkbox("Show trigger overlays", &showScriptTriggerOverlay_))
+        if (svc_ && svc_->requestSaveSettings)
+            svc_->requestSaveSettings();
+
+    auto addTrigger = [&](ScriptTriggerType type) {
+        if (scriptTriggersEdit_.size() >= 256)
+        {
+            scriptTriggerStatus_ = "This map has reached the 256-trigger Studio safety limit.";
+            return;
+        }
+        ScriptEventTrigger trigger;
+        trigger.id = nextScriptTriggerId_++;
+        trigger.type = type;
+        trigger.name = type == ScriptTriggerType::Area ? "Area trigger " :
+                       type == ScriptTriggerType::Interaction ? "Interaction trigger " :
+                       type == ScriptTriggerType::Proximity ? "Proximity trigger " : "Timer trigger ";
+        trigger.name += std::to_string(scriptTriggersEdit_.size() + 1);
+        const glm::vec3 local = camera_.mode() == ViewportCamera::Mode::Fly ? camera_.Eye() : camera_.center();
+        const glm::vec3 origin = streamer_.origin();
+        trigger.center = glm::vec3(local.x + origin.x, local.y + origin.y, local.z);
+        if ((type == ScriptTriggerType::Interaction || type == ScriptTriggerType::Proximity) && selKind_ != SelKind::None)
+        {
+            if (selKind_ == SelKind::Npc) { trigger.targetKind = ScriptTriggerObjectKind::Npc; trigger.targetGuid = selGuid_; }
+            if (selKind_ == SelKind::GameObject) { trigger.targetKind = ScriptTriggerObjectKind::GameObject; trigger.targetGuid = selGuid_; }
+        }
+        scriptTriggersEdit_.push_back(std::move(trigger));
+        selectedScriptTriggerId_ = scriptTriggersEdit_.back().id;
+        scriptTriggerRuntime_.clear();
+        MarkScriptTriggersDirty("Added a script trigger. Configure its hook/action and save when ready.");
+    };
+
+    ImGui::SeparatorText("Trigger list");
+    if (ImGui::Button("+ Area")) addTrigger(ScriptTriggerType::Area);
+    ImGui::SameLine();
+    if (ImGui::Button("+ Interaction")) addTrigger(ScriptTriggerType::Interaction);
+    ImGui::SameLine();
+    if (ImGui::Button("+ Proximity")) addTrigger(ScriptTriggerType::Proximity);
+    ImGui::SameLine();
+    if (ImGui::Button("+ Timer")) addTrigger(ScriptTriggerType::Timer);
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##triggersearch", "filter triggers", scriptTriggerSearch_, sizeof(scriptTriggerSearch_));
+    const std::string query = Lower(scriptTriggerSearch_);
+    ImGui::BeginChild("##scripttriggerlist", ImVec2(0, 150), true);
+    for (ScriptEventTrigger& trigger : scriptTriggersEdit_)
+    {
+        const char* kind = trigger.type == ScriptTriggerType::Area ? "Area" :
+                           trigger.type == ScriptTriggerType::Interaction ? "Interaction" :
+                           trigger.type == ScriptTriggerType::Proximity ? "Proximity" : "Timer";
+        if (!query.empty() && Lower(std::string(kind) + " " + trigger.name + " " + trigger.scriptHook).find(query) == std::string::npos)
+            continue;
+        const std::string id = "script-trigger-" + std::to_string(trigger.id);
+        ImGui::PushID(id.c_str());
+        bool enabled = trigger.enabled;
+        if (ImGui::Checkbox("##enabled", &enabled))
+        {
+            trigger.enabled = enabled;
+            scriptTriggerRuntime_.erase(trigger.id);
+            MarkScriptTriggersDirty("Changed trigger enabled state.");
+        }
+        ImGui::SameLine();
+        const std::string label = std::string(kind) + "  " + trigger.name;
+        if (ImGui::Selectable(label.c_str(), selectedScriptTriggerId_ == trigger.id))
+            selectedScriptTriggerId_ = trigger.id;
+        ImGui::PopID();
+    }
+    if (scriptTriggersEdit_.empty())
+        ImGui::TextDisabled("No triggers yet. Add one above, then place/configure its volume or object hook.");
+    ImGui::EndChild();
+
+    auto selected = std::find_if(scriptTriggersEdit_.begin(), scriptTriggersEdit_.end(),
+                                 [&](const ScriptEventTrigger& t) { return t.id == selectedScriptTriggerId_; });
+    if (selected == scriptTriggersEdit_.end())
+    {
+        ImGui::End();
+        return;
+    }
+    ScriptEventTrigger& trigger = *selected;
+    ImGui::SeparatorText("Trigger inspector");
+    bool changed = false;
+    if (BeginFieldTable("scripttriggerfields", 160.0f))
+    {
+        FieldRow("Name"); changed |= InputTextString("##triggername", trigger.name);
+        int type = static_cast<int>(trigger.type);
+        static const char* kTypes[] = {"Area entry / exit", "Interaction", "Proximity", "Timer"};
+        FieldRow("Type");
+        if (ImGui::Combo("##triggertype", &type, kTypes, IM_ARRAYSIZE(kTypes)))
+        {
+            trigger.type = static_cast<ScriptTriggerType>(std::clamp(type, 0, 3));
+            scriptTriggerRuntime_.erase(trigger.id);
+            changed = true;
+        }
+        FieldRow("Enabled"); changed |= ImGui::Checkbox("##triggerenabled", &trigger.enabled);
+        FieldRow("Script hook", "Custom server/Studio hook name dispatched by this event.");
+        changed |= InputTextString("##triggerhook", trigger.scriptHook);
+        FieldRow("Script event ID", "Optional event/message id supplied to your server hook.");
+        changed |= InputU32("##triggerevent", trigger.scriptEventId);
+        FieldRow("SmartAI list ID", "Optional timed action-list / SmartAI reference recorded in the trigger manifest.");
+        changed |= InputU32("##triggeractionlist", trigger.smartActionListId);
+        FieldRow("Note"); changed |= InputTextString("##triggernote", trigger.note);
+        EndFieldTable();
+    }
+
+    if (trigger.type == ScriptTriggerType::Area)
+    {
+        ImGui::SeparatorText("Area volume");
+        int shape = static_cast<int>(trigger.areaShape);
+        static const char* kShapes[] = {"Circle", "Box"};
+        ImGui::SetNextItemWidth(150.0f);
+        if (ImGui::Combo("Shape", &shape, kShapes, IM_ARRAYSIZE(kShapes)))
+        {
+            trigger.areaShape = static_cast<ScriptTriggerAreaShape>(shape);
+            changed = true;
+        }
+        if (BeginFieldTable("scriptarea", 160.0f))
+        {
+            FieldRow("Center X"); changed |= InputFloatField("##trigx", trigger.center.x);
+            FieldRow("Center Y"); changed |= InputFloatField("##trigy", trigger.center.y);
+            FieldRow("Center Z"); changed |= InputFloatField("##trigz", trigger.center.z);
+            if (trigger.areaShape == ScriptTriggerAreaShape::Circle)
+            {
+                FieldRow("Radius (yd)"); changed |= InputFloatField("##trigradius", trigger.radius);
+                FieldRow("Vertical half-height", "0 = ignore vertical distance."); changed |= InputFloatField("##trigheight", trigger.height);
+            }
+            else
+            {
+                FieldRow("Half extent X"); changed |= InputFloatField("##trigex", trigger.boxExtents.x);
+                FieldRow("Half extent Y"); changed |= InputFloatField("##trigey", trigger.boxExtents.y);
+                FieldRow("Half extent Z"); changed |= InputFloatField("##trigez", trigger.boxExtents.z);
+            }
+            EndFieldTable();
+        }
+        if (ImGui::Button(scriptTriggerCenterPlacementActive_ ? "Stop placing center" : "Place center on terrain"))
+        {
+            scriptTriggerCenterPlacementActive_ = !scriptTriggerCenterPlacementActive_;
+            if (scriptTriggerCenterPlacementActive_)
+            {
+                inGameViewMode_ = false;
+                editMode_ = true;
+                terrainSculptActive_ = false;
+                lightPlacementActive_ = false;
+                aiPreviewTargetPlacementActive_ = false;
+                scriptPreviewPlayerPlacementActive_ = false;
+                brushActive_ = false;
+                waypointPlacementMode_ = WaypointPlacementMode::None;
+            }
+        }
+    }
+    else if (trigger.type == ScriptTriggerType::Interaction || trigger.type == ScriptTriggerType::Proximity)
+    {
+        ImGui::SeparatorText(trigger.type == ScriptTriggerType::Interaction ? "Interaction object" : "Proximity object");
+        int kind = static_cast<int>(trigger.targetKind);
+        static const char* kObjects[] = {"Any / unresolved", "NPC", "GameObject"};
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::Combo("Object kind", &kind, kObjects, IM_ARRAYSIZE(kObjects)))
+        {
+            trigger.targetKind = static_cast<ScriptTriggerObjectKind>(std::clamp(kind, 0, 2));
+            changed = true;
+        }
+        if (BeginFieldTable("scriptobject", 160.0f))
+        {
+            FieldRow("Target guid"); changed |= InputU32("##triggertarget", trigger.targetGuid);
+            if (trigger.type == ScriptTriggerType::Proximity)
+            {
+                FieldRow("Activation radius (yd)"); changed |= InputFloatField("##triggernear", trigger.radius);
+            }
+            EndFieldTable();
+        }
+        if ((selKind_ == SelKind::Npc || selKind_ == SelKind::GameObject) && ImGui::Button("Use selected object"))
+        {
+            trigger.targetKind = selKind_ == SelKind::Npc ? ScriptTriggerObjectKind::Npc
+                                                           : ScriptTriggerObjectKind::GameObject;
+            trigger.targetGuid = selGuid_;
+            changed = true;
+        }
+    }
+    else // Timer
+    {
+        ImGui::SeparatorText("Timer event");
+        if (BeginFieldTable("scripttimer", 160.0f))
+        {
+            FieldRow("Initial delay (sec)"); changed |= InputFloatField("##timerdelay", trigger.timerDelaySeconds);
+            FieldRow("Repeat interval (sec)", "0 = fire once."); changed |= InputFloatField("##timerrepeat", trigger.timerRepeatSeconds);
+            EndFieldTable();
+        }
+    }
+
+    trigger.radius = std::clamp(trigger.radius, 0.1f, 10000.0f);
+    trigger.boxExtents = glm::clamp(trigger.boxExtents, glm::vec3(0.1f), glm::vec3(10000.0f));
+    trigger.height = std::clamp(trigger.height, 0.0f, 10000.0f);
+    trigger.timerDelaySeconds = std::clamp(trigger.timerDelaySeconds, 0.0f, 86400.0f);
+    trigger.timerRepeatSeconds = std::clamp(trigger.timerRepeatSeconds, 0.0f, 86400.0f);
+    if (changed)
+    {
+        scriptTriggerRuntime_.erase(trigger.id);
+        MarkScriptTriggersDirty("Updated script trigger preview.");
+    }
+
+    if (ImGui::Button("Test fire now"))
+        FireScriptTrigger(trigger.id, "manual test");
+    ImGui::SameLine();
+    if (ImGui::Button("Duplicate trigger"))
+    {
+        ScriptEventTrigger copy = trigger;
+        copy.id = nextScriptTriggerId_++;
+        copy.name += " Copy";
+        copy.center += glm::vec3(1.0f, 1.0f, 0.0f);
+        scriptTriggersEdit_.push_back(std::move(copy));
+        selectedScriptTriggerId_ = scriptTriggersEdit_.back().id;
+        MarkScriptTriggersDirty("Duplicated script trigger.");
+        ImGui::End();
+        return;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete trigger"))
+    {
+        const uint64_t id = trigger.id;
+        scriptTriggersEdit_.erase(std::remove_if(scriptTriggersEdit_.begin(), scriptTriggersEdit_.end(),
+                                                  [id](const ScriptEventTrigger& t) { return t.id == id; }),
+                                   scriptTriggersEdit_.end());
+        scriptTriggerRuntime_.erase(id);
+        selectedScriptTriggerId_ = scriptTriggersEdit_.empty() ? 0 : scriptTriggersEdit_.front().id;
+        MarkScriptTriggersDirty("Deleted script trigger.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::SeparatorText("Preview event log");
+    ImGui::BeginChild("##triggerlog", ImVec2(0, 120), true);
+    for (auto it = scriptTriggerLog_.rbegin(); it != scriptTriggerLog_.rend(); ++it)
+        ImGui::TextDisabled("[%06.2fs] %s", it->timeSeconds, it->text.c_str());
+    if (scriptTriggerLog_.empty())
+        ImGui::TextDisabled("Move the script player through an area/proximity volume, click an object with Click-to-interact armed, wait for a timer, or use Test fire now.");
+    ImGui::EndChild();
+    ImGui::TextDisabled("Studio preview dispatches the configured hook/event/action-list metadata and records it above. Bind the same metadata in your core/custom script to execute server gameplay logic.");
+    ImGui::End();
+}
+
+
+
 void AdtViewerModule::DrawViewportPanel()
 {
     if (!ImGui::Begin("World Editor###ADT Viewer"))
@@ -2732,6 +3496,10 @@ void AdtViewerModule::DrawViewportPanel()
     if (aiPreviewTargetPlacementActive_)
         ImGui::TextColored(ImVec4(0.94f, 0.36f, 0.84f, 1.0f),
                            "AI target placement active — right-click terrain; Esc stops.");
+    if (scriptPreviewPlayerPlacementActive_ || scriptTriggerCenterPlacementActive_)
+        ImGui::TextColored(ImVec4(0.32f, 0.86f, 0.82f, 1.0f),
+                           scriptPreviewPlayerPlacementActive_ ? "Script player placement active — right-click terrain; Esc stops."
+                                                                : "Script trigger-center placement active — right-click terrain; Esc stops.");
     if (lightPlacementActive_)
         ImGui::TextColored(ImVec4(1.0f, 0.76f, 0.28f, 1.0f),
                            "%s light placement active — right-click terrain; Esc stops.",
@@ -2769,6 +3537,12 @@ void AdtViewerModule::DrawViewportPanel()
 
     // Stream around the camera's focus: the eye when flying, the orbit pivot otherwise.
     const glm::vec3 focus = (camera_.mode() == ViewportCamera::Mode::Fly) ? eye : camera_.center();
+    if (scriptPreviewPlayerFollowCamera_)
+    {
+        const glm::vec3 origin = streamer_.origin();
+        scriptPreviewPlayerWorld_ = glm::vec3(focus.x + origin.x, focus.y + origin.y, focus.z);
+        scriptPreviewPlayerEnabled_ = true;
+    }
 
     // Assemble the live spawn-visibility filter once; picking, rendering, and the World Outliner
     // share this exact interpretation of phases/difficulty/events/pools/groups.
@@ -2820,6 +3594,12 @@ void AdtViewerModule::DrawViewportPanel()
         {
             waypointPlacementMode_ = WaypointPlacementMode::None;
             waypointStatus_ = "Terrain waypoint tool cancelled.";
+        }
+        else if (scriptPreviewPlayerPlacementActive_ || scriptTriggerCenterPlacementActive_)
+        {
+            scriptPreviewPlayerPlacementActive_ = false;
+            scriptTriggerCenterPlacementActive_ = false;
+            scriptTriggerStatus_ = "Script trigger terrain placement cancelled.";
         }
         else if (aiPreviewTargetPlacementActive_)
         {
@@ -2883,6 +3663,7 @@ void AdtViewerModule::DrawViewportPanel()
         goLayer_.Build(focus, streamer_.origin(), view, worldDtMs, currentMapId_,
                        filter, frameScene_, goMaxDraw_, goCullDist_);
     }
+    EvaluateScriptTriggers(worldDtMs);
     cpuBuildMs_ = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tBuild).count();
 
     // Pack the map-scoped Light Editor profile into renderer-local coordinates just before the
@@ -2903,6 +3684,7 @@ void AdtViewerModule::DrawViewportPanel()
         DrawWaypointOverlay(view, proj, p0, w, h);
         DrawFormationOverlay(view, proj, p0, w, h);
         DrawAiBehaviorOverlay(view, proj, p0, w, h);
+        DrawScriptTriggerOverlay(view, proj, p0, w, h);
         DrawLightOverlay(view, proj, p0, w, h);
         DrawNpcMarkerOverlay();
         DrawTerrainBrushOverlay(view, proj, p0, w, h, hovered);
@@ -5016,6 +5798,13 @@ void AdtViewerModule::UpdateHoverAndSelection(const glm::mat4& view, const glm::
         return;
     }
     SelectObject(hitKind, duid, gg, ng);
+    if (scriptInteractionMode_)
+    {
+        if (hitKind == SelKind::Npc)
+            FireInteractionTriggers(static_cast<int>(ScriptTriggerObjectKind::Npc), ng);
+        else if (hitKind == SelKind::GameObject)
+            FireInteractionTriggers(static_cast<int>(ScriptTriggerObjectKind::GameObject), gg);
+    }
 }
 
 // Make (kind, ids) the current selection: clears any prior selection and fills the sel* fields +
@@ -5678,6 +6467,16 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
     if (aiPreviewTargetPlacementActive_)
     {
         TryPlaceAiPreviewTarget(glm::vec3(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z));
+        return;
+    }
+    if (scriptPreviewPlayerPlacementActive_)
+    {
+        TryPlaceScriptPreviewPlayer(glm::vec3(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z));
+        return;
+    }
+    if (scriptTriggerCenterPlacementActive_)
+    {
+        TryPlaceScriptTriggerCenter(glm::vec3(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z));
         return;
     }
 

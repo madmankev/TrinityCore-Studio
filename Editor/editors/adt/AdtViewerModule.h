@@ -49,6 +49,7 @@ public:
                 {"Transform", DockSlot::Left, true},
                 {"Formation", DockSlot::Left, true},
                 {"AI Behavior", DockSlot::Left, true},
+                {"Script Triggers", DockSlot::Left, true},
                 {"NPC Instance", DockSlot::Left, true},
                 {"GameObject Instance", DockSlot::Left, true},
                 {"Waypoint Path", DockSlot::Bottom, true},
@@ -125,6 +126,18 @@ private:
     void DrawAiBehaviorOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
                                int w, int h);
     bool TryPlaceAiPreviewTarget(const glm::vec3& world);
+    void DrawScriptTriggersPanel();
+    void LoadScriptTriggersForMap(const std::string& mapDir);
+    void SaveScriptTriggers();
+    void RevertScriptTriggers();
+    void MarkScriptTriggersDirty(const char* status = nullptr);
+    void EvaluateScriptTriggers(float dtMs);
+    void FireScriptTrigger(uint64_t triggerId, const char* reason);
+    void FireInteractionTriggers(int objectKind, uint32_t guid);
+    void DrawScriptTriggerOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
+                                  int w, int h);
+    bool TryPlaceScriptPreviewPlayer(const glm::vec3& world);
+    bool TryPlaceScriptTriggerCenter(const glm::vec3& world);
     void DeleteFormationEdit();
     void ApplyFormationState(uint32_t memberGuid, const FormationState& state);
     void DrawFormationOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
@@ -147,6 +160,47 @@ private:
         std::string mapDir;
         glm::vec3 world{0.0f};
         float radius = 75.0f;
+    };
+
+    // Visual Script Event Triggers are a map-scoped Studio authoring layer. Classic 3.3.5 cores
+    // have fixed client AreaTrigger.dbc volumes and SmartAI sources, but no universal DB table for
+    // arbitrary editor-authored circles/boxes; the panel therefore previews and serializes precise
+    // runtime hook metadata instead of pretending an unsupported schema write will execute server-side.
+    enum class ScriptTriggerType : uint8_t { Area, Interaction, Proximity, Timer };
+    enum class ScriptTriggerObjectKind : uint8_t { None, Npc, GameObject };
+    enum class ScriptTriggerAreaShape : uint8_t { Circle, Box };
+    struct ScriptEventTrigger
+    {
+        uint64_t id = 0;
+        std::string name;
+        bool enabled = true;
+        ScriptTriggerType type = ScriptTriggerType::Area;
+        ScriptTriggerAreaShape areaShape = ScriptTriggerAreaShape::Circle;
+        glm::vec3 center{0.0f};
+        float radius = 8.0f;               // circle / proximity radius (yards)
+        glm::vec3 boxExtents{8.0f, 8.0f, 4.0f}; // half-extents for an area box
+        float height = 0.0f;               // circle vertical half-height; 0 = unlimited
+        ScriptTriggerObjectKind targetKind = ScriptTriggerObjectKind::None;
+        uint32_t targetGuid = 0;           // NPC/GO guid for interaction/proximity
+        float timerDelaySeconds = 5.0f;
+        float timerRepeatSeconds = 0.0f;   // 0 = fire once
+        std::string scriptHook;            // custom server/Studio hook name
+        uint32_t scriptEventId = 0;        // optional script event id / message key
+        uint32_t smartActionListId = 0;    // optional SmartAI timed action-list reference
+        std::string note;
+    };
+    struct ScriptTriggerRuntime
+    {
+        bool areaInside = false;
+        bool proximityInside = false;
+        bool timerFired = false;
+        float timerElapsed = 0.0f;
+    };
+    struct ScriptTriggerLogEntry
+    {
+        uint64_t triggerId = 0;
+        float timeSeconds = 0.0f;
+        std::string text;
     };
     // WoWEdit-style Studio light authoring. WotLK ADTs do not carry standalone editable
     // point/spot-light records, so these are deliberately a Studio settings layer: non-destructive,
@@ -450,6 +504,28 @@ private:
     bool aiPreviewTargetPlacementActive_ = false;
     glm::vec3 aiPreviewTargetWorld_{0.0f};
     std::string aiBehaviorStatus_;
+
+    // Script Trigger authoring + live preview state. Stored profiles contain only authored trigger
+    // metadata; runtime edges/timers/logs reset on map switch so a preview is deterministic.
+    std::unordered_map<std::string, std::vector<ScriptEventTrigger>> scriptTriggerProfiles_;
+    std::unordered_map<std::string, std::vector<ScriptEventTrigger>> scriptTriggerDrafts_;
+    std::vector<ScriptEventTrigger> scriptTriggersEdit_;
+    std::unordered_map<uint64_t, ScriptTriggerRuntime> scriptTriggerRuntime_;
+    std::vector<ScriptTriggerLogEntry> scriptTriggerLog_;
+    std::string scriptTriggerMapDir_;
+    uint64_t nextScriptTriggerId_ = 1;
+    uint64_t selectedScriptTriggerId_ = 0;
+    bool scriptTriggersDirty_ = false;
+    bool showScriptTriggerOverlay_ = true;
+    bool scriptPreviewPlayerEnabled_ = false;
+    bool scriptPreviewPlayerFollowCamera_ = false;
+    bool scriptPreviewPlayerPlacementActive_ = false;
+    bool scriptTriggerCenterPlacementActive_ = false;
+    bool scriptInteractionMode_ = false;
+    glm::vec3 scriptPreviewPlayerWorld_{0.0f};
+    float scriptPreviewTimeSeconds_ = 0.0f;
+    char scriptTriggerSearch_[128] = {0};
+    std::string scriptTriggerStatus_;
 
     // Reusable terrain-click placement palette. Unlike the one-shot context menu, a palette entry
     // stays armed for rapid map dressing and keeps an inexpensive spacing guard for the session.
