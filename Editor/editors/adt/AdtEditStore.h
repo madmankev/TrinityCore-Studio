@@ -51,6 +51,12 @@ public:
     bool RestoreTerrainStroke(const TerrainStrokeRef& stroke);
     void ClearTerrainStrokes();
     int terrainPendingCount() const;
+    // Copy pending terrain strokes in chronological order for the real-time GPU preview. The
+    // preview is intentionally read-only: Flush remains the only path that mutates ADT bytes.
+    void SnapshotTerrainStrokes(std::vector<TerrainStrokeRef>& out) const;
+    // Evaluate the same sequential smooth brush math at one world XY point. Used to lift terrain
+    // hit/flatten sampling onto the staged preview before the authoritative ADT is saved/reloaded.
+    float PreviewTerrainZ(float baseZ, float worldX, float worldY) const;
 
     int  pendingCount() const;
     bool empty() const { return pendingCount() == 0; }

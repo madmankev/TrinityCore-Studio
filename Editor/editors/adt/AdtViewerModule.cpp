@@ -6,6 +6,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include "imgui.h"
@@ -102,6 +103,7 @@ void AdtViewerModule::OnClientDataLoaded()
     lightingDrafts_.clear();
     lightingMapDir_.clear();
     lightingDirty_ = false;
+    runtimeTimeOfDay_ = 720.0f;
     selectedWorldLightId_ = 0;
     lightPlacementActive_ = false;
     lightMarkers_.clear();
@@ -152,12 +154,33 @@ AdtViewerModule::WorldLightingProfile AdtViewerModule::DefaultLightingProfile()
     profile.fogColor = glm::vec3(0.12f, 0.12f, 0.14f);
     profile.fogStart = 500.0f;
     profile.fogEnd = 1000.0f;
+    profile.dayNightCycle = false;
+    profile.dayNightPlaying = true;
+    profile.timeOfDayMinutes = 720.0f;
+    profile.dayMinutesPerSecond = 30.0f;
     return profile;
 }
 
 const char* AdtViewerModule::WorldLightTypeName(WorldLightType type)
 {
     return type == WorldLightType::Spot ? "Spot" : "Point";
+}
+
+void AdtViewerModule::UpdateRealtimePreview(float dtSeconds)
+{
+    if (!lightingEdit_.dayNightCycle || !lightingEdit_.dayNightPlaying)
+    {
+        runtimeTimeOfDay_ = lightingEdit_.timeOfDayMinutes;
+        return;
+    }
+    if (worldSimulationPaused_)
+        return; // one Play/Pause control freezes actors, transports, effects and the environment clock
+    // Clamp frame hitches so a debugger/minimize pause cannot jump an entire day on resume.
+    const float step = std::clamp(dtSeconds, 0.0f, 0.10f) *
+                       std::clamp(lightingEdit_.dayMinutesPerSecond, 0.01f, 3600.0f);
+    runtimeTimeOfDay_ = std::fmod(runtimeTimeOfDay_ + step, 1440.0f);
+    if (runtimeTimeOfDay_ < 0.0f)
+        runtimeTimeOfDay_ += 1440.0f;
 }
 
 void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
@@ -170,6 +193,11 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
     lightingDirty_ = false;
     selectedWorldLightId_ = 0;
     nextWorldLightId_ = 1;
+    runtimeTimeOfDay_ = 720.0f;
+    worldSimulationPaused_ = false;
+    worldSimulationSpeed_ = 1.0f;
+    inGameViewMode_ = false;
+    liveTerrainPreview_ = true;
 
     auto finite = [](float value, float fallback) {
         return std::isfinite(value) ? value : fallback;
@@ -206,6 +234,15 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
             if (lighting.contains("profiles") && lighting["profiles"].is_array())
                 profiles = &lighting["profiles"];
         }
+        if (editorNode.contains("worldPreview") && editorNode["worldPreview"].is_object())
+        {
+            const nlohmann::json& preview = editorNode["worldPreview"];
+            worldSimulationPaused_ = preview.value("simulationPaused", false);
+            worldSimulationSpeed_ = std::clamp(finite(preview.value("simulationSpeed", 1.0f), 1.0f),
+                                                0.05f, 8.0f);
+            inGameViewMode_ = preview.value("inGameView", false);
+            liveTerrainPreview_ = preview.value("liveTerrainPreview", true);
+        }
         if (profiles)
             for (const nlohmann::json& j : *profiles)
             {
@@ -218,6 +255,12 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
                 profile.previewEnabled = j.value("previewEnabled", true);
                 profile.sunEnabled = j.value("sunEnabled", true);
                 profile.fogEnabled = j.value("fogEnabled", false);
+                profile.dayNightCycle = j.value("dayNightCycle", false);
+                profile.dayNightPlaying = j.value("dayNightPlaying", true);
+                profile.timeOfDayMinutes = std::clamp(finite(j.value("timeOfDayMinutes", 720.0f), 720.0f),
+                                                       0.0f, 1440.0f);
+                profile.dayMinutesPerSecond = std::clamp(finite(j.value("dayMinutesPerSecond", 30.0f), 30.0f),
+                                                          0.01f, 3600.0f);
                 profile.showMarkers = j.value("showMarkers", true);
                 profile.showVolumes = j.value("showVolumes", true);
                 profile.ambientColor.x = std::clamp(finite(j.value("ambientR", 1.0f), 1.0f), 0.0f, 8.0f);
@@ -302,7 +345,11 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
         nlohmann::json p = {
             {"mapDir", mapDir},
             {"previewEnabled", profile.previewEnabled}, {"sunEnabled", profile.sunEnabled},
-            {"fogEnabled", profile.fogEnabled}, {"showMarkers", profile.showMarkers},
+            {"fogEnabled", profile.fogEnabled}, {"dayNightCycle", profile.dayNightCycle},
+            {"dayNightPlaying", profile.dayNightPlaying},
+            {"timeOfDayMinutes", profile.timeOfDayMinutes},
+            {"dayMinutesPerSecond", profile.dayMinutesPerSecond},
+            {"showMarkers", profile.showMarkers},
             {"showVolumes", profile.showVolumes},
             {"ambientR", profile.ambientColor.r}, {"ambientG", profile.ambientColor.g}, {"ambientB", profile.ambientColor.b},
             {"ambientIntensity", profile.ambientIntensity},
@@ -326,6 +373,10 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
         profiles.push_back(std::move(p));
     }
     editorNode["worldLighting"] = {{"profiles", std::move(profiles)}};
+    editorNode["worldPreview"] = {{"simulationPaused", worldSimulationPaused_},
+                                   {"simulationSpeed", worldSimulationSpeed_},
+                                   {"inGameView", inGameViewMode_},
+                                   {"liveTerrainPreview", liveTerrainPreview_}};
 }
 
 void AdtViewerModule::Undo()
@@ -506,6 +557,7 @@ void AdtViewerModule::DrawPanels()
     DrawWaypointPathPanel();
     DrawTerrainSculptPanel();
     DrawLightEditorPanel();
+    DrawRealtimePreviewPanel();
     DrawViewportPanel();
 }
 
@@ -680,6 +732,7 @@ void AdtViewerModule::LoadLightingForMap(const std::string& mapDir)
             : "Using the neutral game-style lighting baseline for " + mapDir + ".";
     }
     selectedWorldLightId_ = lightingEdit_.lights.empty() ? 0 : lightingEdit_.lights.front().id;
+    runtimeTimeOfDay_ = lightingEdit_.timeOfDayMinutes;
     lightPlacementActive_ = false;
     lightMarkers_.clear();
 }
@@ -708,6 +761,7 @@ void AdtViewerModule::RevertLightingProfile()
     lightingDrafts_.erase(lightingMapDir_);
     lightingDirty_ = false;
     selectedWorldLightId_ = lightingEdit_.lights.empty() ? 0 : lightingEdit_.lights.front().id;
+    runtimeTimeOfDay_ = lightingEdit_.timeOfDayMinutes;
     lightPlacementActive_ = false;
     lightingStatus_ = saved != lightingProfiles_.end()
         ? "Reverted to saved Studio lighting."
@@ -836,71 +890,126 @@ void AdtViewerModule::ApplyWorldLightingToRenderer(const glm::vec3& origin,
     if (!svc_ || !svc_->renderer)
         return;
     WorldLightingGpu gpu{}; // neutral historical sunlight by default
-    if (!lightingEdit_.previewEnabled)
+    if (lightingEdit_.previewEnabled)
     {
-        svc_->renderer->SetWorldLighting(gpu);
-        return;
+        glm::vec3 ambientColor = lightingEdit_.ambientColor;
+        float ambientIntensity = lightingEdit_.ambientIntensity;
+        glm::vec3 sunColor = lightingEdit_.sunColor;
+        float sunIntensity = lightingEdit_.sunEnabled ? lightingEdit_.sunIntensity : 0.0f;
+        glm::vec3 fogColor = lightingEdit_.fogColor;
+        float fogStart = lightingEdit_.fogStart;
+        float fogEnd = lightingEdit_.fogEnd;
+        float sunAzimuth = lightingEdit_.sunAzimuth;
+        float sunElevation = lightingEdit_.sunElevation;
+
+        // A deterministic game-style day/night curve gives the viewport a genuinely live world
+        // state without modifying a client Light*.dbc. Manual values remain the daytime art
+        // direction; dawn/dusk warm the sun, and night keeps only blue ambient + authored lights.
+        if (lightingEdit_.dayNightCycle)
+        {
+            const float phase = (runtimeTimeOfDay_ / 1440.0f) * 6.28318530718f;
+            const float solarHeight = std::sin(phase - 1.57079632679f); // -1 midnight, +1 midday
+            const float daylight = glm::smoothstep(-0.10f, 0.18f, solarHeight);
+            const float twilight = 1.0f - glm::smoothstep(0.08f, 0.42f, std::fabs(solarHeight));
+            sunAzimuth = glm::degrees(phase - 1.57079632679f);
+            sunElevation = solarHeight * 70.0f;
+            const glm::vec3 nightAmbient(0.12f, 0.18f, 0.42f);
+            const glm::vec3 warmSun(1.0f, 0.40f, 0.17f);
+            const glm::vec3 nightFog(0.025f, 0.045f, 0.11f);
+            ambientColor = glm::mix(nightAmbient, ambientColor, daylight);
+            ambientIntensity = glm::mix(0.24f, ambientIntensity, daylight);
+            sunColor = glm::mix(warmSun, sunColor, glm::smoothstep(0.15f, 0.65f, daylight));
+            sunIntensity *= daylight * (0.72f + 0.28f * twilight);
+            fogColor = glm::mix(nightFog, fogColor, daylight);
+            fogStart *= glm::mix(0.62f, 1.0f, daylight);
+            fogEnd *= glm::mix(0.72f, 1.0f, daylight);
+        }
+
+        gpu.ambientColor[0] = ambientColor.r;
+        gpu.ambientColor[1] = ambientColor.g;
+        gpu.ambientColor[2] = ambientColor.b;
+        gpu.ambientColor[3] = ambientIntensity;
+        gpu.sunColor[0] = sunColor.r;
+        gpu.sunColor[1] = sunColor.g;
+        gpu.sunColor[2] = sunColor.b;
+        gpu.sunColor[3] = 1.0f;
+        const float azimuth = glm::radians(sunAzimuth);
+        const float elevation = glm::radians(sunElevation);
+        const glm::vec3 sunDirection(std::cos(elevation) * std::cos(azimuth),
+                                     std::cos(elevation) * std::sin(azimuth), std::sin(elevation));
+        gpu.sunDirectionIntensity[0] = sunDirection.x;
+        gpu.sunDirectionIntensity[1] = sunDirection.y;
+        gpu.sunDirectionIntensity[2] = sunDirection.z;
+        gpu.sunDirectionIntensity[3] = sunIntensity;
+        gpu.fogColor[0] = fogColor.r;
+        gpu.fogColor[1] = fogColor.g;
+        gpu.fogColor[2] = fogColor.b;
+        gpu.fogColor[3] = 1.0f;
+        gpu.fogParams[0] = fogStart;
+        gpu.fogParams[1] = fogEnd;
+        gpu.fogParams[2] = lightingEdit_.fogEnabled ? 1.0f : 0.0f;
+
+        struct Candidate { float dist2 = 0.0f; const WorldLight* light = nullptr; };
+        std::vector<Candidate> nearest;
+        nearest.reserve(lightingEdit_.lights.size());
+        for (const WorldLight& light : lightingEdit_.lights)
+        {
+            if (!light.enabled || light.intensity <= 0.0f || light.range <= 0.0f)
+                continue;
+            const glm::vec3 d = light.position - worldFocus;
+            nearest.push_back({glm::dot(d, d), &light});
+        }
+        std::sort(nearest.begin(), nearest.end(), [](const Candidate& a, const Candidate& b) {
+            return a.dist2 < b.dist2;
+        });
+        const int count = std::min<int>(static_cast<int>(nearest.size()), kMaxWorldLights);
+        for (int i = 0; i < count; ++i)
+        {
+            const WorldLight& light = *nearest[i].light;
+            WorldLightGpu& out = gpu.lights[i];
+            out.positionRange[0] = light.position.x - origin.x;
+            out.positionRange[1] = light.position.y - origin.y;
+            out.positionRange[2] = light.position.z;
+            out.positionRange[3] = light.range;
+            out.colorIntensity[0] = light.color.r;
+            out.colorIntensity[1] = light.color.g;
+            out.colorIntensity[2] = light.color.b;
+            out.colorIntensity[3] = light.intensity;
+            out.directionInnerCos[0] = light.direction.x;
+            out.directionInnerCos[1] = light.direction.y;
+            out.directionInnerCos[2] = light.direction.z;
+            out.directionInnerCos[3] = std::cos(glm::radians(light.innerAngle));
+            out.outerType[0] = std::cos(glm::radians(light.outerAngle));
+            out.outerType[1] = light.type == WorldLightType::Spot ? 1.0f : 0.0f;
+            out.outerType[2] = light.falloff;
+        }
+        gpu.fogParams[3] = static_cast<float>(count);
     }
 
-    gpu.ambientColor[0] = lightingEdit_.ambientColor.r;
-    gpu.ambientColor[1] = lightingEdit_.ambientColor.g;
-    gpu.ambientColor[2] = lightingEdit_.ambientColor.b;
-    gpu.ambientColor[3] = lightingEdit_.ambientIntensity;
-    gpu.sunColor[0] = lightingEdit_.sunColor.r;
-    gpu.sunColor[1] = lightingEdit_.sunColor.g;
-    gpu.sunColor[2] = lightingEdit_.sunColor.b;
-    gpu.sunColor[3] = 1.0f;
-    const float azimuth = glm::radians(lightingEdit_.sunAzimuth);
-    const float elevation = glm::radians(lightingEdit_.sunElevation);
-    const glm::vec3 sunDirection(std::cos(elevation) * std::cos(azimuth),
-                                 std::cos(elevation) * std::sin(azimuth), std::sin(elevation));
-    gpu.sunDirectionIntensity[0] = sunDirection.x;
-    gpu.sunDirectionIntensity[1] = sunDirection.y;
-    gpu.sunDirectionIntensity[2] = sunDirection.z;
-    gpu.sunDirectionIntensity[3] = lightingEdit_.sunEnabled ? lightingEdit_.sunIntensity : 0.0f;
-    gpu.fogColor[0] = lightingEdit_.fogColor.r;
-    gpu.fogColor[1] = lightingEdit_.fogColor.g;
-    gpu.fogColor[2] = lightingEdit_.fogColor.b;
-    gpu.fogColor[3] = 1.0f;
-    gpu.fogParams[0] = lightingEdit_.fogStart;
-    gpu.fogParams[1] = lightingEdit_.fogEnd;
-    gpu.fogParams[2] = lightingEdit_.fogEnabled ? 1.0f : 0.0f;
-
-    struct Candidate { float dist2 = 0.0f; const WorldLight* light = nullptr; };
-    std::vector<Candidate> nearest;
-    nearest.reserve(lightingEdit_.lights.size());
-    for (const WorldLight& light : lightingEdit_.lights)
+    // Staged terrain strokes get a shader-side real-time preview without writing client files or
+    // rebuilding every streamed tile. Keep the newest brush history bounded for predictable GPU
+    // work; Save ADT edits still applies the full chronological set to disk and rebuilds MCNR.
+    terrainPreviewStrokes_.clear();
+    if (liveTerrainPreview_)
     {
-        if (!light.enabled || light.intensity <= 0.0f || light.range <= 0.0f)
-            continue;
-        const glm::vec3 d = light.position - worldFocus;
-        nearest.push_back({glm::dot(d, d), &light});
+        adtEdits_.SnapshotTerrainStrokes(terrainPreviewStrokes_);
+        const size_t first = terrainPreviewStrokes_.size() > static_cast<size_t>(kMaxTerrainPreviewStrokes)
+                                 ? terrainPreviewStrokes_.size() - static_cast<size_t>(kMaxTerrainPreviewStrokes)
+                                 : 0;
+        int previewCount = 0;
+        for (size_t i = first; i < terrainPreviewStrokes_.size() && previewCount < kMaxTerrainPreviewStrokes; ++i)
+        {
+            const adt::TerrainBrushStroke& stroke = terrainPreviewStrokes_[i].stroke;
+            TerrainPreviewStrokeGpu& out = gpu.terrainPreview[previewCount++];
+            out.centerRadius[0] = stroke.worldX - origin.x;
+            out.centerRadius[1] = stroke.worldY - origin.y;
+            out.centerRadius[2] = stroke.radius;
+            out.params[0] = std::fabs(stroke.strength);
+            out.params[1] = stroke.targetZ;
+            out.params[2] = static_cast<float>(static_cast<int>(stroke.mode));
+        }
+        gpu.terrainPreviewParams[0] = static_cast<float>(previewCount);
     }
-    std::sort(nearest.begin(), nearest.end(), [](const Candidate& a, const Candidate& b) {
-        return a.dist2 < b.dist2;
-    });
-    const int count = std::min<int>(static_cast<int>(nearest.size()), kMaxWorldLights);
-    for (int i = 0; i < count; ++i)
-    {
-        const WorldLight& light = *nearest[i].light;
-        WorldLightGpu& out = gpu.lights[i];
-        out.positionRange[0] = light.position.x - origin.x;
-        out.positionRange[1] = light.position.y - origin.y;
-        out.positionRange[2] = light.position.z;
-        out.positionRange[3] = light.range;
-        out.colorIntensity[0] = light.color.r;
-        out.colorIntensity[1] = light.color.g;
-        out.colorIntensity[2] = light.color.b;
-        out.colorIntensity[3] = light.intensity;
-        out.directionInnerCos[0] = light.direction.x;
-        out.directionInnerCos[1] = light.direction.y;
-        out.directionInnerCos[2] = light.direction.z;
-        out.directionInnerCos[3] = std::cos(glm::radians(light.innerAngle));
-        out.outerType[0] = std::cos(glm::radians(light.outerAngle));
-        out.outerType[1] = light.type == WorldLightType::Spot ? 1.0f : 0.0f;
-        out.outerType[2] = light.falloff;
-    }
-    gpu.fogParams[3] = static_cast<float>(count);
     svc_->renderer->SetWorldLighting(gpu);
 }
 
@@ -2070,6 +2179,8 @@ void AdtViewerModule::DrawViewportPanel()
     ImGui::Checkbox("Edit", &editMode_);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Click a model to select it, then drag the gizmo to move/rotate/scale it.");
+    if (inGameViewMode_)
+        editMode_ = false;
     ImGui::SameLine();
     { bool w = streamer_.showWdl(); if (ImGui::Checkbox("Distant", &w)) streamer_.setShowWdl(w); }
     ImGui::SameLine();
@@ -2083,6 +2194,12 @@ void AdtViewerModule::DrawViewportPanel()
         MarkLightingDirty("Toggled the World Editor lighting preview.");
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Toggle authored sun, fog and point/spot lights. Configure them in Light Editor.");
+    ImGui::SameLine();
+    ImGui::TextColored(worldSimulationPaused_ ? ImVec4(0.95f, 0.65f, 0.25f, 1.0f)
+                                               : ImVec4(0.38f, 0.90f, 0.55f, 1.0f),
+                       worldSimulationPaused_ ? "PAUSED" : "LIVE");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Realtime Preview controls NPCs, transports, animated models, particles, water and the day/night clock.");
     if (!streamer_.wmoOnly())
     {
         ImGui::SameLine();
@@ -2221,6 +2338,7 @@ void AdtViewerModule::DrawViewportPanel()
     const bool hovered = ImGui::IsItemHovered();
     const bool active = ImGui::IsItemActive();
     ImGuiIO& io = ImGui::GetIO();
+    UpdateRealtimePreview(io.DeltaTime);
     const float aspect = (float)w / (float)h;
 
     // Single camera matrices for this frame, from the camera's CURRENT state (the end of last frame's
@@ -2237,8 +2355,16 @@ void AdtViewerModule::DrawViewportPanel()
     // Assemble the live spawn-visibility filter once; picking, rendering, and the World Outliner
     // share this exact interpretation of phases/difficulty/events/pools/groups.
     const SpawnFilter filter = CurrentSpawnFilter();
-    BuildNpcMarkerCache(view, proj, p0, w, h, focus, filter);
-    BuildLightMarkerCache(view, proj, p0, w, h, focus);
+    if (!inGameViewMode_)
+    {
+        BuildNpcMarkerCache(view, proj, p0, w, h, focus, filter);
+        BuildLightMarkerCache(view, proj, p0, w, h, focus);
+    }
+    else
+    {
+        npcMarkers_.clear();
+        lightMarkers_.clear();
+    }
 
     // Selection: hover-highlight + click-to-select, then seed the gizmo from the live object.
     // Highlights must be set BEFORE BuildFrame / the layers' Build consume them below. Picking is
@@ -2300,7 +2426,7 @@ void AdtViewerModule::DrawViewportPanel()
 
     streamer_.Update(focus, streamRadius_, opt_);
 
-    if (showGrid_)
+    if (showGrid_ && !inGameViewMode_)
     {
         const float gc[3] = {focus.x, focus.y, focus.z - 50.0f};
         const float ext = adt::kTileSize * (streamRadius_ + 1);
@@ -2313,7 +2439,11 @@ void AdtViewerModule::DrawViewportPanel()
     }
 
     const auto tBuild = std::chrono::steady_clock::now();
-    streamer_.BuildFrame(view, proj, eye, io.DeltaTime * 1000.0f, frameTerrains_, frameGroups_, frameScene_);
+    // One continuously advancing simulation clock drives every world system. Camera/UI input stays
+    // responsive while paused; only actor/transport/doodad/effect time is frozen.
+    const float worldDtMs = worldSimulationPaused_ ? 0.0f :
+                            std::clamp(io.DeltaTime * 1000.0f * worldSimulationSpeed_, 0.0f, 250.0f);
+    streamer_.BuildFrame(view, proj, eye, worldDtMs, frameTerrains_, frameGroups_, frameScene_);
 
     // NPC layer: simulate + animate the near creature spawns and append them to the same
     // scene list (world = focus + streamer origin). Uses the connected DB for lazy waypoint
@@ -2322,12 +2452,12 @@ void AdtViewerModule::DrawViewportPanel()
     if (showNpcs_)
     {
         IDatabase* db = (svc_->connected) ? svc_->activeDb : nullptr;
-        npcLayer_.Build(focus, streamer_.origin(), view, io.DeltaTime * 1000.0f, db, frameScene_,
+        npcLayer_.Build(focus, streamer_.origin(), view, worldDtMs, db, frameScene_,
                         npcMaxDraw_, npcCullDist_, filter);
     }
     if (showGos_)
     {
-        goLayer_.Build(focus, streamer_.origin(), view, io.DeltaTime * 1000.0f, currentMapId_,
+        goLayer_.Build(focus, streamer_.origin(), view, worldDtMs, currentMapId_,
                        filter, frameScene_, goMaxDraw_, goCullDist_);
     }
     cpuBuildMs_ = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tBuild).count();
@@ -2345,11 +2475,14 @@ void AdtViewerModule::DrawViewportPanel()
     // The route overlay is editor UI, not an engine primitive: it remains crisp at every zoom level,
     // labels the ordered points, and is drawn above the final 3D image but below the transform gizmo.
     // It stays visible in read-only view mode; point picking/terrain tools still require Edit.
-    DrawWaypointOverlay(view, proj, p0, w, h);
-    DrawFormationOverlay(view, proj, p0, w, h);
-    DrawLightOverlay(view, proj, p0, w, h);
-    DrawNpcMarkerOverlay();
-    DrawTerrainBrushOverlay(view, proj, p0, w, h, hovered);
+    if (!inGameViewMode_)
+    {
+        DrawWaypointOverlay(view, proj, p0, w, h);
+        DrawFormationOverlay(view, proj, p0, w, h);
+        DrawLightOverlay(view, proj, p0, w, h);
+        DrawNpcMarkerOverlay();
+        DrawTerrainBrushOverlay(view, proj, p0, w, h, hovered);
+    }
 
     // Transform gizmo: drawn ON TOP of the blitted image, on THIS window's draw list, with the SAME
     // view/proj the scene was rendered with (so it stays locked to the model). Runs before the camera
@@ -2374,7 +2507,7 @@ void AdtViewerModule::DrawViewportPanel()
         DrawObjectContextPopup();
     }
 
-    if (showStats_)
+    if (showStats_ && !inGameViewMode_)
         DrawStatsOverlay(p0, io);
     ImGui::End();
 }
@@ -3211,9 +3344,19 @@ void AdtViewerModule::DrawTerrainSculptPanel()
                            "%.2f yd", ImGuiSliderFlags_Logarithmic);
     }
 
+    if (ImGui::Checkbox("Live terrain preview", &liveTerrainPreview_))
+        if (svc_ && svc_->requestSaveSettings)
+            svc_->requestSaveSettings();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Render pending height strokes immediately in the viewport. Save ADT edits still performs the authoritative MCVT/MCNR write and tile reload.");
     if (ImGui::Button(terrainSculptActive_ ? "Stop terrain brush" : "Arm terrain brush"))
     {
         terrainSculptActive_ = !terrainSculptActive_;
+        if (terrainSculptActive_)
+        {
+            inGameViewMode_ = false;
+            editMode_ = true;
+        }
         terrainStatus_ = terrainSculptActive_
             ? "Terrain brush armed — right-click terrain to queue a smooth height stroke."
             : "Terrain brush stopped.";
@@ -3221,7 +3364,12 @@ void AdtViewerModule::DrawTerrainSculptPanel()
     ImGui::EndDisabled();
 
     const int pending = adtEdits_.terrainPendingCount();
-    ImGui::TextDisabled("%d pending terrain tile-stroke(s)", pending);
+    ImGui::TextDisabled("%d pending terrain tile-stroke(s)%s", pending,
+                        liveTerrainPreview_ ? " — previewed live" : "");
+    if (liveTerrainPreview_ && pending > kMaxTerrainPreviewStrokes)
+        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.24f, 1.0f),
+                           "Viewport previews the newest %d strokes; Save/reload applies all %d exactly.",
+                           kMaxTerrainPreviewStrokes, pending);
     if (pending > 0)
     {
         ImGui::SameLine();
@@ -3239,9 +3387,133 @@ void AdtViewerModule::DrawTerrainSculptPanel()
         ImGui::TextDisabled("%s", terrainStatus_.c_str());
 
     ImGui::Separator();
-    ImGui::TextWrapped("Strokes patch the selected ADT tile's MCVT height values and rebuild its MCNR normals. They are staged in the project's edited-client overlay, just like doodad/WMO placement edits. Use \"Save ADT edits\" in the World Editor toolbar to write and reload terrain. Pending strokes support Ctrl+Z/Ctrl+Y; after a save, terrain history is intentionally frozen so a stroke cannot be applied twice.");
+    ImGui::TextWrapped("Strokes appear immediately through the real-time terrain preview, then patch the selected ADT tile's MCVT height values and rebuild MCNR normals when saved. They remain staged in the project's edited-client overlay, just like doodad/WMO placement edits. Use \"Save ADT edits\" in the World Editor toolbar to write and reload terrain. Pending strokes support Ctrl+Z/Ctrl+Y; after a save, terrain history is intentionally frozen so a stroke cannot be applied twice.");
     ImGui::End();
 }
+
+void AdtViewerModule::DrawRealtimePreviewPanel()
+{
+    if (!ImGui::Begin("Realtime Preview"))
+    {
+        ImGui::End();
+        return;
+    }
+    const bool mapReady = streamerInit_ && !loadedName_.empty() && !lightingMapDir_.empty();
+    if (!mapReady)
+    {
+        ImGui::TextWrapped("Open a map to drive the continuous world simulation, day/night lighting, and clean in-game view.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::SeparatorText("World simulation");
+    if (ImGui::Button(worldSimulationPaused_ ? "Play world" : "Pause world"))
+    {
+        worldSimulationPaused_ = !worldSimulationPaused_;
+        if (svc_ && svc_->requestSaveSettings)
+            svc_->requestSaveSettings();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", worldSimulationPaused_ ? "paused" : "running");
+    ImGui::SetNextItemWidth(220.0f);
+    if (ImGui::SliderFloat("Simulation speed", &worldSimulationSpeed_, 0.05f, 4.0f, "%.2fx",
+                           ImGuiSliderFlags_Logarithmic))
+    {
+        worldSimulationSpeed_ = std::clamp(worldSimulationSpeed_, 0.05f, 8.0f);
+        if (svc_ && svc_->requestSaveSettings)
+            svc_->requestSaveSettings();
+    }
+    ImGui::TextDisabled("NPC routes/wander, transport paths, M2 animation, particles and liquid frames all advance from this clock.");
+
+    ImGui::SeparatorText("Day / night clock");
+    WorldLightingProfile& profile = lightingEdit_;
+    bool lightingChanged = false;
+    lightingChanged |= ImGui::Checkbox("Animate day/night", &profile.dayNightCycle);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!profile.dayNightCycle);
+    lightingChanged |= ImGui::Checkbox(profile.dayNightPlaying ? "Clock playing" : "Clock paused",
+                                       &profile.dayNightPlaying);
+    ImGui::EndDisabled();
+
+    auto timeLabel = [](float minutes) {
+        int total = std::clamp(static_cast<int>(std::round(minutes)), 0, 1440);
+        if (total == 1440) total = 0;
+        const int hours = total / 60;
+        const int mins = total % 60;
+        char label[16];
+        std::snprintf(label, sizeof(label), "%02d:%02d", hours, mins);
+        return std::string(label);
+    };
+    const std::string now = timeLabel(runtimeTimeOfDay_);
+    ImGui::Text("Preview time: %s", now.c_str());
+    float clock = runtimeTimeOfDay_;
+    ImGui::SetNextItemWidth(260.0f);
+    if (ImGui::SliderFloat("Clock", &clock, 0.0f, 1440.0f, "%0.f min"))
+    {
+        runtimeTimeOfDay_ = std::clamp(clock, 0.0f, 1440.0f);
+        profile.timeOfDayMinutes = runtimeTimeOfDay_;
+        profile.dayNightPlaying = false; // scrubber is deterministic; user can press play again
+        lightingChanged = true;
+    }
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::BeginDisabled(!profile.dayNightCycle);
+    if (ImGui::SliderFloat("Game minutes / real second", &profile.dayMinutesPerSecond, 0.5f, 1200.0f,
+                           "%.1f", ImGuiSliderFlags_Logarithmic))
+    {
+        profile.dayMinutesPerSecond = std::clamp(profile.dayMinutesPerSecond, 0.01f, 3600.0f);
+        lightingChanged = true;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::SmallButton("Sunrise"))
+    {
+        runtimeTimeOfDay_ = profile.timeOfDayMinutes = 360.0f;
+        profile.dayNightPlaying = false;
+        lightingChanged = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Noon"))
+    {
+        runtimeTimeOfDay_ = profile.timeOfDayMinutes = 720.0f;
+        profile.dayNightPlaying = false;
+        lightingChanged = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Sunset"))
+    {
+        runtimeTimeOfDay_ = profile.timeOfDayMinutes = 1080.0f;
+        profile.dayNightPlaying = false;
+        lightingChanged = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Midnight"))
+    {
+        runtimeTimeOfDay_ = profile.timeOfDayMinutes = 0.0f;
+        profile.dayNightPlaying = false;
+        lightingChanged = true;
+    }
+    if (ImGui::Button("Capture current time for save"))
+    {
+        profile.timeOfDayMinutes = runtimeTimeOfDay_;
+        lightingChanged = true;
+    }
+    if (lightingChanged)
+        MarkLightingDirty("Updated the real-time day/night preview. Save lighting to persist it.");
+
+    ImGui::SeparatorText("Presentation");
+    if (ImGui::Checkbox("In-game view", &inGameViewMode_))
+    {
+        if (inGameViewMode_)
+            editMode_ = false; // clean render first; turn it off to resume editor interaction
+        if (svc_ && svc_->requestSaveSettings)
+            svc_->requestSaveSettings();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Hide grids, selection outlines, waypoint/light/formation helpers and editor brushes while retaining the live world simulation.");
+    ImGui::TextDisabled("In-game view is a presentation toggle; it never pauses terrain streaming or live simulation.");
+    ImGui::End();
+}
+
+
 
 void AdtViewerModule::DrawLightEditorPanel()
 {
@@ -3386,6 +3658,7 @@ void AdtViewerModule::DrawLightEditorPanel()
         {
             // Match WoWEdit's modal tool behavior: one terrain click must have one unambiguous
             // authoring meaning, rather than competing with a sculpt/path/spawn brush.
+            inGameViewMode_ = false;
             editMode_ = true;
             terrainSculptActive_ = false;
             waypointPlacementMode_ = WaypointPlacementMode::None;
@@ -3506,6 +3779,8 @@ void AdtViewerModule::DrawLightEditorPanel()
         if (streamer_.GroundHit(glm::vec3(local.x, local.y, 10000.0f), glm::vec3(0, 0, -1),
                                 ground, hitT, tileX, tileY))
         {
+            if (liveTerrainPreview_ && adtEdits_.terrainPendingCount() > 0)
+                ground.z = adtEdits_.PreviewTerrainZ(ground.z, ground.x + origin.x, ground.y + origin.y);
             selected->position.z = ground.z;
             MarkLightingDirty("Snapped the light to terrain.");
         }
@@ -3565,9 +3840,11 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
     int tx = 0, ty = 0;
     if (!streamer_.GroundHit(ray.origin, ray.dir, center, centerT, tx, ty))
         return;
+    const glm::vec3 origin = streamer_.origin();
+    if (liveTerrainPreview_ && adtEdits_.terrainPendingCount() > 0)
+        center.z = adtEdits_.PreviewTerrainZ(center.z, center.x + origin.x, center.y + origin.y);
 
     constexpr int kSegments = 32;
-    const glm::vec3 origin = streamer_.origin();
     ImDrawList* draw = ImGui::GetWindowDrawList();
     ImVec2 previous{};
     bool havePrevious = false;
@@ -4484,6 +4761,8 @@ void AdtViewerModule::SnapSelectionToGround()
         saveStatus_ = "No loaded terrain below this selection — fly closer to an ADT tile and try again.";
         return;
     }
+    if (liveTerrainPreview_ && adtEdits_.terrainPendingCount() > 0)
+        ground.z = adtEdits_.PreviewTerrainZ(ground.z, ground.x + origin.x, ground.y + origin.y);
 
     const AdtXform before = CaptureSelection();
     if (selKind_ == SelKind::Doodad)
@@ -4892,6 +5171,10 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
             lightingStatus_ = "No loaded terrain below the cursor — add the light at the camera or fly over an ADT tile.";
         return;   // no ground under the cursor
     }
+    // Keep all terrain-click tools (new strokes, flattened target sampling, light/object placement)
+    // visually locked to staged height edits before their ADT overlay write/reload occurs.
+    if (liveTerrainPreview_ && adtEdits_.terrainPendingCount() > 0)
+        gLocal.z = adtEdits_.PreviewTerrainZ(gLocal.z, gLocal.x + origin.x, gLocal.y + origin.y);
 
     // Terrain sculpting is deliberately highest-priority: an author armed it to modify the ground,
     // even when a doodad/NPC happens to sit between the cursor and the terrain triangle. The actual

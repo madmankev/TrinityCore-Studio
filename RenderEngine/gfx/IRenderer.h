@@ -175,6 +175,10 @@ struct SceneInstanceGpu
 // snapshot every frame so no UI/GLM types cross the rendering seam. Positions are in the current
 // streamed local frame, just like SceneInstanceGpu bone palettes.
 constexpr int kMaxWorldLights = 16;
+// Pending terrain brush strokes are evaluated in the terrain vertex shader for an immediate,
+// non-destructive World Editor preview. The authoritative MCVT/MCNR patch is still written only
+// when the artist explicitly saves ADT edits.
+constexpr int kMaxTerrainPreviewStrokes = 32;
 
 struct WorldLightGpu
 {
@@ -183,6 +187,15 @@ struct WorldLightGpu
     float directionInnerCos[4] = {0, 0, -1, 1};  // xyz spot direction, w = cos(inner cone)
     // x = cos(outer cone), y = type (0 point / 1 spot), z = falloff exponent, w = reserved.
     float outerType[4] = {-1, 0, 1, 0};
+};
+
+struct TerrainPreviewStrokeGpu
+{
+    // xy is the streamer-local brush center, z is radius, w is reserved for future brush masks.
+    float centerRadius[4] = {0, 0, 0, 0};
+    // x = absolute raise/lower strength, y = flatten target Z, z = mode (0 raise, 1 lower,
+    // 2 flatten), w = reserved. Strokes are applied in chronological order.
+    float params[4] = {0, 0, 0, 0};
 };
 
 struct WorldLightingGpu
@@ -197,6 +210,9 @@ struct WorldLightingGpu
     // x = fog start, y = fog end, z = fog enabled (0/1), w = active point/spot count.
     float fogParams[4] = {500.0f, 1000.0f, 0, 0};
     WorldLightGpu lights[kMaxWorldLights] = {};
+    // x = active real-time terrain-preview stroke count; remaining values reserved.
+    float terrainPreviewParams[4] = {0, 0, 0, 0};
+    TerrainPreviewStrokeGpu terrainPreview[kMaxTerrainPreviewStrokes] = {};
 };
 
 // Per-frame render statistics, filled by the renderer while recording RenderWorld and read by the

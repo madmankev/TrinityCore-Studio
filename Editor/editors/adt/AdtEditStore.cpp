@@ -3,6 +3,7 @@
 #include "editors/adt/AdtEditStore.h"
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_set>
 
 #include "adt/AdtLoader.h"          // adt::TilePath
@@ -103,6 +104,46 @@ int AdtEditStore::terrainPendingCount() const
     for (const auto& kv : terrain_)
         n += static_cast<int>(kv.second.size());
     return n;
+}
+
+void AdtEditStore::SnapshotTerrainStrokes(std::vector<TerrainStrokeRef>& out) const
+{
+    out.clear();
+    out.reserve(static_cast<size_t>(terrainPendingCount()));
+    for (const auto& kv : terrain_)
+        out.insert(out.end(), kv.second.begin(), kv.second.end());
+    std::sort(out.begin(), out.end(), [](const TerrainStrokeRef& a, const TerrainStrokeRef& b) {
+        return a.id < b.id;
+    });
+}
+
+float AdtEditStore::PreviewTerrainZ(float baseZ, float worldX, float worldY) const
+{
+    if (!std::isfinite(baseZ) || !std::isfinite(worldX) || !std::isfinite(worldY))
+        return baseZ;
+    std::vector<TerrainStrokeRef> strokes;
+    SnapshotTerrainStrokes(strokes);
+    float z = baseZ;
+    for (const TerrainStrokeRef& ref : strokes)
+    {
+        const adt::TerrainBrushStroke& stroke = ref.stroke;
+        if (!std::isfinite(stroke.radius) || stroke.radius <= 0.01f)
+            continue;
+        const float dx = worldX - stroke.worldX;
+        const float dy = worldY - stroke.worldY;
+        const float distance = std::sqrt(dx * dx + dy * dy);
+        if (distance > stroke.radius)
+            continue;
+        float t = std::clamp(1.0f - distance / stroke.radius, 0.0f, 1.0f);
+        const float falloff = t * t * (3.0f - 2.0f * t); // AdtWriter::SmoothFalloff
+        if (stroke.mode == adt::TerrainBrushMode::Raise && std::isfinite(stroke.strength))
+            z += std::fabs(stroke.strength) * falloff;
+        else if (stroke.mode == adt::TerrainBrushMode::Lower && std::isfinite(stroke.strength))
+            z -= std::fabs(stroke.strength) * falloff;
+        else if (std::isfinite(stroke.targetZ))
+            z += (stroke.targetZ - z) * falloff;
+    }
+    return z;
 }
 
 int AdtEditStore::pendingCount() const

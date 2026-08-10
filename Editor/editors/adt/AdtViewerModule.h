@@ -53,6 +53,7 @@ public:
                 {"Waypoint Path", DockSlot::Bottom, true},
                 {"Terrain Sculpt", DockSlot::Bottom, true},
                 {"Light Editor", DockSlot::Left, true},
+                {"Realtime Preview", DockSlot::Left, true},
                 {"World Editor###ADT Viewer", DockSlot::Center, true}};
     }
     void DrawPanels() override;
@@ -83,6 +84,8 @@ private:
     void DrawLocationsPanel();
     void DrawTransformPanel();
     void DrawLightEditorPanel();
+    void DrawRealtimePreviewPanel();
+    void UpdateRealtimePreview(float dtSeconds);
     void DrawViewportPanel();
     void DrawStatsOverlay(const ImVec2& p0, const ImGuiIO& io);
     void OpenMapDir(const std::string& dir, bool frameCamera);
@@ -161,6 +164,12 @@ private:
         bool previewEnabled = true;
         bool sunEnabled = true;
         bool fogEnabled = false;
+        // Optional real-time day/night preview. The stored clock is the reset/captured time;
+        // runtimeTimeOfDay_ advances independently while playback is active.
+        bool dayNightCycle = false;
+        bool dayNightPlaying = true;
+        float timeOfDayMinutes = 720.0f;       // 00:00..1440, 720 = midday
+        float dayMinutesPerSecond = 30.0f;     // preview clock speed
         bool showMarkers = true;
         bool showVolumes = true;
         glm::vec3 ambientColor{1.0f};
@@ -363,6 +372,10 @@ private:
     uint64_t nextWorldLightId_ = 1;
     uint64_t selectedWorldLightId_ = 0;
     bool lightingDirty_ = false;
+    float runtimeTimeOfDay_ = 720.0f;  // advances when the day/night preview clock plays
+    bool worldSimulationPaused_ = false;
+    float worldSimulationSpeed_ = 1.0f;
+    bool inGameViewMode_ = false;      // hides editor-only helpers without disabling real-time simulation
     bool lightPlacementActive_ = false;
     bool lightPlacementContinuous_ = false;
     WorldLightType lightPlacementType_ = WorldLightType::Point;
@@ -508,6 +521,10 @@ private:
     // ground queues a lossless MCVT/MCNR patch in the project's loose overlay, and a Save reloads
     // streamed tiles from that overlay. Undo/redo applies only while the stroke remains pending.
     bool terrainSculptActive_ = false;
+    // Draw staged strokes immediately in the GPU terrain shader. Save ADT edits still performs the
+    // authoritative MCVT/MCNR patch + reload; this toggle is a safe real-time preview only.
+    bool liveTerrainPreview_ = true;
+    std::vector<AdtEditStore::TerrainStrokeRef> terrainPreviewStrokes_;
     int terrainSculptMode_ = 0;       // adt::TerrainBrushMode (0 raise, 1 lower, 2 flatten)
     float terrainBrushRadius_ = 10.0f;
     float terrainBrushStrength_ = 2.0f;

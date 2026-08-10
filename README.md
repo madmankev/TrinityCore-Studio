@@ -72,22 +72,27 @@ turn on **Edit**:
    Sun/ambient presets and distance fog update the actual terrain, doodad, WMO, NPC, and GameObject
    preview immediately. **Save lighting** persists the map-scoped Studio profile; the nearest 16
    enabled local lights are evaluated in the live renderer.
-7. **Edit an NPC route:** select an NPC and open **Waypoint Path**. The panel identifies whether
+7. **Run the live world:** **Realtime Preview** controls the continuous simulation clock for NPC
+   routes/wander, transport paths, animated M2s, particles, liquid frames, and an optional animated
+   day/night sun/fog cycle. Its **In-game view** hides editor helpers for a clean game-like render.
+   Staged terrain strokes now deform the streamed terrain immediately; save ADT edits when you are
+   ready to bake the exact MCVT/MCNR result into the edited-client overlay.
+8. **Edit an NPC route:** select an NPC and open **Waypoint Path**. The panel identifies whether
    its route comes from the creature template (shared) or its `creature_addon` row (local). Use
    **Make local copy** before changing a shared route when the change is map/spawn-specific;
    creating that local addon carries over the template's visual addon settings so mounted/
    aura-equipped NPCs keep their appearance.
-8. **Author paths in 3D:** click blue numbered route markers to select a point. Add a point at
+9. **Author paths in 3D:** click blue numbered route markers to select a point. Add a point at
    the NPC home, arm **Place on terrain** and right-click ground to insert a point, or arm
    **Move selected on terrain** to reposition one. The route overlay, loop line, delays,
    orientation, walk/run mode, events, actions, chances, and `wpguid` all preview and edit in
    place. Route-table changes have local Ctrl+Z/Ctrl+Y before Save.
-9. **Save deliberately:** route edits are an unsaved live preview until **Save route**. Existing
+10. **Save deliberately:** route edits are an unsaved live preview until **Save route**. Existing
    `waypoint_data` rows are updated transactionally rather than replaced, so project-specific
    columns survive point moves/reordering. A spawn addon row takes precedence over template addon
    data in TrinityCore; clearing its `path_id` keeps its other addon fields and intentionally
    leaves that spawn without a route.
-10. **Verify server appearance:** select an NPC and inspect **NPC Instance → World appearance**.
+11. **Verify server appearance:** select an NPC and inspect **NPC Instance → World appearance**.
    The renderer resolves the server's `CreatureDisplayInfo` id in this order: persistent spawn
    `displayid`/`modelid`, modern AzerothCore `creature_template_model.CreatureDisplayID`, then
    legacy TrinityCore `creature_template.modelid1..4`. It applies the selected

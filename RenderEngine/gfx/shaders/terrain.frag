@@ -14,11 +14,16 @@
 // The alpha map is sampled CLAMP + a half-texel inset so per-chunk maps don't bleed across seams.
 
 const int MAX_WORLD_LIGHTS = 16;
+const int MAX_TERRAIN_PREVIEW_STROKES = 32;
 struct WorldLight {
     vec4 positionRange;
     vec4 colorIntensity;
     vec4 directionInnerCos;
     vec4 outerType;
+};
+struct TerrainPreviewStroke {
+    vec4 centerRadius;
+    vec4 params;
 };
 
 layout(set = 0, binding = 0) uniform Scene {
@@ -30,6 +35,8 @@ layout(set = 0, binding = 0) uniform Scene {
     vec4 fogColor;
     vec4 fogParams;
     WorldLight lights[MAX_WORLD_LIGHTS];
+    vec4 terrainPreviewParams;
+    TerrainPreviewStroke terrainPreview[MAX_TERRAIN_PREVIEW_STROKES];
 } scene;
 
 layout(set = 1, binding = 0) uniform sampler2D groundTex[4096];   // bindless, tiled (REPEAT)
@@ -47,6 +54,7 @@ layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec4 inColor;
 layout(location = 3) flat in uint inChunk;
 layout(location = 4) in vec3 inWorldPos;
+layout(location = 5) in float inPreviewDelta;
 
 layout(location = 0) out vec4 outColor;
 
@@ -120,7 +128,17 @@ void main()
     col = mix(col, ground(cp.layer.w, tuv), a.b);             // layer 3 on top
 
     col *= inColor.rgb;   // MCCV
-    col *= worldLighting(inWorldPos, inNormal);
+    vec3 litNormal = inNormal;
+    if (abs(inPreviewDelta) > 1e-5)
+    {
+        // The staged brush only changes vertex height. Reconstruct a per-fragment normal from the
+        // displaced world position so sunlight/point lights follow the live sculpt immediately;
+        // Save/reload later replaces it with the exact rebuilt MCNR normal.
+        litNormal = normalize(cross(dFdx(inWorldPos), dFdy(inWorldPos)));
+        if (litNormal.z < 0.0)
+            litNormal = -litNormal;
+    }
+    col *= worldLighting(inWorldPos, litNormal);
     col = applyFog(col, inWorldPos);
 
     outColor = vec4(col, 1.0);

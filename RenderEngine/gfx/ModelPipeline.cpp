@@ -49,7 +49,10 @@ struct alignas(16) SceneUbo
 };
 static_assert(sizeof(WorldLightGpu) == sizeof(float) * 16,
               "WorldLightGpu must remain four std140 vec4 values");
-static_assert(sizeof(WorldLightingGpu) == sizeof(float) * (5 * 4 + kMaxWorldLights * 16),
+static_assert(sizeof(TerrainPreviewStrokeGpu) == sizeof(float) * 8,
+              "TerrainPreviewStrokeGpu must remain two std140 vec4 values");
+static_assert(sizeof(WorldLightingGpu) == sizeof(float) *
+              (5 * 4 + kMaxWorldLights * 16 + 4 + kMaxTerrainPreviewStrokes * 8),
               "WorldLightingGpu must remain tightly packed std140 vec4 data");
 static_assert(offsetof(SceneUbo, lighting) == sizeof(float) * 32,
               "SceneUbo lighting must begin directly after view/proj matrices");
@@ -1101,6 +1104,19 @@ void ModelPipeline::SetWorldLighting(const WorldLightingGpu& lighting)
         light.outerType[0] = std::clamp(light.outerType[0], -1.0f, 1.0f);
         light.outerType[1] = light.outerType[1] > 0.5f ? 1.0f : 0.0f;
         light.outerType[2] = std::max(0.05f, light.outerType[2]);
+    }
+    for (float& value : worldLighting_.terrainPreviewParams) finiteOr(value, 0.0f);
+    const int terrainCount = std::clamp(static_cast<int>(worldLighting_.terrainPreviewParams[0] + 0.5f),
+                                        0, kMaxTerrainPreviewStrokes);
+    worldLighting_.terrainPreviewParams[0] = static_cast<float>(terrainCount);
+    for (int i = 0; i < kMaxTerrainPreviewStrokes; ++i)
+    {
+        TerrainPreviewStrokeGpu& stroke = worldLighting_.terrainPreview[i];
+        for (float& value : stroke.centerRadius) finiteOr(value, 0.0f);
+        for (float& value : stroke.params) finiteOr(value, 0.0f);
+        stroke.centerRadius[2] = std::max(0.0f, stroke.centerRadius[2]);
+        stroke.params[0] = std::max(0.0f, stroke.params[0]);
+        stroke.params[2] = std::clamp(std::round(stroke.params[2]), 0.0f, 2.0f);
     }
 }
 
