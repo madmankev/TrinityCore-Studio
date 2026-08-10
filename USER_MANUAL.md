@@ -155,8 +155,11 @@ an integration module.
 - Build biomes through texture presets + scatter seeds; retain the seed for repeatability.
 - Use real-time lighting profiles for review, while keeping canonical game light
   data and Studio preview metadata clearly separated.
-- Run Validation before export: missing assets, invalid references, terrain holes,
-  slopes, texture coverage, overlap, collision, and route checks.
+- Run **Tools → World Validation** before export: it inspects loaded client/project
+  readiness, staged ADT edits, spawn transforms/display IDs, sub-yard spawn overlaps,
+  waypoint movement/path consistency, formations, trigger targets/hooks, and authored
+  light data without mutating the database or ADT files. Click a finding to select/frame
+  the referenced object, then copy the Markdown report into a review or issue.
 
 ## Troubleshooting
 

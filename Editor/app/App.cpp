@@ -1488,7 +1488,7 @@ void App::LoadSettings()
         // The inspector column/right-slot layout is a deliberate workspace revision. Rebuild once
         // for existing installations so the new information hierarchy is actually visible instead
         // of being hidden behind an obsolete saved dock tree.
-        if (j.value("uiLayoutRevision", 0) < 3)
+        if (j.value("uiLayoutRevision", 0) < 4)
             forceLayout = true;
 
         // Per-module settings under "editors": { "<id>": {...} }. Back-compat: an old
@@ -1519,7 +1519,7 @@ void App::SaveSettings()
         nlohmann::json j;
         j["theme"] = themePref;
         j["railCollapsed"] = railCollapsed;
-        j["uiLayoutRevision"] = 3;
+        j["uiLayoutRevision"] = 4;
         for (const auto& m : modules_)
         {
             nlohmann::json node;

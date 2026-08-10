@@ -9,6 +9,9 @@
 - World Editor Spell Effect Previewer with `Spell.dbc` field resolution, searchable spell selection,
   target/time/weather controls, play/pause/stop/loop/scrub timeline, procedural in-world cast/projectile/
   impact visualization, manifest copy, persisted preferences, and Script Trigger CastSpell dispatch.
+- Non-destructive World Validation panel with selectable findings and Markdown report export for
+  project/client readiness, staged ADT edits, spawn transforms/displays/overlap, routes, formations,
+  triggers, and authored lights.
 - Portable `WowEdit/` C++17 architecture with MVC-facing panel controllers,
   complete menu command model, `ICommand`/macro history, and EventBus.
 - Heightmap, texture-splat, water, terrain chunk LOD, terrain tools, erosion,

@@ -60,6 +60,7 @@ public:
                 {"Spell Effect Previewer", DockSlot::Right, true},
                 {"Waypoint Path", DockSlot::Bottom, true},
                 {"Terrain Sculpt", DockSlot::Bottom, true},
+                {"World Validation", DockSlot::Bottom, true},
                 {"World Editor###ADT Viewer", DockSlot::Center, true}};
     }
     void DrawPanels() override;
@@ -94,6 +95,9 @@ private:
     void DrawRealtimePreviewPanel();
     void UpdateRealtimePreview(float dtSeconds);
     void DrawSpellEffectPreviewerPanel();
+    void DrawWorldValidationPanel();
+    void RunWorldValidation();
+    void CopyWorldValidationReport() const;
     void LoadSpellPreviewDefinition(uint32_t spellId);
     void UpdateSpellEffectPreview(float dtSeconds);
     void DrawSpellEffectOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
@@ -113,6 +117,17 @@ private:
 
     // --- object selection + transform gizmo (see AdtViewerModule.cpp) ---
     enum class SelKind { None, Doodad, GameObject, Npc };
+    enum class WorldValidationSeverity : uint8_t { Info, Warning, Error };
+    struct WorldValidationIssue
+    {
+        WorldValidationSeverity severity = WorldValidationSeverity::Info;
+        std::string category;
+        std::string message;
+        SelKind kind = SelKind::None;
+        uint32_t guid = 0;
+        glm::vec3 world{0.0f};
+        bool hasWorld = false;
+    };
     struct TransformEdit
     {
         SelKind kind = SelKind::None;
@@ -600,6 +615,14 @@ private:
     // from Script Trigger metadata: the former visualizes timing in-world, while
     // triggers may reference the selected numeric spell id for server wiring.
     SpellPreviewState spellPreview_;
+
+    // Map-level validation is deliberately non-destructive. It inspects loaded
+    // terrain/spawns/formations/triggers/lights and sends selection/focus back to
+    // their real authoring panels instead of mutating DB or ADT data on discovery.
+    std::vector<WorldValidationIssue> worldValidationIssues_;
+    bool worldValidationHasRun_ = false;
+    bool worldValidationShowInfo_ = true;
+    std::string worldValidationStatus_;
 
     // Reusable terrain-click placement palette. Unlike the one-shot context menu, a palette entry
     // stays armed for rapid map dressing and keeps an inexpensive spacing guard for the session.

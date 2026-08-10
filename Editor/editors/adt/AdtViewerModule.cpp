@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <sstream>
+#include <unordered_set>
 
 #include "imgui.h"
 #include <glm/glm.hpp>
@@ -129,6 +131,9 @@ void AdtViewerModule::OnClientDataLoaded()
     scriptInteractionMode_ = false;
     scriptPreviewPlayerWorld_ = glm::vec3(0.0f);
     lightMarkers_.clear();
+    worldValidationIssues_.clear();
+    worldValidationHasRun_ = false;
+    worldValidationStatus_.clear();
     // Re-resolve the selected spell after the new client DBC set is open. This
     // preserves the user's preview choice while replacing safe defaults with the
     // actual WotLK cast/range/duration fields.
@@ -290,6 +295,7 @@ void AdtViewerModule::DrawMainMenuExtensions()
         if (ImGui::MenuItem("Realtime Preview...")) focus("Realtime Preview");
         if (ImGui::MenuItem("Light Editor...")) focus("Light Editor");
         if (ImGui::MenuItem("Script Trigger Log...")) focus("Script Triggers");
+        if (ImGui::MenuItem("World Validation...")) focus("World Validation");
         if (ImGui::MenuItem("World Statistics")) { showStats_ = true; focus("World Editor###ADT Viewer"); }
         ImGui::EndMenu();
     }
@@ -301,6 +307,7 @@ void AdtViewerModule::DrawMainMenuExtensions()
         if (ImGui::MenuItem("Properties / Transform")) focus("Transform");
         if (ImGui::MenuItem("Hierarchy / Outliner")) focus("World Outliner");
         if (ImGui::MenuItem("Terrain Tools")) focus("Terrain Sculpt");
+        if (ImGui::MenuItem("World Validation")) focus("World Validation");
         if (ImGui::MenuItem("Creature Editor")) focus("NPC Instance");
         if (ImGui::MenuItem("Quest Trigger Panel")) focus("Script Triggers");
         if (ImGui::MenuItem("Chunk / World Canvas")) focus("World Editor###ADT Viewer");
@@ -1206,6 +1213,7 @@ void AdtViewerModule::DrawPanels()
     DrawGoInstancePanel();
     DrawWaypointPathPanel();
     DrawTerrainSculptPanel();
+    DrawWorldValidationPanel();
     DrawLightEditorPanel();
     DrawRealtimePreviewPanel();
     DrawSpellEffectPreviewerPanel();
@@ -1274,6 +1282,9 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
     if (!streamerInit_)
         return;
     adtEdits_.SetMap(dir);   // switching maps discards pending (unsaved) edits; same map keeps them
+    worldValidationIssues_.clear();
+    worldValidationHasRun_ = false;
+    worldValidationStatus_.clear();
     if (dir != undoMapDir_)   // an actual map change (not an option-toggle reload) invalidates undo
     {
         undo_.Clear();
@@ -5556,6 +5567,279 @@ void AdtViewerModule::DrawSpellEffectPreviewerPanel()
         ImGui::TextDisabled("%s", preview.status.c_str());
     ImGui::Separator();
     ImGui::TextWrapped("The World Editor renders the cast, ballistic projectile trail, and impact/sustain volume live over the map using real Spell.dbc cast time, range, cooldown, mana, speed, visual, and effect fields when available. It is a Studio-side timing/placement preview. A stock 3.3.5 server does not execute this visual solely because it appears here; use the selected spell ID in SmartAI/custom script wiring for gameplay.");
+    ImGui::End();
+}
+
+void AdtViewerModule::RunWorldValidation()
+{
+    worldValidationIssues_.clear();
+    worldValidationHasRun_ = true;
+    auto add = [&](WorldValidationSeverity severity, std::string category, std::string message,
+                   SelKind kind = SelKind::None, uint32_t guid = 0,
+                   const glm::vec3& world = glm::vec3(0.0f), bool hasWorld = false) {
+        if (worldValidationIssues_.size() >= 1000)
+            return;
+        worldValidationIssues_.push_back({severity, std::move(category), std::move(message), kind, guid, world, hasWorld});
+    };
+    const auto finitePosition = [](const glm::vec3& value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    };
+
+    if (!streamerInit_ || loadedName_.empty())
+    {
+        add(WorldValidationSeverity::Error, "Map", "Open a terrain or WMO map before validating world content.");
+        worldValidationStatus_ = "Validation needs an open map.";
+        return;
+    }
+    if (!svc_ || !svc_->clientData || !svc_->clientData->IsOpen())
+        add(WorldValidationSeverity::Warning, "Client data", "Client data is unavailable; terrain, display, model and asset diagnostics are incomplete.");
+    if (!svc_ || !svc_->connected || !svc_->activeDb)
+        add(WorldValidationSeverity::Warning, "Database", "Database is disconnected; spawn, path and formation diagnostics are based only on any already-loaded data.");
+    if (!svc_ || svc_->editRoot.empty())
+        add(WorldValidationSeverity::Warning, "Project overlay", "No edited-client project folder is configured; terrain and ADT placement saves are disabled.");
+    if (adtEdits_.pendingCount() > 0)
+        add(WorldValidationSeverity::Warning, "Unsaved ADT edits",
+            std::to_string(adtEdits_.pendingCount()) + " pending ADT edit(s) need Save Pending ADT Edits before they exist in the project overlay.");
+    if (terrainSculptActive_)
+        add(WorldValidationSeverity::Info, "Terrain", "Terrain brush is armed; right-clicking the viewport will queue a staged edit.");
+    if (npcLayer_.failedDisplayCount() > 0)
+        add(WorldValidationSeverity::Warning, "NPC models",
+            std::to_string(npcLayer_.failedDisplayCount()) + " creature display ID(s) failed to resolve to a renderable client model; markers remain selectable.");
+
+    std::vector<MapSpawn> npcs;
+    npcLayer_.SnapshotSpawns(npcs);
+    std::unordered_set<uint32_t> npcGuids;
+    std::unordered_map<uint64_t, uint32_t> npcCells;
+    const SpawnFilter filter = CurrentSpawnFilter();
+    for (const MapSpawn& npc : npcs)
+    {
+        const glm::vec3 position(npc.x, npc.y, npc.z);
+        npcGuids.insert(npc.guid);
+        if (!finitePosition(position))
+        {
+            add(WorldValidationSeverity::Error, "Creature spawn", "Creature guid " + std::to_string(npc.guid) + " has non-finite coordinates.",
+                SelKind::Npc, npc.guid);
+            continue;
+        }
+        const ResolvedCreatureDisplay display = npc.ResolveDisplay(filter);
+        if (display.displayId == 0)
+            add(WorldValidationSeverity::Warning, "Creature appearance",
+                "Creature guid " + std::to_string(npc.guid) + " has no resolved CreatureDisplayInfo ID.",
+                SelKind::Npc, npc.guid, position, true);
+        if (!std::isfinite(npc.scale) || npc.scale <= 0.0f)
+            add(WorldValidationSeverity::Error, "Creature scale",
+                "Creature guid " + std::to_string(npc.guid) + " has an invalid template scale.",
+                SelKind::Npc, npc.guid, position, true);
+        if (npc.movementType == 2 && npc.pathId == 0)
+            add(WorldValidationSeverity::Warning, "Waypoint route",
+                "Creature guid " + std::to_string(npc.guid) + " uses waypoint movement but has no resolved path ID.",
+                SelKind::Npc, npc.guid, position, true);
+        if (npc.movementType != 2 && npc.pathId != 0)
+            add(WorldValidationSeverity::Info, "Waypoint route",
+                "Creature guid " + std::to_string(npc.guid) + " has path " + std::to_string(npc.pathId) +
+                " but its movement type is not waypoint.", SelKind::Npc, npc.guid, position, true);
+        if (!std::isfinite(npc.aiBehavior.aggroRadius) || !std::isfinite(npc.aiBehavior.leashDistance) ||
+            npc.aiBehavior.aggroRadius < 0.0f || npc.aiBehavior.leashDistance < 0.0f)
+            add(WorldValidationSeverity::Error, "AI behavior",
+                "Creature guid " + std::to_string(npc.guid) + " has an invalid aggro/leash value.",
+                SelKind::Npc, npc.guid, position, true);
+
+        const int64_t cellX = static_cast<int64_t>(std::floor(position.x / 0.75f));
+        const int64_t cellY = static_cast<int64_t>(std::floor(position.y / 0.75f));
+        const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(cellX)) << 32u) |
+                             static_cast<uint32_t>(cellY);
+        const auto other = npcCells.find(key);
+        if (other != npcCells.end() && other->second != npc.guid)
+            add(WorldValidationSeverity::Warning, "Creature overlap",
+                "Creature guid " + std::to_string(npc.guid) + " shares a sub-yard spawn cell with guid " +
+                std::to_string(other->second) + ".", SelKind::Npc, npc.guid, position, true);
+        else
+            npcCells[key] = npc.guid;
+    }
+
+    std::vector<MapGameObject> gameObjects;
+    goLayer_.SnapshotGameObjects(gameObjects);
+    std::unordered_map<uint64_t, uint32_t> goCells;
+    for (const MapGameObject& gameObject : gameObjects)
+    {
+        const glm::vec3 position(gameObject.x, gameObject.y, gameObject.z);
+        if (!finitePosition(position))
+        {
+            add(WorldValidationSeverity::Error, "GameObject spawn", "GameObject guid " + std::to_string(gameObject.guid) + " has non-finite coordinates.",
+                SelKind::GameObject, gameObject.guid);
+            continue;
+        }
+        if (gameObject.displayId == 0)
+            add(WorldValidationSeverity::Warning, "GameObject appearance",
+                "GameObject guid " + std::to_string(gameObject.guid) + " has no resolved display ID.",
+                SelKind::GameObject, gameObject.guid, position, true);
+        if (!std::isfinite(gameObject.size) || gameObject.size <= 0.0f)
+            add(WorldValidationSeverity::Error, "GameObject scale",
+                "GameObject guid " + std::to_string(gameObject.guid) + " has an invalid template size.",
+                SelKind::GameObject, gameObject.guid, position, true);
+        const float rotationLength = std::sqrt(gameObject.rot[0] * gameObject.rot[0] + gameObject.rot[1] * gameObject.rot[1] +
+                                               gameObject.rot[2] * gameObject.rot[2] + gameObject.rot[3] * gameObject.rot[3]);
+        if (!std::isfinite(rotationLength) || rotationLength < 1e-4f)
+            add(WorldValidationSeverity::Warning, "GameObject rotation",
+                "GameObject guid " + std::to_string(gameObject.guid) + " has a zero/invalid quaternion; orientation fallback is used.",
+                SelKind::GameObject, gameObject.guid, position, true);
+        const int64_t cellX = static_cast<int64_t>(std::floor(position.x / 0.75f));
+        const int64_t cellY = static_cast<int64_t>(std::floor(position.y / 0.75f));
+        const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(cellX)) << 32u) |
+                             static_cast<uint32_t>(cellY);
+        const auto other = goCells.find(key);
+        if (other != goCells.end() && other->second != gameObject.guid)
+            add(WorldValidationSeverity::Warning, "GameObject overlap",
+                "GameObject guid " + std::to_string(gameObject.guid) + " shares a sub-yard spawn cell with guid " +
+                std::to_string(other->second) + ".", SelKind::GameObject, gameObject.guid, position, true);
+        else
+            goCells[key] = gameObject.guid;
+    }
+
+    for (const CreatureFormationMember& formation : formations_)
+    {
+        if (npcGuids.find(formation.memberGuid) == npcGuids.end())
+            add(WorldValidationSeverity::Error, "Formation", "Formation member guid " + std::to_string(formation.memberGuid) + " is not loaded on this map.");
+        if (npcGuids.find(formation.leaderGuid) == npcGuids.end())
+            add(WorldValidationSeverity::Error, "Formation", "Formation leader guid " + std::to_string(formation.leaderGuid) + " is not loaded on this map.");
+        if (!std::isfinite(formation.distance) || formation.distance < 0.0f || !std::isfinite(formation.angle))
+            add(WorldValidationSeverity::Error, "Formation", "Formation member guid " + std::to_string(formation.memberGuid) + " has invalid distance/angle data.");
+    }
+
+    if (waypointDirty_)
+        add(WorldValidationSeverity::Warning, "Waypoint route", "The active waypoint route has unsaved local edits.");
+    if (waypointLoaded_ && waypointEdit_.points.size() < 2 && waypointEdit_.id != 0)
+        add(WorldValidationSeverity::Warning, "Waypoint route", "The active route has fewer than two points.");
+
+    for (const ScriptEventTrigger& trigger : scriptTriggersEdit_)
+    {
+        if (!trigger.enabled)
+            continue;
+        if (!std::isfinite(trigger.radius) || trigger.radius <= 0.0f)
+            add(WorldValidationSeverity::Error, "Script trigger", "Trigger " + std::to_string(trigger.id) + " has an invalid radius.");
+        if (trigger.type == ScriptTriggerType::Proximity && trigger.targetKind == ScriptTriggerObjectKind::None)
+            add(WorldValidationSeverity::Warning, "Script trigger", "Proximity trigger " + std::to_string(trigger.id) + " has no NPC/GameObject target.");
+        if (trigger.targetKind == ScriptTriggerObjectKind::Npc && trigger.targetGuid != 0 &&
+            npcGuids.find(trigger.targetGuid) == npcGuids.end())
+            add(WorldValidationSeverity::Warning, "Script trigger", "Trigger " + std::to_string(trigger.id) + " references a missing NPC guid " + std::to_string(trigger.targetGuid) + ".");
+        if (trigger.targetKind == ScriptTriggerObjectKind::GameObject && trigger.targetGuid != 0 &&
+            std::none_of(gameObjects.begin(), gameObjects.end(), [&](const MapGameObject& value) { return value.guid == trigger.targetGuid; }))
+            add(WorldValidationSeverity::Warning, "Script trigger", "Trigger " + std::to_string(trigger.id) + " references a missing GameObject guid " + std::to_string(trigger.targetGuid) + ".");
+        if (trigger.scriptHook.empty() && trigger.scriptEventId == 0 && trigger.smartActionListId == 0 && trigger.actions.empty())
+            add(WorldValidationSeverity::Warning, "Script trigger", "Trigger " + std::to_string(trigger.id) + " has no hook, event ID, SmartAI list, or action sequence.");
+    }
+
+    for (const WorldLight& light : lightingEdit_.lights)
+    {
+        if (!finitePosition(light.position) || !std::isfinite(light.range) || !std::isfinite(light.intensity) || light.range <= 0.0f)
+            add(WorldValidationSeverity::Error, "World light", "Light '" + light.name + "' has invalid position/range/intensity.",
+                SelKind::None, 0, light.position, true);
+        if (light.type == WorldLightType::Spot && glm::length(light.direction) < 1e-4f)
+            add(WorldValidationSeverity::Warning, "World light", "Spot light '" + light.name + "' has no usable direction.",
+                SelKind::None, 0, light.position, true);
+    }
+
+    int errors = 0;
+    int warnings = 0;
+    for (const WorldValidationIssue& issue : worldValidationIssues_)
+    {
+        if (issue.severity == WorldValidationSeverity::Error)
+            ++errors;
+        else if (issue.severity == WorldValidationSeverity::Warning)
+            ++warnings;
+    }
+    worldValidationStatus_ = "Validation complete: " + std::to_string(errors) + " error(s), " +
+                             std::to_string(warnings) + " warning(s), " +
+                             std::to_string(worldValidationIssues_.size()) + " finding(s).";
+}
+
+void AdtViewerModule::CopyWorldValidationReport() const
+{
+    std::ostringstream report;
+    report << "# TrinityCore Studio World Validation\n\n";
+    report << "Map: " << (loadedName_.empty() ? "<none>" : loadedName_) << "\n\n";
+    for (const WorldValidationIssue& issue : worldValidationIssues_)
+    {
+        const char* severity = issue.severity == WorldValidationSeverity::Error ? "ERROR" :
+                               issue.severity == WorldValidationSeverity::Warning ? "WARNING" : "INFO";
+        report << "- [" << severity << "] " << issue.category << ": " << issue.message;
+        if (issue.guid != 0)
+            report << " (guid " << issue.guid << ')';
+        report << '\n';
+    }
+    ImGui::SetClipboardText(report.str().c_str());
+}
+
+void AdtViewerModule::DrawWorldValidationPanel()
+{
+    if (!ImGui::Begin("World Validation"))
+    {
+        ImGui::End();
+        return;
+    }
+    if (!worldValidationHasRun_)
+        RunWorldValidation();
+
+    if (ImGui::Button("Run validation"))
+        RunWorldValidation();
+    ImGui::SameLine();
+    if (ImGui::Button("Copy Markdown report"))
+    {
+        CopyWorldValidationReport();
+        worldValidationStatus_ = "Copied validation report to the clipboard.";
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Show info", &worldValidationShowInfo_);
+    if (!worldValidationStatus_.empty())
+        ImGui::TextDisabled("%s", worldValidationStatus_.c_str());
+
+    int errors = 0;
+    int warnings = 0;
+    for (const WorldValidationIssue& issue : worldValidationIssues_)
+    {
+        errors += issue.severity == WorldValidationSeverity::Error ? 1 : 0;
+        warnings += issue.severity == WorldValidationSeverity::Warning ? 1 : 0;
+    }
+    ImGui::TextColored(errors ? ImVec4(1.0f, 0.35f, 0.30f, 1.0f) : ImVec4(0.35f, 0.88f, 0.55f, 1.0f),
+                       "%d error(s)", errors);
+    ImGui::SameLine();
+    ImGui::TextColored(warnings ? ImVec4(1.0f, 0.75f, 0.25f, 1.0f) : ImVec4(0.55f, 0.62f, 0.70f, 1.0f),
+                       "%d warning(s)", warnings);
+    ImGui::Separator();
+
+    if (ImGui::BeginChild("##worldvalidationissues", ImVec2(0, 0), true))
+    {
+        for (size_t index = 0; index < worldValidationIssues_.size(); ++index)
+        {
+            const WorldValidationIssue& issue = worldValidationIssues_[index];
+            if (!worldValidationShowInfo_ && issue.severity == WorldValidationSeverity::Info)
+                continue;
+            const char* severity = issue.severity == WorldValidationSeverity::Error ? "ERROR" :
+                                   issue.severity == WorldValidationSeverity::Warning ? "WARN" : "INFO";
+            const ImVec4 color = issue.severity == WorldValidationSeverity::Error ? ImVec4(1.0f, 0.35f, 0.30f, 1.0f) :
+                                 issue.severity == WorldValidationSeverity::Warning ? ImVec4(1.0f, 0.75f, 0.25f, 1.0f) :
+                                                                                       ImVec4(0.55f, 0.72f, 0.92f, 1.0f);
+            const std::string label = std::string("[") + severity + "] " + issue.category + " — " + issue.message;
+            ImGui::PushID(static_cast<int>(index));
+            if (ImGui::Selectable(label.c_str(), false))
+            {
+                if (issue.kind == SelKind::Npc)
+                    SelectObject(SelKind::Npc, 0, 0, issue.guid);
+                else if (issue.kind == SelKind::GameObject)
+                    SelectObject(SelKind::GameObject, 0, issue.guid, 0);
+                if (issue.hasWorld)
+                    FrameWorldPosition(issue.world, issue.kind == SelKind::Npc ? 35.0f : 55.0f);
+                if (svc_ && svc_->focusWindow)
+                    svc_->focusWindow("World Editor###ADT Viewer");
+            }
+            ImGui::SameLine();
+            ImGui::TextColored(color, "%s", severity);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Click to select/frame the referenced world item when available.");
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
     ImGui::End();
 }
 

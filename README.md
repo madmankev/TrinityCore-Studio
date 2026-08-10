@@ -132,6 +132,10 @@ turn on **Edit**:
   clipboard manifests, and a camera-aware cast/projectile/impact fallback. Script Trigger `CastSpell`
   actions invoke the same preview; it remains Studio visualization until matching SmartAI or custom
   server wiring executes actual gameplay.
+- **World Validation**: a docked non-destructive validation report inspects map/project readiness,
+  pending ADT writes, display IDs, invalid coordinates/scales/quaternions, waypoint bindings,
+  overlapping spawn cells, formations, trigger targets/hooks, and point/spot-light data. Findings
+  are severity-filtered, selectable to frame a referenced world object, and exportable as Markdown.
 - **Refreshed workspace UI**: a project-aware command bar, grouped/searchable editor navigation,
   Ctrl+P command palette, responsive project cards, and a three-column navigation/canvas/inspector
   default layout. The World Editor automatically places catalogs left, live map center, inspectors
