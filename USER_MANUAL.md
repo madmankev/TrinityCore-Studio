@@ -127,11 +127,17 @@ authoring/simulation aid, not a misleading promise of automatic server support.
 
 ## 8. Spell Effect Previewer
 
-Open **Spells → Spell Effect Previewer**. Search/select a spell; inspect range,
-cast/cooldown/mana/target data; set target/caster/time/weather; then Play, Pause,
-Stop, Loop, or scrub the timeline. The panel emits particle/sound timeline events
-for the renderer and supports saved effect configurations. Runtime DBC/M2 effect
-availability depends on configured client data.
+Open **Spells → Spell Effect Previewer**. Search/select a spell; inspect the real
+available `Spell.dbc` range, cast/cooldown, mana, projectile speed, `SpellVisual`,
+and effect IDs; set target/caster/time/weather; then Play, Pause, Stop, Loop, or
+scrub the timeline. The viewport renders a camera-aware cast ring, ballistic
+projectile trail, and impact/sustain volume in real time, including in In-game view.
+A `CastSpell` action in Script Triggers launches the same preview. It is deliberately
+a procedural authoring fallback, not a false assertion that every historic
+`SpellVisual` has a portable M2/particle/sound mapping; actual client effect assets
+and real server casts still depend on configured client data and SmartAI/custom
+server wiring. Use **Copy preview manifest** to transfer the selected IDs/timing to
+an integration module.
 
 ## 9. World chunk copy/paste
 

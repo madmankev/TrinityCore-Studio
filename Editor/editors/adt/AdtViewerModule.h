@@ -57,6 +57,7 @@ public:
                 {"GameObject Instance", DockSlot::Right, true},
                 {"Light Editor", DockSlot::Right, true},
                 {"Realtime Preview", DockSlot::Right, true},
+                {"Spell Effect Previewer", DockSlot::Right, true},
                 {"Waypoint Path", DockSlot::Bottom, true},
                 {"Terrain Sculpt", DockSlot::Bottom, true},
                 {"World Editor###ADT Viewer", DockSlot::Center, true}};
@@ -92,6 +93,13 @@ private:
     void DrawLightEditorPanel();
     void DrawRealtimePreviewPanel();
     void UpdateRealtimePreview(float dtSeconds);
+    void DrawSpellEffectPreviewerPanel();
+    void LoadSpellPreviewDefinition(uint32_t spellId);
+    void UpdateSpellEffectPreview(float dtSeconds);
+    void DrawSpellEffectOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
+                                int w, int h, const glm::vec3& cameraWorld);
+    glm::vec3 ResolveSpellPreviewTarget(const glm::vec3& cameraWorld, const glm::vec3& cameraForward);
+    float SpellPreviewDuration() const;
     void DrawViewportPanel();
     void DrawStatsOverlay(const ImVec2& p0, const ImGuiIO& io);
     void OpenMapDir(const std::string& dir, bool frameCamera);
@@ -228,6 +236,37 @@ private:
         uint64_t triggerId = 0;
         ScriptTriggerAction action;
         float remainingSeconds = 0.0f;
+    };
+    // The preview reads real Spell.dbc timing/range/mana fields when client data
+    // is available. Its procedural cast/projectile/impact overlay is intentionally
+    // distinct from a claim that every historic SpellVisual has a portable M2 mapping.
+    enum class SpellPreviewTargetSource : uint8_t { CameraForward, SelectedObject, ScriptPreviewPlayer };
+    struct SpellPreviewDefinition
+    {
+        uint32_t id = 133;
+        std::string name = "Fireball";
+        float rangeYards = 35.0f;
+        float castTimeSeconds = 1.5f;
+        float cooldownSeconds = 8.0f;
+        float manaCost = 150.0f;
+        float durationSeconds = 0.0f;
+        float projectileSpeed = 20.0f;
+        uint32_t visualId = 0;
+        uint32_t iconId = 0;
+        uint32_t effectIds[3] = {0, 0, 0};
+    };
+    struct SpellPreviewState
+    {
+        SpellPreviewDefinition definition;
+        bool playing = false;
+        bool loop = false;
+        bool showOverlay = true;
+        float timelineSeconds = 0.0f;
+        float playbackSpeed = 1.0f;
+        SpellPreviewTargetSource targetSource = SpellPreviewTargetSource::CameraForward;
+        int weather = 0; // Clear/Rain/Snow/Fog/Storm visual tint preset
+        char search[128] = {0};
+        std::string status;
     };
     // WoWEdit-style Studio light authoring. WotLK ADTs do not carry standalone editable
     // point/spot-light records, so these are deliberately a Studio settings layer: non-destructive,
@@ -556,6 +595,11 @@ private:
     float scriptPreviewTimeSeconds_ = 0.0f;
     char scriptTriggerSearch_[128] = {0};
     std::string scriptTriggerStatus_;
+
+    // Spell effect preview state is session/settings data. It stays independent
+    // from Script Trigger metadata: the former visualizes timing in-world, while
+    // triggers may reference the selected numeric spell id for server wiring.
+    SpellPreviewState spellPreview_;
 
     // Reusable terrain-click placement palette. Unlike the one-shot context menu, a palette entry
     // stays armed for rapid map dressing and keeps an inexpensive spacing guard for the session.

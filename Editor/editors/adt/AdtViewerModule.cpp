@@ -1,6 +1,7 @@
 // AdtViewerModule — see AdtViewerModule.h.
 
 #include "editors/adt/AdtViewerModule.h"
+#include "editors/spell/SpellSchema.h"
 
 #include <algorithm>
 #include <cctype>
@@ -13,6 +14,7 @@
 #include "imgui.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include "app/EditorServices.h"
@@ -127,6 +129,10 @@ void AdtViewerModule::OnClientDataLoaded()
     scriptInteractionMode_ = false;
     scriptPreviewPlayerWorld_ = glm::vec3(0.0f);
     lightMarkers_.clear();
+    // Re-resolve the selected spell after the new client DBC set is open. This
+    // preserves the user's preview choice while replacing safe defaults with the
+    // actual WotLK cast/range/duration fields.
+    LoadSpellPreviewDefinition(spellPreview_.definition.id);
     outlinerDirty_ = true;
 }
 
@@ -267,7 +273,9 @@ void AdtViewerModule::DrawMainMenuExtensions()
 
     if (ImGui::BeginMenu("Spells"))
     {
-        if (ImGui::MenuItem("Spell Effect Previewer / Spell Editor..."))
+        if (ImGui::MenuItem("Spell Effect Previewer..."))
+            focus("Spell Effect Previewer");
+        if (ImGui::MenuItem("Open Spell Editor..."))
         {
             // The spell module owns live Spell.dbc/world DB definitions; the World
             // Editor's Script Trigger action sequence can then reference its spell ID.
@@ -329,6 +337,10 @@ const char* AdtViewerModule::WorldLightTypeName(WorldLightType type)
 
 void AdtViewerModule::UpdateRealtimePreview(float dtSeconds)
 {
+    // Spell effects share the same simulation pause/speed discipline as NPCs,
+    // transports, particles and liquid frames, even when the day/night clock is off.
+    UpdateSpellEffectPreview(dtSeconds);
+
     if (!lightingEdit_.dayNightCycle || !lightingEdit_.dayNightPlaying)
     {
         runtimeTimeOfDay_ = lightingEdit_.timeOfDayMinutes;
@@ -343,6 +355,260 @@ void AdtViewerModule::UpdateRealtimePreview(float dtSeconds)
     if (runtimeTimeOfDay_ < 0.0f)
         runtimeTimeOfDay_ += 1440.0f;
 }
+
+float AdtViewerModule::SpellPreviewDuration() const
+{
+    const SpellPreviewDefinition& spell = spellPreview_.definition;
+    const float cast = std::max(0.0f, spell.castTimeSeconds);
+    const float travel = std::clamp(spell.rangeYards / std::max(spell.projectileSpeed, 1.0f), 0.15f, 8.0f);
+    // A duration aura/channel is represented by a sustained impact ring; instant
+    // casts still retain a short visible impact tail for practical scrubbing.
+    return std::max(0.4f, cast + travel + std::max(0.75f, spell.durationSeconds));
+}
+
+void AdtViewerModule::UpdateSpellEffectPreview(float dtSeconds)
+{
+    if (!spellPreview_.playing || worldSimulationPaused_)
+        return;
+    const float dt = std::clamp(dtSeconds, 0.0f, 0.10f) *
+                     std::clamp(worldSimulationSpeed_ * spellPreview_.playbackSpeed, 0.05f, 16.0f);
+    spellPreview_.timelineSeconds += dt;
+    const float duration = SpellPreviewDuration();
+    if (spellPreview_.timelineSeconds < duration)
+        return;
+    if (spellPreview_.loop && duration > 1e-4f)
+        spellPreview_.timelineSeconds = std::fmod(spellPreview_.timelineSeconds, duration);
+    else
+    {
+        spellPreview_.timelineSeconds = duration;
+        spellPreview_.playing = false;
+    }
+}
+
+void AdtViewerModule::LoadSpellPreviewDefinition(uint32_t spellId)
+{
+    SpellPreviewDefinition definition;
+    definition.id = spellId;
+    definition.name = svc_ && svc_->lookups ? svc_->lookups->NameOfSpell(spellId) : std::string();
+    if (definition.name.empty())
+        definition.name = "Spell " + std::to_string(spellId);
+
+    if (svc_ && svc_->clientData && svc_->clientData->IsOpen())
+    {
+        Dbc spellDbc;
+        if (spellDbc.Load(svc_->clientData->ReadFile("DBFilesClient\\Spell.dbc")))
+        {
+            for (uint32_t row = 0; row < spellDbc.RecordCount(); ++row)
+            {
+                if (spellDbc.GetUInt(row, spell::Id) != spellId)
+                    continue;
+                const std::string name = spellDbc.GetString(row, spell::SpellName);
+                if (!name.empty())
+                    definition.name = name;
+                definition.manaCost = static_cast<float>(spellDbc.GetUInt(row, spell::ManaCost));
+                definition.cooldownSeconds = static_cast<float>(spellDbc.GetUInt(row, spell::RecoveryTime)) / 1000.0f;
+                const float dbcSpeed = spellDbc.GetFloat(row, spell::Speed);
+                // Instant/no-missile spells store zero speed. Keep the generated
+                // preview responsive with a sensible default rather than making a
+                // 35-yard test trajectory take tens of seconds.
+                definition.projectileSpeed = dbcSpeed > 0.1f ? dbcSpeed : 30.0f;
+                definition.visualId = spellDbc.GetUInt(row, spell::SpellVisual);
+                definition.iconId = spellDbc.GetUInt(row, spell::SpellIconID);
+                for (int effect = 0; effect < 3; ++effect)
+                    definition.effectIds[effect] = spellDbc.GetUInt(row, spell::Effect + static_cast<uint32_t>(effect));
+
+                const uint32_t castIndex = spellDbc.GetUInt(row, spell::CastingTimeIndex);
+                const uint32_t durationIndex = spellDbc.GetUInt(row, spell::DurationIndex);
+                const uint32_t rangeIndex = spellDbc.GetUInt(row, spell::RangeIndex);
+                auto lookupMilliseconds = [&](const char* path, uint32_t index) {
+                    if (index == 0)
+                        return 0.0f;
+                    Dbc dbc;
+                    if (!dbc.Load(svc_->clientData->ReadFile(path)))
+                        return 0.0f;
+                    for (uint32_t i = 0; i < dbc.RecordCount(); ++i)
+                        if (dbc.GetUInt(i, 0) == index)
+                        {
+                            // SpellDuration uses signed milliseconds; -1 means an
+                            // indefinite aura and must not become a 49-day preview.
+                            const int32_t milliseconds = static_cast<int32_t>(dbc.GetUInt(i, 1));
+                            return milliseconds > 0
+                                ? std::clamp(static_cast<float>(milliseconds) / 1000.0f, 0.0f, 3600.0f)
+                                : 0.0f;
+                        }
+                    return 0.0f;
+                };
+                definition.castTimeSeconds = lookupMilliseconds("DBFilesClient\\SpellCastTimes.dbc", castIndex);
+                definition.durationSeconds = lookupMilliseconds("DBFilesClient\\SpellDuration.dbc", durationIndex);
+                if (rangeIndex != 0)
+                {
+                    Dbc rangeDbc;
+                    if (rangeDbc.Load(svc_->clientData->ReadFile("DBFilesClient\\SpellRange.dbc")))
+                        for (uint32_t i = 0; i < rangeDbc.RecordCount(); ++i)
+                            if (rangeDbc.GetUInt(i, 0) == rangeIndex)
+                            {
+                                definition.rangeYards = std::max(1.0f, rangeDbc.GetFloat(i, 3));
+                                break;
+                            }
+                }
+                break;
+            }
+        }
+    }
+
+    spellPreview_.definition = std::move(definition);
+    spellPreview_.timelineSeconds = 0.0f;
+    spellPreview_.playing = false;
+    spellPreview_.status = "Loaded " + spellPreview_.definition.name + " (#" +
+                           std::to_string(spellPreview_.definition.id) + ").";
+}
+
+glm::vec3 AdtViewerModule::ResolveSpellPreviewTarget(const glm::vec3& cameraWorld,
+                                                      const glm::vec3& cameraForward)
+{
+    if (spellPreview_.targetSource == SpellPreviewTargetSource::ScriptPreviewPlayer &&
+        scriptPreviewPlayerEnabled_)
+        return scriptPreviewPlayerWorld_;
+
+    if (spellPreview_.targetSource == SpellPreviewTargetSource::SelectedObject)
+    {
+        if (selKind_ == SelKind::Npc)
+        {
+            if (const MapSpawn* npc = npcLayer_.FindSpawn(selGuid_))
+                return glm::vec3(npc->x, npc->y, npc->z);
+        }
+        else if (selKind_ == SelKind::GameObject)
+        {
+            if (MapGameObject* gameObject = goLayer_.FindSpawn(selGuid_))
+                return glm::vec3(gameObject->x, gameObject->y, gameObject->z);
+        }
+        else if (selKind_ == SelKind::Doodad)
+        {
+            const AdtXform selected = CaptureSelection();
+            if (selected.kind == SelKind::Doodad)
+                return glm::vec3(selected.local[3]) + streamer_.origin();
+        }
+    }
+
+    return cameraWorld + cameraForward * std::max(1.0f, spellPreview_.definition.rangeYards);
+}
+
+void AdtViewerModule::DrawSpellEffectOverlay(const glm::mat4& view, const glm::mat4& proj,
+                                             const ImVec2& p0, int w, int h,
+                                             const glm::vec3& cameraWorld)
+{
+    if (!spellPreview_.showOverlay || (!spellPreview_.playing && spellPreview_.timelineSeconds <= 0.0f))
+        return;
+
+    const glm::mat4 inverseView = glm::inverse(view);
+    glm::vec3 cameraForward = -glm::vec3(inverseView[2]);
+    if (glm::length(cameraForward) < 1e-5f)
+        cameraForward = glm::vec3(1.0f, 0.0f, 0.0f);
+    else
+        cameraForward = glm::normalize(cameraForward);
+    const glm::vec3 caster = cameraWorld;
+    const glm::vec3 target = ResolveSpellPreviewTarget(cameraWorld, cameraForward);
+    const float distance = glm::length(target - caster);
+    const float cast = std::max(0.0f, spellPreview_.definition.castTimeSeconds);
+    const float travel = std::clamp(distance / std::max(spellPreview_.definition.projectileSpeed, 1.0f), 0.15f, 8.0f);
+    const float impactAt = cast + travel;
+    const float t = std::clamp(spellPreview_.timelineSeconds, 0.0f, SpellPreviewDuration());
+
+    ImVec4 baseColor(1.0f, 0.34f, 0.08f, 1.0f); // warm fire-like neutral preview color
+    switch (spellPreview_.weather)
+    {
+    case 1: baseColor = ImVec4(0.34f, 0.62f, 1.0f, 1.0f); break; // Rain / frost-blue readability
+    case 2: baseColor = ImVec4(0.78f, 0.90f, 1.0f, 1.0f); break;
+    case 3: baseColor = ImVec4(0.72f, 0.62f, 0.94f, 1.0f); break;
+    case 4: baseColor = ImVec4(0.96f, 0.72f, 0.18f, 1.0f); break;
+    default: break;
+    }
+    const auto color = [&](float alpha, float brightness = 1.0f) {
+        return IM_COL32(std::clamp(static_cast<int>(baseColor.x * brightness * 255.0f), 0, 255),
+                        std::clamp(static_cast<int>(baseColor.y * brightness * 255.0f), 0, 255),
+                        std::clamp(static_cast<int>(baseColor.z * brightness * 255.0f), 0, 255),
+                        std::clamp(static_cast<int>(alpha * 255.0f), 0, 255));
+    };
+    const glm::vec3 origin = streamer_.origin();
+    const auto project = [&](const glm::vec3& world, ImVec2& screen) {
+        return ProjectWorldPoint(world, origin, view, proj, p0, w, h, screen);
+    };
+    const auto ring = [&](const glm::vec3& center, float radius, ImU32 ringColor, float thickness) {
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        ImVec2 previous;
+        bool havePrevious = false;
+        constexpr int segments = 40;
+        for (int i = 0; i <= segments; ++i)
+        {
+            const float angle = static_cast<float>(i) / static_cast<float>(segments) * glm::two_pi<float>();
+            ImVec2 current;
+            if (project(center + glm::vec3(std::cos(angle) * radius, std::sin(angle) * radius, 0.0f), current))
+            {
+                if (havePrevious)
+                    draw->AddLine(previous, current, ringColor, thickness);
+                previous = current;
+                havePrevious = true;
+            }
+            else
+                havePrevious = false;
+        }
+    };
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    if (t < cast)
+    {
+        const float phase = cast > 1e-5f ? t / cast : 1.0f;
+        const float radius = 0.6f + phase * 1.7f;
+        ring(caster, radius, color(0.75f, 0.85f + 0.15f * std::sin(t * 12.0f)), 2.0f);
+        ImVec2 casterScreen;
+        if (project(caster, casterScreen))
+            draw->AddCircleFilled(casterScreen, 5.0f + phase * 7.0f, color(0.32f), 20);
+    }
+    else if (t < impactAt)
+    {
+        const float phase = travel > 1e-5f ? (t - cast) / travel : 1.0f;
+        glm::vec3 projectile = glm::mix(caster, target, phase);
+        projectile.z += std::sin(phase * glm::pi<float>()) * std::min(8.0f, distance * 0.12f);
+        ImVec2 current;
+        if (project(projectile, current))
+        {
+            for (int trail = 1; trail <= 7; ++trail)
+            {
+                const float earlier = std::max(0.0f, phase - static_cast<float>(trail) * 0.05f);
+                glm::vec3 trailing = glm::mix(caster, target, earlier);
+                trailing.z += std::sin(earlier * glm::pi<float>()) * std::min(8.0f, distance * 0.12f);
+                ImVec2 prior;
+                if (project(trailing, prior))
+                    draw->AddLine(prior, current, color(0.54f / static_cast<float>(trail), 0.9f),
+                                  std::max(1.0f, 4.0f - static_cast<float>(trail) * 0.4f));
+            }
+            draw->AddCircleFilled(current, 7.0f, color(0.96f, 1.3f), 20);
+            draw->AddCircle(current, 11.0f, color(0.72f), 20, 2.0f);
+        }
+    }
+    else
+    {
+        const float age = t - impactAt;
+        const float sustain = std::max(0.75f, spellPreview_.definition.durationSeconds);
+        const float fade = 1.0f - std::clamp(age / sustain, 0.0f, 1.0f);
+        ring(target, 1.0f + age * 7.0f, color(0.85f * fade, 1.2f), 2.6f);
+        ring(target, 2.0f + age * 3.0f, color(0.35f * fade, 0.8f), 1.2f);
+        ImVec2 targetScreen;
+        if (project(target, targetScreen))
+        {
+            draw->AddCircleFilled(targetScreen, 14.0f * fade + 3.0f, color(0.28f * fade, 1.4f), 24);
+            for (int ray = 0; ray < 10; ++ray)
+            {
+                const float angle = static_cast<float>(ray) * glm::two_pi<float>() / 10.0f + age * 2.0f;
+                draw->AddLine(targetScreen,
+                              ImVec2(targetScreen.x + std::cos(angle) * (16.0f + age * 18.0f),
+                                     targetScreen.y + std::sin(angle) * (16.0f + age * 18.0f)),
+                              color(0.72f * fade, 1.3f), 1.5f);
+            }
+        }
+    }
+}
+
 
 void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
 {
@@ -383,6 +649,7 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
     worldSimulationSpeed_ = 1.0f;
     inGameViewMode_ = false;
     liveTerrainPreview_ = true;
+    spellPreview_ = SpellPreviewState{};
 
     auto finite = [](float value, float fallback) {
         return std::isfinite(value) ? value : fallback;
@@ -427,6 +694,18 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
                                                 0.05f, 8.0f);
             inGameViewMode_ = preview.value("inGameView", false);
             liveTerrainPreview_ = preview.value("liveTerrainPreview", true);
+        }
+        if (editorNode.contains("spellEffectPreview") && editorNode["spellEffectPreview"].is_object())
+        {
+            const nlohmann::json& preview = editorNode["spellEffectPreview"];
+            const uint32_t id = preview.value("spellId", spellPreview_.definition.id);
+            LoadSpellPreviewDefinition(id);
+            spellPreview_.loop = preview.value("loop", false);
+            spellPreview_.showOverlay = preview.value("showOverlay", true);
+            spellPreview_.playbackSpeed = std::clamp(finite(preview.value("playbackSpeed", 1.0f), 1.0f), 0.05f, 8.0f);
+            spellPreview_.targetSource = static_cast<SpellPreviewTargetSource>(
+                std::clamp(preview.value("targetSource", 0), 0, 2));
+            spellPreview_.weather = std::clamp(preview.value("weather", 0), 0, 4);
         }
         if (editorNode.contains("aiBehavior") && editorNode["aiBehavior"].is_object())
         {
@@ -667,6 +946,13 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
                                    {"simulationSpeed", worldSimulationSpeed_},
                                    {"inGameView", inGameViewMode_},
                                    {"liveTerrainPreview", liveTerrainPreview_}};
+
+    editorNode["spellEffectPreview"] = {{"spellId", spellPreview_.definition.id},
+                                          {"loop", spellPreview_.loop},
+                                          {"showOverlay", spellPreview_.showOverlay},
+                                          {"playbackSpeed", spellPreview_.playbackSpeed},
+                                          {"targetSource", static_cast<int>(spellPreview_.targetSource)},
+                                          {"weather", spellPreview_.weather}};
 
     nlohmann::json behaviorProfiles = nlohmann::json::array();
     std::vector<std::string> behaviorMaps;
@@ -922,6 +1208,7 @@ void AdtViewerModule::DrawPanels()
     DrawTerrainSculptPanel();
     DrawLightEditorPanel();
     DrawRealtimePreviewPanel();
+    DrawSpellEffectPreviewerPanel();
     DrawViewportPanel();
 }
 
@@ -3051,6 +3338,19 @@ void AdtViewerModule::ExecuteScriptTriggerAction(uint64_t triggerId, const Scrip
     else
         detail += " " + std::to_string(action.value);
 
+    // A CastSpell sequence action now drives the same timing/trajectory preview as the Spell
+    // Effect Previewer panel. This remains a Studio visualization; server execution still needs
+    // the authored SmartAI/custom hook path represented by the trigger metadata.
+    if (action.type == ScriptTriggerActionType::CastSpell && action.value != 0)
+    {
+        LoadSpellPreviewDefinition(action.value);
+        spellPreview_.targetSource = scriptPreviewPlayerEnabled_
+            ? SpellPreviewTargetSource::ScriptPreviewPlayer : SpellPreviewTargetSource::SelectedObject;
+        spellPreview_.timelineSeconds = 0.0f;
+        spellPreview_.playing = true;
+        detail += " (World Editor VFX preview started)";
+    }
+
     // A GameObject state flip is the one sequence action that has a useful immediate world-side
     // preview; it remains session-only until a normal GameObject Instance save is requested.
     if (action.type == ScriptTriggerActionType::ToggleGameObject && action.value != 0)
@@ -4081,6 +4381,10 @@ void AdtViewerModule::DrawViewportPanel()
         DrawNpcMarkerOverlay();
         DrawTerrainBrushOverlay(view, proj, p0, w, h, hovered);
     }
+
+    // Spell VFX is a world-preview element rather than an editor helper, so it deliberately
+    // remains visible in the clean in-game view while selection/route/light overlays are hidden.
+    DrawSpellEffectOverlay(view, proj, p0, w, h, eye + streamer_.origin());
 
     // Transform gizmo: drawn ON TOP of the blitted image, on THIS window's draw list, with the SAME
     // view/proj the scene was rendered with (so it stays locked to the model). Runs before the camera
@@ -5117,6 +5421,143 @@ void AdtViewerModule::DrawRealtimePreviewPanel()
 }
 
 
+void AdtViewerModule::DrawSpellEffectPreviewerPanel()
+{
+    if (!ImGui::Begin("Spell Effect Previewer"))
+    {
+        ImGui::End();
+        return;
+    }
+
+    SpellPreviewState& preview = spellPreview_;
+    ImGui::TextDisabled("Spell.dbc timing + in-world cast / projectile / impact preview");
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##spellpreviewsearch", "Search spells by name or ID", preview.search, sizeof(preview.search));
+    if (svc_ && svc_->lookups && svc_->lookups->SpellsLoaded())
+    {
+        ImGui::BeginChild("##spellpreviewresults", ImVec2(0, 120.0f), true);
+        const std::vector<NameEntry> results = svc_->lookups->SearchSpells(preview.search, 100);
+        for (const NameEntry& entry : results)
+        {
+            const std::string label = std::to_string(entry.id) + "  " + entry.name;
+            if (ImGui::Selectable(label.c_str(), entry.id == preview.definition.id))
+                LoadSpellPreviewDefinition(entry.id);
+        }
+        if (results.empty())
+            ImGui::TextDisabled("No matching loaded spell names.");
+        ImGui::EndChild();
+    }
+    else
+        ImGui::TextDisabled("Load WoW client data to browse spell names; an ID can still be previewed with safe defaults.");
+
+    uint32_t spellId = preview.definition.id;
+    if (InputU32("Spell ID", spellId))
+        LoadSpellPreviewDefinition(spellId);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reload DBC fields"))
+        LoadSpellPreviewDefinition(preview.definition.id);
+
+    const SpellPreviewDefinition& spell = preview.definition;
+    const std::string selectedLabel = "Selected: " + spell.name;
+    ImGui::SeparatorText(selectedLabel.c_str());
+    if (BeginFieldTable("spellpreviewprops", 116.0f))
+    {
+        FieldRow("Range"); ImGui::Text("%.1f yards", spell.rangeYards);
+        FieldRow("Cast time"); ImGui::Text("%.2f seconds", spell.castTimeSeconds);
+        FieldRow("Cooldown"); ImGui::Text("%.2f seconds", spell.cooldownSeconds);
+        FieldRow("Mana cost"); ImGui::Text("%.0f", spell.manaCost);
+        FieldRow("Projectile speed"); ImGui::Text("%.1f yards/sec", spell.projectileSpeed);
+        FieldRow("SpellVisual"); ImGui::Text("%u", spell.visualId);
+        FieldRow("Effects"); ImGui::Text("%u, %u, %u", spell.effectIds[0], spell.effectIds[1], spell.effectIds[2]);
+        ImGui::EndTable();
+    }
+
+    const bool atEnd = preview.timelineSeconds >= SpellPreviewDuration() - 1e-4f;
+    if (ImGui::Button(preview.playing ? "Pause" : "Play Effect"))
+    {
+        if (preview.playing)
+            preview.playing = false;
+        else
+        {
+            if (atEnd)
+                preview.timelineSeconds = 0.0f;
+            preview.playing = true;
+            inGameViewMode_ = false; // retain an authoring-visible result while playing from the panel
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Stop"))
+    {
+        preview.playing = false;
+        preview.timelineSeconds = 0.0f;
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Loop", &preview.loop);
+    ImGui::SameLine();
+    ImGui::Checkbox("Show in world", &preview.showOverlay);
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::SliderFloat("Playback speed", &preview.playbackSpeed, 0.1f, 4.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
+
+    ImGui::SeparatorText("Preview settings");
+    static const char* kTargets[] = {"Camera forward", "Selected NPC / GameObject / doodad", "Script preview player"};
+    int target = static_cast<int>(preview.targetSource);
+    if (ImGui::Combo("Target", &target, kTargets, IM_ARRAYSIZE(kTargets)))
+        preview.targetSource = static_cast<SpellPreviewTargetSource>(std::clamp(target, 0, 2));
+    ImGui::TextDisabled("Caster: camera position");
+    if (preview.targetSource == SpellPreviewTargetSource::SelectedObject && selKind_ == SelKind::None)
+        ImGui::TextColored(ImVec4(1.0f, 0.69f, 0.25f, 1.0f), "Select an NPC, GameObject, or placement; camera-forward is used until then.");
+    if (preview.targetSource == SpellPreviewTargetSource::ScriptPreviewPlayer && !scriptPreviewPlayerEnabled_)
+        ImGui::TextColored(ImVec4(1.0f, 0.69f, 0.25f, 1.0f), "Place/enable the Script Trigger preview player; camera-forward is used until then.");
+
+    static const char* kWeather[] = {"Clear", "Rain", "Snow", "Fog", "Storm"};
+    ImGui::Combo("Weather tint", &preview.weather, kWeather, IM_ARRAYSIZE(kWeather));
+    const char* timeLabel = runtimeTimeOfDay_ < 360.0f ? "Night" : runtimeTimeOfDay_ < 600.0f ? "Dawn" :
+                            runtimeTimeOfDay_ < 960.0f ? "Noon" : runtimeTimeOfDay_ < 1200.0f ? "Dusk" : "Night";
+    ImGui::Text("Time of day: %s", timeLabel);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Use noon"))
+    {
+        runtimeTimeOfDay_ = lightingEdit_.timeOfDayMinutes = 720.0f;
+        lightingEdit_.dayNightPlaying = false;
+        MarkLightingDirty("Spell preview set the world time to noon. Save lighting to persist it.");
+    }
+
+    ImGui::SeparatorText("Effect timeline");
+    const float duration = SpellPreviewDuration();
+    float timeline = preview.timelineSeconds;
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::SliderFloat("##spellpreviewtimeline", &timeline, 0.0f, duration, "%.2f s"))
+    {
+        preview.timelineSeconds = std::clamp(timeline, 0.0f, duration);
+        preview.playing = false;
+    }
+    const float castEnd = std::min(std::max(spell.castTimeSeconds, 0.0f), duration);
+    const float flightEnd = std::min(castEnd + std::clamp(spell.rangeYards / std::max(spell.projectileSpeed, 1.0f), 0.15f, 8.0f), duration);
+    ImGui::TextDisabled("| Cast 0–%.2fs | Projectile %.2f–%.2fs | Impact / sustain %.2f–%.2fs |",
+                        castEnd, castEnd, flightEnd, flightEnd, duration);
+
+    if (ImGui::Button("Copy preview manifest"))
+    {
+        const nlohmann::json manifest = {
+            {"spellId", spell.id}, {"name", spell.name}, {"rangeYards", spell.rangeYards},
+            {"castTimeSeconds", spell.castTimeSeconds}, {"cooldownSeconds", spell.cooldownSeconds},
+            {"manaCost", spell.manaCost}, {"spellVisualId", spell.visualId},
+            {"effectIds", {spell.effectIds[0], spell.effectIds[1], spell.effectIds[2]}},
+            {"target", static_cast<int>(preview.targetSource)}, {"weatherTint", preview.weather}
+        };
+        ImGui::SetClipboardText(manifest.dump(2).c_str());
+        preview.status = "Copied spell preview manifest to the clipboard.";
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Edit particles / sounds"))
+        preview.status = "SpellVisual data is read from Spell.dbc; this preview currently renders a procedural timing fallback when a portable particle mapping is unavailable.";
+
+    if (!preview.status.empty())
+        ImGui::TextDisabled("%s", preview.status.c_str());
+    ImGui::Separator();
+    ImGui::TextWrapped("The World Editor renders the cast, ballistic projectile trail, and impact/sustain volume live over the map using real Spell.dbc cast time, range, cooldown, mana, speed, visual, and effect fields when available. It is a Studio-side timing/placement preview. A stock 3.3.5 server does not execute this visual solely because it appears here; use the selected spell ID in SmartAI/custom script wiring for gameplay.");
+    ImGui::End();
+}
 
 void AdtViewerModule::DrawLightEditorPanel()
 {

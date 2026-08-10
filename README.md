@@ -122,11 +122,16 @@ turn on **Edit**:
 
 ### Shared features
 
-- **World-editor command menus**: when World Editor is active, the main menu now exposes direct
+- **World-editor command menus**: when World Editor is active, the main menu exposes direct
   **Terrain**, **Objects**, **Creatures**, **Quest**, **Spells**, **Tools**, and **Window** commands.
   They arm the existing terrain/gizmo/preview-player workflows, persist pending ADT edits through the
   same atomic path as the viewport toolbar, focus the appropriate dock panel, or switch to the
-  real Quest/Spell editor rather than presenting dead menu entries.
+  real Quest/Spell editor rather than presenting dead menu entries. **Spells → Spell Effect Previewer**
+  opens an in-world timing tool that reads available `Spell.dbc` cast/range/cooldown/mana/speed/
+  SpellVisual/effect fields, supports search, play/pause/stop/loop/scrub, target/weather choices,
+  clipboard manifests, and a camera-aware cast/projectile/impact fallback. Script Trigger `CastSpell`
+  actions invoke the same preview; it remains Studio visualization until matching SmartAI or custom
+  server wiring executes actual gameplay.
 - **Refreshed workspace UI**: a project-aware command bar, grouped/searchable editor navigation,
   Ctrl+P command palette, responsive project cards, and a three-column navigation/canvas/inspector
   default layout. The World Editor automatically places catalogs left, live map center, inspectors
