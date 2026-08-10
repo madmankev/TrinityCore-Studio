@@ -1,0 +1,10 @@
+{
+  "autosaveMinutes": 5,
+  "undoHistory": 1000,
+  "renderer": "Vulkan",
+  "theme": "Dark",
+  "gridSize": 1.0,
+  "snapToGround": true,
+  "showStatistics": true,
+  "recentProjects": []
+}

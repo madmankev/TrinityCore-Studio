@@ -1,0 +1,16 @@
+{
+  "file.save": "Ctrl+S",
+  "file.open_map": "Ctrl+O",
+  "edit.undo": "Ctrl+Z",
+  "edit.redo": "Ctrl+Y",
+  "objects.select": "Q",
+  "objects.move": "W",
+  "objects.rotate": "E",
+  "objects.scale": "R",
+  "terrain.raise_lower": "T",
+  "terrain.smooth": "S",
+  "terrain.flatten": "L",
+  "texture.paint": "P",
+  "view.grid": "G",
+  "view.fullscreen": "F11"
+}

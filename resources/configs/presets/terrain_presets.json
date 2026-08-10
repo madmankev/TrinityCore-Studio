@@ -1,0 +1,8 @@
+{
+  "presets": [
+    {"name":"Island","tool":"Noise","frequency":0.05,"amplitude":18.0,"octaves":4},
+    {"name":"Canyon","tool":"Stamp","shape":"ridge","strength":12.0},
+    {"name":"Mountain Range","tool":"Noise","frequency":0.025,"amplitude":42.0,"octaves":6},
+    {"name":"Crater","tool":"Stamp","shape":"crater","strength":-10.0}
+  ]
+}

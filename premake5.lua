@@ -30,6 +30,10 @@ local DATA_INCLUDES = {
     "DataEngine",
     "third_party/StormLib/src", "third_party/mysql/include", "third_party/json", "third_party/glm",
 }
+local WOWEDIT_INCLUDES = {
+    "WowEdit",
+    "third_party/json", "third_party/glm", "third_party/StormLib/src/zlib",
+}
 local RENDER_INCLUDES = {
     "DataEngine", "RenderEngine",
     "third_party/StormLib/src", "third_party/mysql/include", "third_party/json", "third_party/glm",
@@ -130,6 +134,20 @@ project "DataEngine"
 
     links { "StormLib" }
 
+-- WowEditCore: portable C++17 document/editor foundation. It deliberately stays GPU/UI
+-- backend neutral so CMake/CTest can exercise terrain, objects, commands, project I/O,
+-- menus, plugins, and scripting on Windows, Linux, and macOS. The ImGui/Vulkan Studio host
+-- links it as a dependency while continuing to own client-data and live-core rendering.
+project "WowEditCore"
+    kind "StaticLib"
+    applyCommon(WOWEDIT_INCLUDES)
+
+    files {
+        "WowEdit/**.h", "WowEdit/**.hpp", "WowEdit/**.cpp",
+    }
+    removefiles { "WowEdit/main.cpp" }
+    links { "StormLib" }  -- supplies the vendored zlib implementation used by PNG heightmaps
+
 -- RenderEngine: Vulkan + GLFW rendering/asset engine, ImGui-free. Depends on DataEngine.
 project "RenderEngine"
     kind "StaticLib"
@@ -177,6 +195,7 @@ project "TrinityCoreStudio"
     links {
         "RenderEngine",
         "DataEngine",
+        "WowEditCore",
         "StormLib",  -- MPQ reader (optional client-data features)
         "glfw3dll",
         "libmysql",

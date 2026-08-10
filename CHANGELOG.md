@@ -1,0 +1,30 @@
+# Changelog
+
+## Unreleased — WowEdit foundation
+
+### Added
+
+- Portable `WowEdit/` C++17 architecture with MVC-facing panel controllers,
+  complete menu command model, `ICommand`/macro history, and EventBus.
+- Heightmap, texture-splat, water, terrain chunk LOD, terrain tools, erosion,
+  object/octree selection, transform snapping, creature/waypoint/AI preview,
+  spell timeline, and world clipboard systems.
+- JSON + atomic binary `.wowedit` serializer, asset inspection, export, version
+  control facade, plugins, scripting bridge, profiling, procedural starter assets,
+  GLSL 4.5 shader sources, CMake/CTest, unit/integration/benchmark targets.
+- Architecture, manual, API reference, conceptual workspace image, and expanded
+  README build/quick-start/contributing information.
+
+### Changed
+
+- Existing World Editor work remains the live Vulkan/ImGui TrinityCore and
+  AzerothCore integration surface. The portable core keeps tool/data logic
+  testable independently of a Windows GPU host.
+
+### Notes
+
+- A production Windows `.exe` still requires the documented Visual Studio +
+  Vulkan Studio build; this Linux environment validates portable C++ sources and
+  tests but cannot emit that Windows executable.
+- Arbitrary triggers, lighting profiles, and simulations remain Studio metadata
+  where stock 3.3.5 server schemas have no native equivalent.
