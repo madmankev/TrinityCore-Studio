@@ -483,6 +483,7 @@ private:
                                        std::vector<AdtEditStore::TerrainStrokeRef>& outRefs);
     void PushTerrainStrokeUndo(const std::vector<AdtEditStore::TerrainStrokeRef>& refs, const char* label);
     void QueueTerrainRamp(const glm::vec3& start, const glm::vec3& end);
+    void QueueTerrainNoise(const glm::vec3& center, int centerTileX, int centerTileY);
 
     // NPC model fallbacks: map markers remain visible/selectable when a custom display ID cannot be
     // resolved to an M2, and make a missing WoW client-model pack immediately diagnosable.
@@ -733,7 +734,8 @@ private:
     bool liveTerrainPreview_ = true;
     std::vector<AdtEditStore::TerrainStrokeRef> terrainPreviewStrokes_;
     // 0..2 map directly to adt::TerrainBrushMode; 3 is the World Editor's ramp/stairs composer,
-    // expressed as a deterministic sequence of staged Flatten strokes when saved.
+    // and 4 is Terrainify noise. Both composers expand to deterministic staged strokes so preview,
+    // undo, and ADT save all share the same authoritative sequence.
     int terrainSculptMode_ = 0;
     float terrainBrushRadius_ = 10.0f;
     float terrainBrushStrength_ = 2.0f;
@@ -744,6 +746,10 @@ private:
     float terrainRampWidth_ = 8.0f;
     float terrainRampMaxSlopeDegrees_ = 30.0f;
     int terrainRampStepCount_ = 0; // 0 = continuous grade; >=2 = quantized stairs
+    float terrainNoiseAmplitude_ = 4.0f;
+    float terrainNoiseFrequency_ = 0.12f;
+    int terrainNoiseOctaves_ = 3;
+    uint32_t terrainNoiseSeed_ = 1337u;
     uint64_t terrainHistoryGeneration_ = 1;
     std::string terrainStatus_;
 

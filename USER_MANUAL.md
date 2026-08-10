@@ -60,8 +60,11 @@ Use it for roads, ramps, stair foundations, and traversable cliffs.
 
 ### Noise, stamps, erosion, and roads
 
-Noise is deterministic from frequency/amplitude/octaves/seed. Stamps can be
-scaled and rotated; thermal erosion moves material downhill above a talus angle,
+In the live World Editor, **Noise / Terrainify** exposes radius, amplitude,
+frequency, octave, and seed controls. A right-click expands that seeded fractal
+field into a bounded deterministic set of staged Raise/Lower strokes, so the GPU
+preview, undo stack, and saved ADT result all replay the same operation. Stamps can
+be scaled and rotated; thermal erosion moves material downhill above a talus angle,
 while hydraulic erosion simulates short rain droplets. All outcomes are commands:
 undo immediately if an iteration is too destructive.
 
