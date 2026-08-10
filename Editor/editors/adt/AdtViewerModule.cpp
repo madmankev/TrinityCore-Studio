@@ -159,6 +159,147 @@ void AdtViewerModule::HandleShortcuts()
         FrameSelection();
 }
 
+void AdtViewerModule::DrawMainMenuExtensions()
+{
+    // These are genuine world-authoring commands, not a second set of decorative
+    // menu labels: each action arms an existing tool, switches an existing editor,
+    // or raises the docked panel that owns the workflow.
+    const auto focus = [this](const char* title) {
+        if (svc_ && svc_->focusWindow)
+            svc_->focusWindow(title);
+    };
+    const auto activate = [this](const char* id) {
+        if (svc_ && svc_->activateModule)
+            svc_->activateModule(id);
+    };
+    const auto status = [this](const char* text) {
+        if (svc_ && svc_->setStatus)
+            svc_->setStatus(text);
+    };
+    const auto armTerrain = [this, &focus](int mode) {
+        terrainSculptMode_ = mode;
+        terrainSculptActive_ = true;
+        inGameViewMode_ = false;
+        editMode_ = true;
+        focus("Terrain Sculpt");
+    };
+
+    if (ImGui::BeginMenu("Terrain"))
+    {
+        if (ImGui::BeginMenu("Terrain Tools"))
+        {
+            if (ImGui::MenuItem("Raise", "T")) armTerrain(static_cast<int>(adt::TerrainBrushMode::Raise));
+            if (ImGui::MenuItem("Lower")) armTerrain(static_cast<int>(adt::TerrainBrushMode::Lower));
+            if (ImGui::MenuItem("Flatten", "L")) armTerrain(static_cast<int>(adt::TerrainBrushMode::Flatten));
+            ImGui::Separator();
+            if (ImGui::MenuItem("Terrain Sculpt Panel...")) focus("Terrain Sculpt");
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Water Tools"))
+        {
+            bool liquid = opt_.liquid;
+            if (ImGui::MenuItem("Show Water", nullptr, &liquid))
+            {
+                opt_.liquid = liquid;
+                if (!selectedMapDir_.empty())
+                    OpenMapDir(selectedMapDir_, false);
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::MenuItem("Save Pending ADT Edits", "Ctrl+S", false, !adtEdits_.empty()))
+        {
+            SavePendingAdtEdits();
+            focus("World Editor###ADT Viewer");
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Light Editor...")) focus("Light Editor");
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Objects"))
+    {
+        if (ImGui::BeginMenu("Transform Tools"))
+        {
+            if (ImGui::MenuItem("Select", "Q")) { editMode_ = true; focus("World Editor###ADT Viewer"); }
+            if (ImGui::MenuItem("Move", "W")) { editMode_ = true; gizmoOp_ = ImGuizmo::TRANSLATE; focus("World Editor###ADT Viewer"); }
+            if (ImGui::MenuItem("Rotate", "E")) { editMode_ = true; gizmoOp_ = ImGuizmo::ROTATE; focus("World Editor###ADT Viewer"); }
+            if (ImGui::MenuItem("Scale", "R", false, selKind_ != SelKind::Npc)) { editMode_ = true; gizmoOp_ = ImGuizmo::SCALE; focus("World Editor###ADT Viewer"); }
+            ImGui::EndMenu();
+        }
+        if (ImGui::MenuItem("Snap Selected to Ground", nullptr, false, selKind_ != SelKind::None))
+            SnapSelectionToGround();
+        if (ImGui::MenuItem("Exact Transform...", nullptr, false, selKind_ != SelKind::None)) focus("Transform");
+        if (ImGui::MenuItem("Delete Selected", "Delete", false, selKind_ != SelKind::None)) DeleteSelection();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Placement Palette...")) focus("Spawn Palette");
+        if (ImGui::MenuItem("World Outliner...")) focus("World Outliner");
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Creatures"))
+    {
+        if (ImGui::MenuItem("Place Creature Spawner...")) focus("Spawn Palette");
+        if (ImGui::MenuItem("Edit Selected Spawner...", nullptr, false, selKind_ == SelKind::Npc)) focus("NPC Instance");
+        ImGui::Separator();
+        if (ImGui::MenuItem("Waypoint Editor...")) focus("Waypoint Path");
+        if (ImGui::MenuItem("AI Behavior Configuration...")) focus("AI Behavior");
+        if (ImGui::MenuItem("Creature Formation...")) focus("Formation");
+        ImGui::Separator();
+        ImGui::MenuItem("Show Creatures", "C", &showNpcs_);
+        ImGui::MenuItem("Show Waypoints", nullptr, &showWaypointOverlay_);
+        ImGui::MenuItem("Show Formations", nullptr, &showFormations_);
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Quest"))
+    {
+        if (ImGui::MenuItem("Quest Browser...")) activate("quest");
+        if (ImGui::MenuItem("Script Trigger Editor...")) focus("Script Triggers");
+        if (ImGui::MenuItem("Place / Move Preview Player..."))
+        {
+            scriptPreviewPlayerPlacementActive_ = true;
+            scriptTriggerCenterPlacementActive_ = false;
+            inGameViewMode_ = false;
+            focus("World Editor###ADT Viewer");
+        }
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Spells"))
+    {
+        if (ImGui::MenuItem("Spell Effect Previewer / Spell Editor..."))
+        {
+            // The spell module owns live Spell.dbc/world DB definitions; the World
+            // Editor's Script Trigger action sequence can then reference its spell ID.
+            activate("spell");
+            status("Opened Spell Editor. Configure a spell, then reference its ID from Script Triggers for world preview dispatch.");
+        }
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Tools"))
+    {
+        if (ImGui::MenuItem("Realtime Preview...")) focus("Realtime Preview");
+        if (ImGui::MenuItem("Light Editor...")) focus("Light Editor");
+        if (ImGui::MenuItem("Script Trigger Log...")) focus("Script Triggers");
+        if (ImGui::MenuItem("World Statistics")) { showStats_ = true; focus("World Editor###ADT Viewer"); }
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Window"))
+    {
+        if (ImGui::MenuItem("World Browser")) focus("World Browser###ADT Browser");
+        if (ImGui::MenuItem("Content / Spawn Palette")) focus("Spawn Palette");
+        if (ImGui::MenuItem("Properties / Transform")) focus("Transform");
+        if (ImGui::MenuItem("Hierarchy / Outliner")) focus("World Outliner");
+        if (ImGui::MenuItem("Terrain Tools")) focus("Terrain Sculpt");
+        if (ImGui::MenuItem("Creature Editor")) focus("NPC Instance");
+        if (ImGui::MenuItem("Quest Trigger Panel")) focus("Script Triggers");
+        if (ImGui::MenuItem("Chunk / World Canvas")) focus("World Editor###ADT Viewer");
+        ImGui::EndMenu();
+    }
+}
+
 AdtViewerModule::WorldLightingProfile AdtViewerModule::DefaultLightingProfile()
 {
     // Mirrors the fixed world lighting used before the Light Editor existed: white ambient 0.45
@@ -5879,6 +6020,42 @@ void AdtViewerModule::SyncGoPanelTransform(uint32_t guid)
     set(goEditOrig_);
 }
 
+void AdtViewerModule::SavePendingAdtEdits()
+{
+    if (adtEdits_.empty())
+        return;
+    if (!svc_ || !svc_->clientData || svc_->editRoot.empty())
+    {
+        saveStatus_ = "Open a project with an edited-client folder before saving ADT edits.";
+        if (svc_ && svc_->setStatus)
+            svc_->setStatus(saveStatus_);
+        return;
+    }
+
+    const int terrainPending = adtEdits_.terrainPendingCount();
+    std::string status;
+    const bool saved = adtEdits_.Flush(*svc_->clientData, svc_->editRoot, status);
+    saveStatus_ = status;
+    if (terrainPending > 0)
+    {
+        // Flush writes tiles one at a time. Even a later I/O failure can leave an earlier
+        // terrain tile safely persisted, so freeze old terrain undo closures on every save
+        // attempt rather than risk replaying an additive stroke twice on retry.
+        ++terrainHistoryGeneration_;
+        if (saved)
+        {
+            // Terrain GPU meshes are immutable uploads. Reopen the current map so the
+            // streamer rereads the just-written MCVT/MCNR overlay data.
+            terrainStatus_ = "Terrain edits saved; reloading streamed tiles from the project overlay.";
+            OpenMapDir(selectedMapDir_, false);
+        }
+        else
+            terrainStatus_ = "Terrain save did not finish; inspect the status and retry pending edits if needed.";
+    }
+    if (svc_->setStatus)
+        svc_->setStatus(status);
+}
+
 // A one-line toolbar shown while editing: gizmo op buttons, a Local/World toggle, the selection
 // label, Deselect, and the last save status.
 void AdtViewerModule::DrawSelectionToolbar()
@@ -5887,32 +6064,9 @@ void AdtViewerModule::DrawSelectionToolbar()
     // without a current selection.
     if (!adtEdits_.empty())
     {
-        const int terrainPending = adtEdits_.terrainPendingCount();
         const std::string label = "Save ADT edits (" + std::to_string(adtEdits_.pendingCount()) + ")";
-        if (ImGui::Button(label.c_str()) && svc_ && svc_->clientData)
-        {
-            std::string status;
-            const bool saved = adtEdits_.Flush(*svc_->clientData, svc_->editRoot, status);
-            saveStatus_ = status;
-            if (terrainPending > 0)
-            {
-                // Flush writes tiles one at a time. Even a later I/O failure can leave an earlier
-                // terrain tile safely persisted, so freeze old terrain undo closures on every save
-                // attempt rather than risk replaying an additive stroke twice on retry.
-                ++terrainHistoryGeneration_;
-                if (saved)
-                {
-                    // Terrain GPU meshes are immutable uploads. Reopen the current map so the
-                    // streamer rereads the just-written MCVT/MCNR overlay data.
-                    terrainStatus_ = "Terrain edits saved; reloading streamed tiles from the project overlay.";
-                    OpenMapDir(selectedMapDir_, false);
-                }
-                else
-                    terrainStatus_ = "Terrain save did not finish; inspect the status and retry pending edits if needed.";
-            }
-            if (svc_->setStatus)
-                svc_->setStatus(status);
-        }
+        if (ImGui::Button(label.c_str()))
+            SavePendingAdtEdits();
         ImGui::SameLine();
     }
 

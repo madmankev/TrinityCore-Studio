@@ -65,6 +65,9 @@ public:
     virtual void DrawFileMenu() {}   // New/Save/Export/Import... in the File menu
     virtual void DrawEditMenu() {}   // module-specific Edit items (Undo/Redo are shell-owned)
     virtual void DrawToolsMenu() {}  // body of the dynamic "<DisplayName>" menu
+    // Optional top-level menu contributions. The shell calls this while its main
+    // menu bar is open; modules own BeginMenu/EndMenu for their command families.
+    virtual void DrawMainMenuExtensions() {}
     virtual void DrawViewMenu() {}   // this module's panel-visibility toggles
     virtual void DrawPreferences() {} // a section inside the shared Preferences modal
 

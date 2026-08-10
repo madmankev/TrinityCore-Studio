@@ -223,6 +223,22 @@ EditorServices App::MakeServices()
             ReloadWorldserver();
     };
     s.requestSaveSettings = [this]() { SaveSettings(); };
+    s.focusWindow = [](const char* title) {
+        if (title && *title)
+            ImGui::SetWindowFocus(title);
+    };
+    s.activateModule = [this](const char* id) {
+        if (!id || !*id)
+            return;
+        for (int i = 0; i < static_cast<int>(modules_.size()); ++i)
+            if (std::string(modules_[i]->Id()) == id)
+            {
+                activeEditor = i;
+                railSearch.clear();
+                forceLayout = true;
+                return;
+            }
+    };
     RefreshServicesInto(s);
     return s;
 }
@@ -564,6 +580,11 @@ void App::DrawMenuBar()
         m->DrawToolsMenu();
         ImGui::EndMenu();
     }
+
+    // World-facing modules may contribute top-level menus (Terrain, Objects,
+    // Creatures, Quest, Spells, Tools, Window) while the shell continues to own
+    // File/Edit/View/Help and global shortcut semantics.
+    m->DrawMainMenuExtensions();
 
     if (ImGui::BeginMenu("View"))
     {

@@ -122,6 +122,11 @@ turn on **Edit**:
 
 ### Shared features
 
+- **World-editor command menus**: when World Editor is active, the main menu now exposes direct
+  **Terrain**, **Objects**, **Creatures**, **Quest**, **Spells**, **Tools**, and **Window** commands.
+  They arm the existing terrain/gizmo/preview-player workflows, persist pending ADT edits through the
+  same atomic path as the viewport toolbar, focus the appropriate dock panel, or switch to the
+  real Quest/Spell editor rather than presenting dead menu entries.
 - **Refreshed workspace UI**: a project-aware command bar, grouped/searchable editor navigation,
   Ctrl+P command palette, responsive project cards, and a three-column navigation/canvas/inspector
   default layout. The World Editor automatically places catalogs left, live map center, inspectors

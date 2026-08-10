@@ -53,5 +53,6 @@ struct EditorServices
     std::function<void()> reloadAfterSaveIfEnabled;             // SOAP .reload if the user opted in
     std::function<void()> requestSaveSettings;                  // persist settings (module prefs changed)
     std::function<void(const char* windowTitle)> focusWindow;   // focus/raise a dock window (may be null)
+    std::function<void(const char* moduleId)> activateModule;    // switch editor module at a frame boundary
 };
 } // namespace we

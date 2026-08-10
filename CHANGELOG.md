@@ -4,6 +4,8 @@
 
 ### Added
 
+- World Editor top-level Terrain, Objects, Creatures, Quest, Spells, Tools, and Window menus
+  wired to live dock panels, terrain/gizmo tools, real Quest/Spell modules, and shared ADT save logic.
 - Portable `WowEdit/` C++17 architecture with MVC-facing panel controllers,
   complete menu command model, `ICommand`/macro history, and EventBus.
 - Heightmap, texture-splat, water, terrain chunk LOD, terrain tools, erosion,

@@ -68,6 +68,7 @@ public:
     void OnDisconnected() override;
     void OnShutdown() override;
     void HandleShortcuts() override;
+    void DrawMainMenuExtensions() override;
     void LoadSettings(const nlohmann::json& editorNode) override;
     void SaveSettings(nlohmann::json& editorNode) const override;
 
@@ -315,6 +316,7 @@ private:
     };
     void RebuildOutliner();
     void DrawSelectionToolbar();
+    void SavePendingAdtEdits();
     void RefreshGizmoFromSelection();   // seed gizmoMatrix_ + outline bounds from the live object
     void UpdateHoverAndSelection(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
                                  int w, int h, bool viewportHovered, bool gizmoBusy,
