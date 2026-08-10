@@ -601,7 +601,11 @@ private:
     ImGuizmo::OPERATION gizmoOp_ = ImGuizmo::TRANSLATE;
     ImGuizmo::MODE      gizmoMode_ = ImGuizmo::WORLD;
     bool      gizmoUsingPrev_ = false;         // edge-detect release (to commit the DB save)
-    bool      gizmoHoveredPrev_ = false;       // suppress camera when hovering the gizmo
+    bool      gizmoHoveredPrev_ = false;       // suppress selection/camera when hovering the gizmo
+    // Mouse ownership remains true from the first handle press through release. This closes the
+    // one-frame gap where the viewport InvisibleButton would otherwise hand a transform drag to
+    // the orbit/fly camera before ImGuizmo reports IsUsing().
+    bool      gizmoMouseCaptured_ = false;
     std::string saveStatus_;
 
     // Precise transform panel + copy/paste clipboard. The edit is staged so a multi-field change

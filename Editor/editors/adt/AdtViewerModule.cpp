@@ -3812,7 +3812,8 @@ void AdtViewerModule::DrawViewportPanel()
     // Highlights must be set BEFORE BuildFrame / the layers' Build consume them below. Picking is
     // suppressed while the gizmo is busy so grabbing a handle doesn't reselect — using LAST frame's
     // gizmo state, since this frame's RunGizmo runs after the scene render below.
-    const bool gizmoBusyPrev = editMode_ && (gizmoUsingPrev_ || gizmoHoveredPrev_);
+    const bool gizmoBusyPrev = editMode_ &&
+                               (gizmoMouseCaptured_ || gizmoUsingPrev_ || gizmoHoveredPrev_);
     if (editMode_)
     {
         UpdateHoverAndSelection(view, proj, p0, w, h, hovered, gizmoBusyPrev, focus, filter);
@@ -3949,12 +3950,15 @@ void AdtViewerModule::DrawViewportPanel()
     {
         gizmoUsingPrev_ = false;
         gizmoHoveredPrev_ = false;
+        gizmoMouseCaptured_ = false;
     }
 
-    // Integrate the camera LAST (this frame's input -> next frame's view). Suppressed while the gizmo
-    // is hovered or dragged, so grabbing a handle moves the object instead of orbiting the camera.
+    // Integrate the camera LAST (this frame's input -> next frame's view). The explicit mouse
+    // capture persists from a handle press through the release frame, so NPC/GameObject drag arrows
+    // never leak a mouse delta into orbit/fly camera movement.
     const bool gizmoBusy = editMode_ && selKind_ != SelKind::None &&
-                           (ImGuizmo::IsUsing() || ImGuizmo::IsOver());
+                           (gizmoMouseCaptured_ || gizmoUsingPrev_ || gizmoHoveredPrev_ ||
+                            ImGuizmo::IsUsing() || ImGuizmo::IsOver());
     camera_.Update(hovered && !gizmoBusy, active && !gizmoBusy, io.DeltaTime);
 
     if (editMode_)
@@ -3976,6 +3980,8 @@ void AdtViewerModule::ClearSelection()
     selEntry_ = 0;
     selLabel_.clear();
     gizmoUsingPrev_ = false;
+    gizmoHoveredPrev_ = false;
+    gizmoMouseCaptured_ = false;
 }
 
 // Docked panel that reflects the selected NPC's full `creature` row into an editable working copy.
@@ -6095,6 +6101,7 @@ void AdtViewerModule::RunGizmo(const glm::mat4& view, const glm::mat4& proj, con
     {
         gizmoUsingPrev_ = false;
         gizmoHoveredPrev_ = false;
+        gizmoMouseCaptured_ = false;
         return;
     }
     ImGuizmo::BeginFrame();
@@ -6118,6 +6125,16 @@ void AdtViewerModule::RunGizmo(const glm::mat4& view, const glm::mat4& proj, con
     ImGuizmo::Manipulate(&view[0][0], &projG[0][0], op, gizmoMode_, &gizmoMatrix_[0][0]);
 
     const bool using_ = ImGuizmo::IsUsing();
+    const bool over_ = ImGuizmo::IsOver();
+    // Claim the left mouse from the instant a transform handle is pressed. IsUsing() can lag
+    // one frame behind the press on some ImGuizmo operations, which previously let the viewport
+    // InvisibleButton rotate/fly the camera before the NPC/GameObject transform took ownership.
+    if (using_ || (over_ && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+                             ImGui::IsMouseDown(ImGuiMouseButton_Left))))
+        gizmoMouseCaptured_ = true;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !using_)
+        gizmoMouseCaptured_ = false;
+
     if (using_ && !gizmoUsingPrev_)   // drag just started -> snapshot the pre-edit state
         dragBefore_ = CaptureSelection();
     if (using_)
@@ -6134,7 +6151,7 @@ void AdtViewerModule::RunGizmo(const glm::mat4& view, const glm::mat4& proj, con
         }
     }
     gizmoUsingPrev_ = using_;
-    gizmoHoveredPrev_ = ImGuizmo::IsOver();
+    gizmoHoveredPrev_ = over_;
 }
 
 // Push the gizmo's edited matrix back into the selected object (live, every drag frame).
