@@ -827,6 +827,7 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
         scriptTriggersDirty_ = false;
         selectedScriptTriggerId_ = 0;
         scriptPreviewPlayerEnabled_ = false;
+        scriptPreviewPlayerFollowCamera_ = false;
         scriptPreviewPlayerPlacementActive_ = false;
         scriptTriggerCenterPlacementActive_ = false;
         scriptInteractionMode_ = false;
