@@ -18,6 +18,8 @@
 - Live Noise / Terrainify brush with persisted radius/amplitude/frequency/octave/seed settings;
   deterministic fractal samples expand to staged Raise/Lower strokes for exact preview, undo, and
   ADT replay.
+- Live Terrain Stamp presets for Hill, Valley, Crater, and yaw-rotated Ridge compositions; each
+  expands to normal staged ADT strokes and therefore keeps live preview/undo/save behavior.
 - Portable `WowEdit/` C++17 architecture with MVC-facing panel controllers,
   complete menu command model, `ICommand`/macro history, and EventBus.
 - Heightmap, texture-splat, water, terrain chunk LOD, terrain tools, erosion,

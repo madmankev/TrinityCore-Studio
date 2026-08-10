@@ -285,6 +285,7 @@ void AdtViewerModule::DrawMainMenuExtensions()
             if (ImGui::MenuItem("Flatten", "L")) armTerrain(static_cast<int>(adt::TerrainBrushMode::Flatten));
             if (ImGui::MenuItem("Ramp / Stairs", "R")) armTerrain(3);
             if (ImGui::MenuItem("Noise / Terrainify", "N")) armTerrain(4);
+            if (ImGui::MenuItem("Terrain Stamp / Preset")) armTerrain(5);
             ImGui::Separator();
             if (ImGui::MenuItem("Terrain Sculpt Panel...")) focus("Terrain Sculpt");
             ImGui::EndMenu();
@@ -797,6 +798,8 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
             terrainNoiseFrequency_ = std::clamp(finite(terrain.value("noiseFrequency", terrainNoiseFrequency_), terrainNoiseFrequency_), 0.01f, 1.0f);
             terrainNoiseOctaves_ = std::clamp(terrain.value("noiseOctaves", terrainNoiseOctaves_), 1, 6);
             terrainNoiseSeed_ = terrain.value("noiseSeed", terrainNoiseSeed_);
+        terrainStampPreset_ = std::clamp(terrain.value("stampPreset", terrainStampPreset_), 0, 3);
+        terrainStampYawDegrees_ = finite(terrain.value("stampYawDegrees", terrainStampYawDegrees_), terrainStampYawDegrees_);
         }
         if (editorNode.contains("spellEffectPreview") && editorNode["spellEffectPreview"].is_object())
         {
@@ -1058,7 +1061,9 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
                                   {"noiseAmplitude", terrainNoiseAmplitude_},
                                   {"noiseFrequency", terrainNoiseFrequency_},
                                   {"noiseOctaves", terrainNoiseOctaves_},
-                                  {"noiseSeed", terrainNoiseSeed_}};
+                                  {"noiseSeed", terrainNoiseSeed_},
+                                  {"stampPreset", terrainStampPreset_},
+                                  {"stampYawDegrees", terrainStampYawDegrees_}};
 
     editorNode["spellEffectPreview"] = {{"spellId", spellPreview_.definition.id},
                                           {"loop", spellPreview_.loop},
@@ -4315,7 +4320,7 @@ void AdtViewerModule::DrawViewportPanel()
                            WorldLightTypeName(lightPlacementType_));
     if (terrainSculptActive_)
     {
-        static const char* kSculptNames[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs", "Noise / Terrainify"};
+        static const char* kSculptNames[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs", "Noise / Terrainify", "Terrain Stamp"};
         if (terrainSculptMode_ == 3)
             ImGui::TextColored(ImVec4(0.94f, 0.52f, 0.18f, 1.0f),
                                "Terrain ramp active: %s — right-click %s; Esc stops.",
@@ -4324,7 +4329,7 @@ void AdtViewerModule::DrawViewportPanel()
         else
             ImGui::TextColored(ImVec4(0.94f, 0.52f, 0.18f, 1.0f),
                                "Terrain sculpt active: %s, %.1f yd radius — right-click terrain; Esc stops.",
-                               kSculptNames[std::clamp(terrainSculptMode_, 0, 4)], terrainBrushRadius_);
+                               kSculptNames[std::clamp(terrainSculptMode_, 0, 5)], terrainBrushRadius_);
     }
 
     ImGui::TextDisabled("loaded %d tiles (%d pending), %d objects, %d models", streamer_.loadedTiles(),
@@ -5361,7 +5366,8 @@ void AdtViewerModule::DrawTerrainSculptPanel()
     ImGui::RadioButton("Lower", &terrainSculptMode_, 1); ImGui::SameLine();
     ImGui::RadioButton("Flatten", &terrainSculptMode_, 2); ImGui::SameLine();
     ImGui::RadioButton("Ramp / Stairs", &terrainSculptMode_, 3); ImGui::SameLine();
-    ImGui::RadioButton("Noise / Terrainify", &terrainSculptMode_, 4);
+    ImGui::RadioButton("Noise / Terrainify", &terrainSculptMode_, 4); ImGui::SameLine();
+    ImGui::RadioButton("Terrain Stamp", &terrainSculptMode_, 5);
     if (previousTerrainMode != terrainSculptMode_)
         terrainRampHasStart_ = false;
 
@@ -5398,6 +5404,22 @@ void AdtViewerModule::DrawTerrainSculptPanel()
         if (ImGui::SmallButton("New seed"))
             terrainNoiseSeed_ = terrainNoiseSeed_ * 1664525u + 1013904223u;
         ImGui::TextDisabled("Generates deterministic fractal value noise as staged Raise/Lower strokes. The exact stroke sequence is undoable and saved to ADT.");
+    }
+    else if (terrainSculptMode_ == 5)
+    {
+        static const char* kStamps[] = {"Hill", "Valley", "Crater", "Ridge"};
+        ImGui::SetNextItemWidth(180.0f);
+        ImGui::Combo("Stamp preset", &terrainStampPreset_, kStamps, IM_ARRAYSIZE(kStamps));
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::SliderFloat("Stamp radius", &terrainBrushRadius_, 2.0f, 100.0f, "%.1f yd", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::SliderFloat("Stamp strength", &terrainBrushStrength_, 0.05f, 30.0f, "%.2f yd", ImGuiSliderFlags_Logarithmic);
+        if (terrainStampPreset_ == 3)
+        {
+            ImGui::SetNextItemWidth(180.0f);
+            ImGui::DragFloat("Ridge yaw", &terrainStampYawDegrees_, 1.0f, -180.0f, 180.0f, "%.1f deg");
+        }
+        ImGui::TextDisabled("One terrain click emits a reusable hill, valley, crater, or ridge stamp as normal staged ADT strokes.");
     }
     else
     {
@@ -5438,7 +5460,9 @@ void AdtViewerModule::DrawTerrainSculptPanel()
                 ? "Ramp tool armed — right-click a terrain start, then a terrain end."
                 : terrainSculptMode_ == 4
                     ? "Terrainify noise armed — right-click terrain to queue a deterministic noise stamp."
-                    : "Terrain brush armed — right-click terrain to queue a smooth height stroke.")
+                    : terrainSculptMode_ == 5
+                        ? "Terrain stamp armed — right-click terrain to apply the selected preset."
+                        : "Terrain brush armed — right-click terrain to queue a smooth height stroke.")
             : "Terrain brush stopped.";
     }
     ImGui::EndDisabled();
@@ -6390,10 +6414,10 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
                           view, proj, p0, w, h, centerScreen))
     {
         draw->AddCircleFilled(centerScreen, 4.0f, IM_COL32(255, 221, 160, 255), 10);
-        static const char* kModes[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs", "Noise / Terrainify"};
+        static const char* kModes[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs", "Noise / Terrainify", "Terrain Stamp"};
         draw->AddText(ImVec2(centerScreen.x + 8.0f, centerScreen.y + 6.0f),
                       IM_COL32(255, 234, 204, 255),
-                      kModes[std::clamp(terrainSculptMode_, 0, 4)]);
+                      kModes[std::clamp(terrainSculptMode_, 0, 5)]);
     }
 }
 
@@ -7833,6 +7857,68 @@ void AdtViewerModule::QueueTerrainNoise(const glm::vec3& center, int centerTileX
                      " tile strokes) — save ADT edits to apply it.";
 }
 
+void AdtViewerModule::QueueTerrainStamp(const glm::vec3& center, int centerTileX, int centerTileY)
+{
+    const float radius = std::clamp(terrainBrushRadius_, 2.0f, 100.0f);
+    const float strength = std::clamp(terrainBrushStrength_, 0.05f, 30.0f);
+    std::vector<AdtEditStore::TerrainStrokeRef> refs;
+    refs.reserve(32);
+    const auto addStroke = [&](adt::TerrainBrushMode mode, float x, float y, float childRadius, float childStrength) {
+        adt::TerrainBrushStroke stroke;
+        stroke.mode = mode;
+        stroke.worldX = x;
+        stroke.worldY = y;
+        stroke.radius = std::max(0.5f, childRadius);
+        stroke.strength = std::max(0.01f, childStrength);
+        stroke.targetZ = center.z;
+        QueueTerrainStrokeAcrossTiles(stroke, centerTileX, centerTileY, refs);
+    };
+
+    const int preset = std::clamp(terrainStampPreset_, 0, 3);
+    if (preset == 0) // Hill
+        addStroke(adt::TerrainBrushMode::Raise, center.x, center.y, radius, strength);
+    else if (preset == 1) // Valley
+        addStroke(adt::TerrainBrushMode::Lower, center.x, center.y, radius, strength);
+    else if (preset == 2) // Crater: hollow center plus an overlapping raised rim
+    {
+        addStroke(adt::TerrainBrushMode::Lower, center.x, center.y, radius * 0.68f, strength * 1.15f);
+        constexpr int kRingSamples = 10;
+        for (int sample = 0; sample < kRingSamples; ++sample)
+        {
+            const float angle = static_cast<float>(sample) * glm::two_pi<float>() / static_cast<float>(kRingSamples);
+            addStroke(adt::TerrainBrushMode::Raise,
+                      center.x + std::cos(angle) * radius * 0.68f,
+                      center.y + std::sin(angle) * radius * 0.68f,
+                      radius * 0.30f, strength * 0.72f);
+        }
+    }
+    else // Ridge
+    {
+        const float yaw = glm::radians(terrainStampYawDegrees_);
+        const glm::vec2 axis(std::cos(yaw), std::sin(yaw));
+        constexpr int kRidgeSamples = 7;
+        for (int sample = 0; sample < kRidgeSamples; ++sample)
+        {
+            const float t = static_cast<float>(sample) / static_cast<float>(kRidgeSamples - 1) * 2.0f - 1.0f;
+            const float endFade = 1.0f - std::fabs(t) * 0.35f;
+            addStroke(adt::TerrainBrushMode::Raise,
+                      center.x + axis.x * radius * t,
+                      center.y + axis.y * radius * t,
+                      radius * 0.34f, strength * endFade);
+        }
+    }
+
+    if (refs.empty())
+    {
+        terrainStatus_ = "Terrain stamp did not intersect a loaded terrain tile.";
+        return;
+    }
+    static const char* kNames[] = {"hill", "valley", "crater", "ridge"};
+    PushTerrainStrokeUndo(refs, "Apply terrain stamp");
+    terrainStatus_ = "Queued " + std::string(kNames[preset]) + " terrain stamp (" +
+                     std::to_string(refs.size()) + " tile strokes) — save ADT edits to apply it.";
+}
+
 // Right-click (no drag) on terrain opens the add popup at the ground point. An object nearer than
 // the ground means the click was on an object, so no add is offered.
 void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4& proj,
@@ -7901,6 +7987,11 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
         if (terrainSculptMode_ == 4)
         {
             QueueTerrainNoise(world, gtx, gty);
+            return;
+        }
+        if (terrainSculptMode_ == 5)
+        {
+            QueueTerrainStamp(world, gtx, gty);
             return;
         }
 

@@ -63,10 +63,12 @@ Use it for roads, ramps, stair foundations, and traversable cliffs.
 In the live World Editor, **Noise / Terrainify** exposes radius, amplitude,
 frequency, octave, and seed controls. A right-click expands that seeded fractal
 field into a bounded deterministic set of staged Raise/Lower strokes, so the GPU
-preview, undo stack, and saved ADT result all replay the same operation. Stamps can
-be scaled and rotated; thermal erosion moves material downhill above a talus angle,
-while hydraulic erosion simulates short rain droplets. All outcomes are commands:
-undo immediately if an iteration is too destructive.
+preview, undo stack, and saved ADT result all replay the same operation. **Terrain
+Stamp** adds reusable Hill, Valley, Crater, and yaw-rotated Ridge presets; radius
+scales every shape and the ridge angle controls its axis. Thermal erosion moves
+material downhill above a talus angle, while hydraulic erosion simulates short rain
+droplets. All outcomes are commands: undo immediately if an iteration is too
+destructive.
 
 The **Road / Path Tool** turns ordered control points into a slope-clamped
 centerline grade, blends soft shoulders into surrounding terrain, paints the

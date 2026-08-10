@@ -484,6 +484,7 @@ private:
     void PushTerrainStrokeUndo(const std::vector<AdtEditStore::TerrainStrokeRef>& refs, const char* label);
     void QueueTerrainRamp(const glm::vec3& start, const glm::vec3& end);
     void QueueTerrainNoise(const glm::vec3& center, int centerTileX, int centerTileY);
+    void QueueTerrainStamp(const glm::vec3& center, int centerTileX, int centerTileY);
 
     // NPC model fallbacks: map markers remain visible/selectable when a custom display ID cannot be
     // resolved to an M2, and make a missing WoW client-model pack immediately diagnosable.
@@ -734,8 +735,8 @@ private:
     bool liveTerrainPreview_ = true;
     std::vector<AdtEditStore::TerrainStrokeRef> terrainPreviewStrokes_;
     // 0..2 map directly to adt::TerrainBrushMode; 3 is the World Editor's ramp/stairs composer,
-    // and 4 is Terrainify noise. Both composers expand to deterministic staged strokes so preview,
-    // undo, and ADT save all share the same authoritative sequence.
+    // 4 is Terrainify noise, and 5 is a terrain stamp preset. All composers expand to deterministic
+    // staged strokes so preview, undo, and ADT save share the same authoritative sequence.
     int terrainSculptMode_ = 0;
     float terrainBrushRadius_ = 10.0f;
     float terrainBrushStrength_ = 2.0f;
@@ -750,6 +751,8 @@ private:
     float terrainNoiseFrequency_ = 0.12f;
     int terrainNoiseOctaves_ = 3;
     uint32_t terrainNoiseSeed_ = 1337u;
+    int terrainStampPreset_ = 0; // Hill, Valley, Crater, Ridge
+    float terrainStampYawDegrees_ = 0.0f;
     uint64_t terrainHistoryGeneration_ = 1;
     std::string terrainStatus_;
 

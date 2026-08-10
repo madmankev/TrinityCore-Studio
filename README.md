@@ -67,7 +67,8 @@ turn on **Edit**:
 5. **Sculpt terrain safely:** use **Terrain Sculpt** to arm Raise, Lower, Flatten, or the live
    **Ramp / Stairs** composer, or **Noise / Terrainify**. Right-click a ramp start and end; Studio
    clamps the requested grade and emits a continuous or stepped sequence of overlap-safe Flatten
-   strokes. Terrainify expands a seeded fractal field into deterministic Raise/Lower strokes. Both
+   strokes. Terrainify expands a seeded fractal field into deterministic Raise/Lower strokes, while
+   **Terrain Stamp** applies reusable Hill, Valley, Crater, or yaw-rotated Ridge presets. All
    preview immediately, rebuild MCVT/MCNR data across intersected ADT tiles on **Save ADT edits**,
    support Ctrl+Z/Ctrl+Y, and reload from the project overlay after save.
 6. **Light the scene:** open **Light Editor** for a WoWEdit-style point/spot-light list. Add a
