@@ -121,6 +121,32 @@ Lua and Python are opt-in runtime bridges:
 `executeLua()` / `executePython()` return a clear error when no plugin/runtime is
 installed; this avoids silently pretending a scripting language is available.
 
+## SQL schema conversion import
+
+`SqlImportConverter` converts SQL against the **live target schema**, rather than
+assuming source and target use the same TrinityCore/AzerothCore revision:
+
+```cpp
+we::SqlImportConverter converter;
+we::SqlImportOptions options;
+options.targetFlavor = we::CoreFlavor::Auto;
+options.useUpsert = true;
+options.includeDeletes = false; // opt in only after review
+
+we::SqlImportPlan plan = converter.Convert(sqlText, targetDatabase, options);
+if (plan.ok && !plan.HasErrors()) {
+    // Show plan.PreviewSql() plus plan.issues to the user first.
+    we::DbError result = converter.Apply(targetDatabase, plan);
+}
+```
+
+The converter supports explicit-column `INSERT`/`REPLACE` and simple `UPDATE` SQL,
+with opt-in predicate-based `DELETE`. It maps known aliases such as spawn `id ↔ id1`,
+`Title ↔ LogTitle`, selected table aliases, and legacy `modelid1..4` versus
+`creature_template_model` visual rows. Unsupported semantic fields are warnings and
+are omitted rather than guessed. Never apply a plan with errors or hide its issues
+from the operator.
+
 ## Serialization and import/export
 
 `MapSerializer::save/load` reads `.wowedit` manifests plus binary attachments.

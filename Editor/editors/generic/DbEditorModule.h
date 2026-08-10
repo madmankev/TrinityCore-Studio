@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "app/IEditorModule.h"
+#include "data/SqlImportConverter.h"
 #include "editors/common/CompositeDbRepository.h"
 #include "editors/common/DbDocument.h"
 #include "editors/common/DbTableRepository.h"
@@ -32,7 +33,7 @@ public:
     void Init(EditorServices* services) override { svc_ = services; }
     std::vector<PanelDesc> Panels() const override;
     void DrawPanels() override;
-    void DrawModals() override {}
+    void DrawModals() override;
 
     void DrawFileMenu() override;
     void HandleShortcuts() override;
@@ -63,6 +64,9 @@ private:
     void Save();
     void NewRow();
     void DeleteCurrent();
+    void ImportSqlFile();
+    void DrawSqlImportModal();
+    void RebuildSqlImportPlan();
 
     const std::vector<DbColumn>& ActiveCols() const;   // columns to render in the editor
     std::vector<std::string> KeyOf(const DbRecord& rec) const;  // composite key values in key order
@@ -100,5 +104,14 @@ private:
     bool                     dirty_ = false;
     int                      selectedId_ = -1;   // Single mode
     std::vector<std::string> origKey_;           // Composite mode
+
+    // Schema-aware SQL import: conversion remains a reviewed plan until the user
+    // confirms Apply/Export in the modal. The raw source stays in memory only.
+    SqlImportConverter sqlImporter_;
+    SqlImportOptions sqlImportOptions_;
+    SqlImportPlan sqlImportPlan_;
+    std::string sqlImportPath_;
+    std::string sqlImportSource_;
+    bool showSqlImportModal_ = false;
 };
 } // namespace we

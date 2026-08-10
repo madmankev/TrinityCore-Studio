@@ -190,6 +190,14 @@ AzerothCore table by default—rather than assuming a curated TrinityCore column
 module-added and revision-specific tables, composite keys, optional columns, and current AzerothCore
 layouts are browsed and saved against the schema actually connected to Studio.
 
+Use **DB Editor → File → Import SQL with schema conversion** for SQL from the other core or a
+nearby schema revision. Studio inspects the *connected target* first, maps known equivalents such as
+`creature.id ↔ id1`, `gameobject.id ↔ id1`, `Title ↔ LogTitle`, legacy
+`creature_template.modelid1..4 ↔ creature_template_model`, and compatible table aliases, then
+shows a converted SQL plan. Missing fields are warned/skipped rather than guessed; the user reviews
+the generated statements before transactional Apply/SQL Export. Basic `UPDATE` statements are
+converted too; `DELETE` is deliberately opt-in.
+
 ## Build
 
 Requirements: **Visual Studio 2026** (MSVC v145 toolset) and **git**. All other

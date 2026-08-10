@@ -66,6 +66,23 @@ if(BUILD_TESTING AND WOWEDIT_BUILD_TESTS)
     add_executable(EditorCommandStackTests tests/unit_tests/editor_command_stack_tests.cpp)
     target_include_directories(EditorCommandStackTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Editor")
     add_test(NAME EditorCommandStackTests COMMAND EditorCommandStackTests)
+
+    add_executable(SqlImportConverterTests
+        tests/unit_tests/sql_import_converter_tests.cpp
+        DataEngine/data/SqlImportConverter.cpp
+        DataEngine/data/CoreSupport.cpp
+        DataEngine/data/DbIntrospect.cpp)
+    target_include_directories(SqlImportConverterTests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/DataEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/glm")
+    target_compile_features(SqlImportConverterTests PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(SqlImportConverterTests PRIVATE /W4 /WX /permissive-)
+    else()
+        target_compile_options(SqlImportConverterTests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME SqlImportConverterTests COMMAND SqlImportConverterTests)
 endif()
 
 if(WOWEDIT_BUILD_BENCHMARKS)

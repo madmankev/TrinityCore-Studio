@@ -24,6 +24,9 @@
   sharp-edge preservation, deterministic staged Flatten expansion, live preview, and one-step undo.
 - Spawn Palette Array / Grid placement for NPCs and GameObjects: terrain-snapped rows/columns with
   centered anchoring, skipped-cell reporting, persisted settings, and a compound CommandStack undo.
+- Schema-aware SQL conversion import in DB Editor: live target introspection, table/field alias mapping,
+  TrinityCore/AzerothCore spawn-layout conversion, legacy creature model row conversion, reviewable
+  UPSERT/UPDATE plans, opt-in DELETE handling, transactional Apply, and SQL Export support.
 - Portable `WowEdit/` C++17 architecture with MVC-facing panel controllers,
   complete menu command model, `ICommand`/macro history, and EventBus.
 - Heightmap, texture-splat, water, terrain chunk LOD, terrain tools, erosion,

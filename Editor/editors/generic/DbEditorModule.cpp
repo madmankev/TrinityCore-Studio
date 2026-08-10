@@ -5,11 +5,16 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 
 #include "imgui.h"
 
 #include "app/EditorServices.h"
 #include "data/DbIntrospect.h"
+#include "data/CoreSupport.h"
+#include "util/FileDialog.h"
+#include "util/Log.h"
 #include "editors/common/DbEditWidgets.h"
 #include "editors/generic/DbSchemaRegistry.h"
 #include "ui/Widgets.h"
@@ -287,6 +292,134 @@ void DbEditorModule::DeleteCurrent()
     RefreshList();
 }
 
+void DbEditorModule::RebuildSqlImportPlan()
+{
+    sqlImportPlan_ = {};
+    if (!svc_ || !svc_->activeDb || sqlImportSource_.empty())
+        return;
+    sqlImportOptions_.targetFlavor = svc_->coreFlavor;
+    sqlImportPlan_ = sqlImporter_.Convert(sqlImportSource_, *svc_->activeDb, sqlImportOptions_);
+}
+
+void DbEditorModule::ImportSqlFile()
+{
+    if (!svc_ || !svc_->activeDb)
+        return;
+    const std::string path = OpenFileDialog("Import SQL with schema conversion", "SQL files", "*.sql");
+    if (path.empty())
+        return;
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+    {
+        if (svc_->setStatus)
+            svc_->setStatus("Could not open SQL import file");
+        LogError("SQL import: cannot open " + path);
+        return;
+    }
+    std::ostringstream text;
+    text << input.rdbuf();
+    sqlImportPath_ = path;
+    sqlImportSource_ = text.str();
+    sqlImportOptions_ = {};
+    sqlImportOptions_.targetFlavor = svc_->coreFlavor;
+    sqlImportOptions_.useUpsert = true;
+    RebuildSqlImportPlan();
+    showSqlImportModal_ = true;
+}
+
+void DbEditorModule::DrawSqlImportModal()
+{
+    if (showSqlImportModal_)
+    {
+        ImGui::OpenPopup("SQL Schema Conversion Import");
+        showSqlImportModal_ = false;
+    }
+    if (!ImGui::BeginPopupModal("SQL Schema Conversion Import", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+        return;
+
+    ImGui::TextWrapped("SQL is parsed into explicit-column INSERT/REPLACE rows, mapped against the connected database's live SHOW TABLES/COLUMNS schema, then previewed before any statement runs. Unknown fields are skipped with a warning instead of guessed.");
+    ImGui::TextDisabled("Source: %s", sqlImportPath_.empty() ? "(none)" : sqlImportPath_.c_str());
+    ImGui::TextDisabled("Target core: %s", CoreFlavorName(sqlImportPlan_.targetFlavor));
+    bool optionsChanged = false;
+    optionsChanged |= ImGui::Checkbox("Use UPSERT (recommended; do not REPLACE rows)", &sqlImportOptions_.useUpsert);
+    optionsChanged |= ImGui::Checkbox("Include converted DELETE statements (destructive)", &sqlImportOptions_.includeDeletes);
+    if (optionsChanged)
+        RebuildSqlImportPlan();
+
+    ImGui::Separator();
+    ImGui::Text("Source statements: %zu  Converted statements: %zu  Converted rows: %zu  Skipped: %zu",
+                sqlImportPlan_.sourceStatements, sqlImportPlan_.convertedStatements,
+                sqlImportPlan_.convertedRows, sqlImportPlan_.skippedStatements);
+    const int issueCount = static_cast<int>(sqlImportPlan_.issues.size());
+    if (sqlImportPlan_.HasErrors())
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.30f, 1.0f), "%d issue(s), including conversion errors", issueCount);
+    else if (issueCount)
+        ImGui::TextColored(ImVec4(1.0f, 0.73f, 0.25f, 1.0f), "%d conversion note(s) — review before apply", issueCount);
+    else
+        ImGui::TextColored(ImVec4(0.35f, 0.88f, 0.55f, 1.0f), "No conversion warnings.");
+
+    if (ImGui::CollapsingHeader("Conversion notes", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::BeginChild("##sqlimportissues", ImVec2(760.0f * svc_->dpiScale, 150.0f * svc_->dpiScale), true);
+        for (const SqlImportIssue& issue : sqlImportPlan_.issues)
+        {
+            const ImVec4 color = issue.severity == SqlImportSeverity::Error ? ImVec4(1.0f, 0.35f, 0.30f, 1.0f) :
+                                 issue.severity == SqlImportSeverity::Warning ? ImVec4(1.0f, 0.73f, 0.25f, 1.0f) :
+                                                                                ImVec4(0.55f, 0.72f, 0.92f, 1.0f);
+            const char* tag = issue.severity == SqlImportSeverity::Error ? "ERROR" :
+                              issue.severity == SqlImportSeverity::Warning ? "WARN" : "INFO";
+            ImGui::TextColored(color, "[%s]%s%s", tag,
+                               issue.sourceStatement ? (" statement " + std::to_string(issue.sourceStatement)).c_str() : "",
+                               issue.message.empty() ? "" : (": " + issue.message).c_str());
+        }
+        ImGui::EndChild();
+    }
+
+    if (ImGui::CollapsingHeader("Converted SQL preview", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        const std::string preview = sqlImportPlan_.PreviewSql();
+        ImGui::BeginChild("##sqlimportpreview", ImVec2(760.0f * svc_->dpiScale, 210.0f * svc_->dpiScale), true,
+                          ImGuiWindowFlags_HorizontalScrollbar);
+        ImGui::TextUnformatted(preview.empty() ? "(no executable converted statements)" : preview.c_str());
+        ImGui::EndChild();
+        if (ImGui::Button("Copy converted SQL"))
+            ImGui::SetClipboardText(preview.c_str());
+    }
+
+    const bool executable = sqlImportPlan_.ok && !sqlImportPlan_.HasErrors() && svc_ && svc_->activeDb;
+    ImGui::BeginDisabled(!executable);
+    const char* applyLabel = svc_ && svc_->mode == WriteMode::SqlExport ? "Export converted SQL" : "Apply converted SQL";
+    if (ImGui::Button(applyLabel, ImVec2(190.0f * svc_->dpiScale, 0.0f)))
+    {
+        const DbError result = sqlImporter_.Apply(*svc_->activeDb, sqlImportPlan_);
+        if (!result.ok)
+        {
+            if (svc_->setStatus)
+                svc_->setStatus("SQL import failed: " + result.message);
+            LogError("SQL import failed: " + result.message);
+        }
+        else
+        {
+            if (svc_->setStatus)
+                svc_->setStatus((svc_->mode == WriteMode::SqlExport ? "Exported " : "Applied ") +
+                                std::to_string(sqlImportPlan_.convertedRows) + " converted SQL row(s)");
+            LogInfo("SQL import applied " + std::to_string(sqlImportPlan_.convertedStatements) + " converted statement(s)");
+            RefreshTables();
+            if (!activeTable_.empty())
+                OpenTable(activeTable_);
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120.0f * svc_->dpiScale, 0.0f)))
+        ImGui::CloseCurrentPopup();
+    if (!executable)
+        ImGui::TextDisabled("Resolve conversion errors or choose a source with explicit INSERT/REPLACE column lists before applying.");
+    ImGui::EndPopup();
+}
+
 // --- menus -----------------------------------------------------------------
 void DbEditorModule::DrawFileMenu()
 {
@@ -298,6 +431,9 @@ void DbEditorModule::DrawFileMenu()
     ImGui::Separator();
     if (ImGui::MenuItem("Save", "Ctrl+S", false, ok && recordLoaded_))
         Save();
+    ImGui::Separator();
+    if (ImGui::MenuItem("Import SQL with schema conversion...", nullptr, false, svc_ && svc_->activeDb))
+        ImportSqlFile();
 }
 
 void DbEditorModule::HandleShortcuts()
@@ -314,6 +450,11 @@ void DbEditorModule::DrawPanels()
 {
     DrawBrowser();
     DrawEditor();
+}
+
+void DbEditorModule::DrawModals()
+{
+    DrawSqlImportModal();
 }
 
 void DbEditorModule::DrawBrowser()

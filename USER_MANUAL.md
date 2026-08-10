@@ -171,7 +171,25 @@ an integration module.
 3. Undo treats the complete paste as one command. Inspect IDs and path links when
    moving server-bound spawns to a different map.
 
-## 10. Advanced techniques
+## 10. Cross-core SQL import
+
+Open **DB Editor**, connect to the intended target world database, then choose
+**File → Import SQL with schema conversion**. The converter first reads the target's
+live table/column metadata; it does not assume your TrinityCore/AzerothCore revision
+matches a bundled dump. It converts explicit-column `INSERT`/`REPLACE` rows and
+simple `UPDATE` expressions using known semantic equivalents, including spawn
+`id ↔ id1`, AzerothCore secondary spawn IDs, `Title ↔ LogTitle`, table aliases, and
+legacy creature model slots to/from `creature_template_model`.
+
+Review the generated SQL and conversion notes before choosing **Apply converted SQL**
+or **Export converted SQL**. Unsupported fields are visibly omitted with warnings
+instead of being silently copied into an incorrect field. `DELETE` statements stay
+skipped unless you explicitly enable destructive DELETE conversion. Complex SQL,
+DDL, positional inserts without a column list, and expressions the converter cannot
+prove safe are intentionally not guessed; convert those manually or rewrite them as
+explicit-column inserts.
+
+## 11. Advanced techniques
 
 - Save camera/bookmark positions for recurring review locations.
 - Use macros for a repeated placement/terrain operation, then inspect undo history.
