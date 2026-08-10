@@ -12,6 +12,9 @@
 - Non-destructive World Validation panel with selectable findings and Markdown report export for
   project/client readiness, staged ADT edits, spawn transforms/displays/overlap, routes, formations,
   triggers, and authored lights.
+- Live World Editor Ramp / Stairs terrain composer: two-click terrain endpoints, width/slope/stair
+  controls, contiguous staged Flatten strokes, real-time terrain preview, one-step undo/redo, and
+  authoritative MCVT/MCNR overlay save/reload.
 - Portable `WowEdit/` C++17 architecture with MVC-facing panel controllers,
   complete menu command model, `ICommand`/macro history, and EventBus.
 - Heightmap, texture-splat, water, terrain chunk LOD, terrain tools, erosion,

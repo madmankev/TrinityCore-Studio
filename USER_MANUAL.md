@@ -51,8 +51,12 @@ cliffs, roads, and structures.
 ### Flatten / Ramp
 
 Sample a target point, then flatten with a blend rate to avoid a hard plateau.
-Ramp accepts start/end heights, width, and a maximum slope constraint. Use it for
-roads, ramps, stairs foundations, and traversable cliffs.
+In the live World Editor, choose **Ramp / Stairs**, set width, maximum slope, and
+optional stair count, then right-click the terrain start and end. Studio clamps the
+height delta to the requested grade and queues a contiguous sequence of radial
+Flatten strokes. The same staged GPU terrain preview shows the resulting grade
+before it is written; Ctrl+Z treats the whole ramp/stair operation as one edit.
+Use it for roads, ramps, stair foundations, and traversable cliffs.
 
 ### Noise, stamps, erosion, and roads
 

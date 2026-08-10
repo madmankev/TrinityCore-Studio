@@ -479,6 +479,10 @@ private:
                              int w, int h);
     void DrawTerrainBrushOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
                                  int w, int h, bool viewportHovered);
+    void QueueTerrainStrokeAcrossTiles(const adt::TerrainBrushStroke& stroke, int centerTileX, int centerTileY,
+                                       std::vector<AdtEditStore::TerrainStrokeRef>& outRefs);
+    void PushTerrainStrokeUndo(const std::vector<AdtEditStore::TerrainStrokeRef>& refs, const char* label);
+    void QueueTerrainRamp(const glm::vec3& start, const glm::vec3& end);
 
     // NPC model fallbacks: map markers remain visible/selectable when a custom display ID cannot be
     // resolved to an M2, and make a missing WoW client-model pack immediately diagnosable.
@@ -728,11 +732,18 @@ private:
     // authoritative MCVT/MCNR patch + reload; this toggle is a safe real-time preview only.
     bool liveTerrainPreview_ = true;
     std::vector<AdtEditStore::TerrainStrokeRef> terrainPreviewStrokes_;
-    int terrainSculptMode_ = 0;       // adt::TerrainBrushMode (0 raise, 1 lower, 2 flatten)
+    // 0..2 map directly to adt::TerrainBrushMode; 3 is the World Editor's ramp/stairs composer,
+    // expressed as a deterministic sequence of staged Flatten strokes when saved.
+    int terrainSculptMode_ = 0;
     float terrainBrushRadius_ = 10.0f;
     float terrainBrushStrength_ = 2.0f;
     float terrainFlattenZ_ = 0.0f;
     bool terrainSampleFlattenZ_ = true;
+    bool terrainRampHasStart_ = false;
+    glm::vec3 terrainRampStart_{0.0f};
+    float terrainRampWidth_ = 8.0f;
+    float terrainRampMaxSlopeDegrees_ = 30.0f;
+    int terrainRampStepCount_ = 0; // 0 = continuous grade; >=2 = quantized stairs
     uint64_t terrainHistoryGeneration_ = 1;
     std::string terrainStatus_;
 

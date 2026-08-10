@@ -101,6 +101,7 @@ void AdtViewerModule::OnClientDataLoaded()
     brushActive_ = false;
     adtEdits_.SetMap("");
     terrainSculptActive_ = false;
+    terrainRampHasStart_ = false;
     ++terrainHistoryGeneration_;
     terrainStatus_.clear();
     // Client/project data changed: do not carry an unsaved map-light draft into a different
@@ -168,6 +169,29 @@ void AdtViewerModule::HandleShortcuts()
     if (ImGui::IsKeyPressed(ImGuiKey_F, false) &&
         (selKind_ != SelKind::None || selectedWorldLightId_ != 0))
         FrameSelection();
+    if (ImGui::IsKeyPressed(ImGuiKey_R, false))
+    {
+        // Preserve DCC-style R = scale while an object is selected. With no
+        // transform target, R becomes the terrain Ramp / Stairs shortcut.
+        if (editMode_ && selKind_ != SelKind::None)
+        {
+            if (selKind_ == SelKind::Npc)
+                transformStatus_ = "NPC scale is template-owned; use the NPC Instance panel rather than a per-spawn scale gizmo.";
+            else
+                gizmoOp_ = ImGuizmo::SCALE;
+        }
+        else if (streamerInit_ && !loadedName_.empty() && !streamer_.wmoOnly())
+        {
+            terrainSculptMode_ = 3;
+            terrainRampHasStart_ = false;
+            terrainSculptActive_ = true;
+            inGameViewMode_ = false;
+            editMode_ = true;
+            terrainStatus_ = "Ramp tool armed (R) — right-click a terrain start, then end.";
+            if (svc_ && svc_->focusWindow)
+                svc_->focusWindow("Terrain Sculpt");
+        }
+    }
 }
 
 void AdtViewerModule::DrawMainMenuExtensions()
@@ -189,6 +213,7 @@ void AdtViewerModule::DrawMainMenuExtensions()
     };
     const auto armTerrain = [this, &focus](int mode) {
         terrainSculptMode_ = mode;
+        terrainRampHasStart_ = false;
         terrainSculptActive_ = true;
         inGameViewMode_ = false;
         editMode_ = true;
@@ -202,6 +227,7 @@ void AdtViewerModule::DrawMainMenuExtensions()
             if (ImGui::MenuItem("Raise", "T")) armTerrain(static_cast<int>(adt::TerrainBrushMode::Raise));
             if (ImGui::MenuItem("Lower")) armTerrain(static_cast<int>(adt::TerrainBrushMode::Lower));
             if (ImGui::MenuItem("Flatten", "L")) armTerrain(static_cast<int>(adt::TerrainBrushMode::Flatten));
+            if (ImGui::MenuItem("Ramp / Stairs", "R")) armTerrain(3);
             ImGui::Separator();
             if (ImGui::MenuItem("Terrain Sculpt Panel...")) focus("Terrain Sculpt");
             ImGui::EndMenu();
@@ -1287,6 +1313,7 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
     worldValidationStatus_.clear();
     if (dir != undoMapDir_)   // an actual map change (not an option-toggle reload) invalidates undo
     {
+        terrainRampHasStart_ = false;
         undo_.Clear();
         undoMapDir_ = dir;
         aiBehaviorEditGuid_ = 0;
@@ -4208,10 +4235,16 @@ void AdtViewerModule::DrawViewportPanel()
                            WorldLightTypeName(lightPlacementType_));
     if (terrainSculptActive_)
     {
-        static const char* kSculptNames[] = {"Raise", "Lower", "Flatten"};
-        ImGui::TextColored(ImVec4(0.94f, 0.52f, 0.18f, 1.0f),
-                           "Terrain sculpt active: %s, %.1f yd radius — right-click terrain; Esc stops.",
-                           kSculptNames[std::clamp(terrainSculptMode_, 0, 2)], terrainBrushRadius_);
+        static const char* kSculptNames[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs"};
+        if (terrainSculptMode_ == 3)
+            ImGui::TextColored(ImVec4(0.94f, 0.52f, 0.18f, 1.0f),
+                               "Terrain ramp active: %s — right-click %s; Esc stops.",
+                               terrainRampHasStart_ ? "right-click end point" : "right-click start point",
+                               terrainRampHasStart_ ? "the ramp end" : "the ramp start");
+        else
+            ImGui::TextColored(ImVec4(0.94f, 0.52f, 0.18f, 1.0f),
+                               "Terrain sculpt active: %s, %.1f yd radius — right-click terrain; Esc stops.",
+                               kSculptNames[std::clamp(terrainSculptMode_, 0, 3)], terrainBrushRadius_);
     }
 
     ImGui::TextDisabled("loaded %d tiles (%d pending), %d objects, %d models", streamer_.loadedTiles(),
@@ -4291,6 +4324,7 @@ void AdtViewerModule::DrawViewportPanel()
         if (terrainSculptActive_)
         {
             terrainSculptActive_ = false;
+            terrainRampHasStart_ = false;
             terrainStatus_ = "Terrain sculpt brush cancelled.";
         }
         else if (waypointPlacementMode_ != WaypointPlacementMode::None)
@@ -5240,26 +5274,52 @@ void AdtViewerModule::DrawTerrainSculptPanel()
         ImGui::TextColored(ImVec4(1.0f, 0.68f, 0.22f, 1.0f),
                            "Open a project with an edited-client folder before sculpting terrain.");
 
-    ImGui::SeparatorText("Height brush");
+    ImGui::SeparatorText("Height brush / grade");
     ImGui::BeginDisabled(!canSave);
+    const int previousTerrainMode = terrainSculptMode_;
     ImGui::RadioButton("Raise", &terrainSculptMode_, 0); ImGui::SameLine();
     ImGui::RadioButton("Lower", &terrainSculptMode_, 1); ImGui::SameLine();
-    ImGui::RadioButton("Flatten", &terrainSculptMode_, 2);
-    ImGui::SetNextItemWidth(220.0f);
-    ImGui::SliderFloat("Radius", &terrainBrushRadius_, 1.0f, 100.0f, "%.1f yd", ImGuiSliderFlags_Logarithmic);
-    if (terrainSculptMode_ == static_cast<int>(adt::TerrainBrushMode::Flatten))
+    ImGui::RadioButton("Flatten", &terrainSculptMode_, 2); ImGui::SameLine();
+    ImGui::RadioButton("Ramp / Stairs", &terrainSculptMode_, 3);
+    if (previousTerrainMode != terrainSculptMode_)
+        terrainRampHasStart_ = false;
+
+    if (terrainSculptMode_ == 3)
     {
-        ImGui::Checkbox("Sample target height from click", &terrainSampleFlattenZ_);
-        ImGui::BeginDisabled(terrainSampleFlattenZ_);
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::SliderFloat("Ramp width", &terrainRampWidth_, 2.0f, 100.0f, "%.1f yd", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::SliderFloat("Max slope", &terrainRampMaxSlopeDegrees_, 1.0f, 60.0f, "%.1f deg");
         ImGui::SetNextItemWidth(180.0f);
-        ImGui::InputFloat("Target Z", &terrainFlattenZ_, 0.0f, 0.0f, "%.3f");
-        ImGui::EndDisabled();
+        ImGui::SliderInt("Stair steps (0 = smooth)", &terrainRampStepCount_, 0, 32);
+        if (terrainRampHasStart_)
+        {
+            ImGui::Text("Ramp start: X %.2f  Y %.2f  Z %.2f", terrainRampStart_.x, terrainRampStart_.y, terrainRampStart_.z);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clear ramp start"))
+                terrainRampHasStart_ = false;
+        }
+        else
+            ImGui::TextDisabled("Arm the tool, then right-click the ramp start and end on terrain.");
     }
     else
     {
         ImGui::SetNextItemWidth(220.0f);
-        ImGui::SliderFloat("Strength per stroke", &terrainBrushStrength_, 0.05f, 30.0f,
-                           "%.2f yd", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("Radius", &terrainBrushRadius_, 1.0f, 100.0f, "%.1f yd", ImGuiSliderFlags_Logarithmic);
+        if (terrainSculptMode_ == static_cast<int>(adt::TerrainBrushMode::Flatten))
+        {
+            ImGui::Checkbox("Sample target height from click", &terrainSampleFlattenZ_);
+            ImGui::BeginDisabled(terrainSampleFlattenZ_);
+            ImGui::SetNextItemWidth(180.0f);
+            ImGui::InputFloat("Target Z", &terrainFlattenZ_, 0.0f, 0.0f, "%.3f");
+            ImGui::EndDisabled();
+        }
+        else
+        {
+            ImGui::SetNextItemWidth(220.0f);
+            ImGui::SliderFloat("Strength per stroke", &terrainBrushStrength_, 0.05f, 30.0f,
+                               "%.2f yd", ImGuiSliderFlags_Logarithmic);
+        }
     }
 
     if (ImGui::Checkbox("Live terrain preview", &liveTerrainPreview_))
@@ -5275,8 +5335,11 @@ void AdtViewerModule::DrawTerrainSculptPanel()
             inGameViewMode_ = false;
             editMode_ = true;
         }
+        terrainRampHasStart_ = false;
         terrainStatus_ = terrainSculptActive_
-            ? "Terrain brush armed — right-click terrain to queue a smooth height stroke."
+            ? (terrainSculptMode_ == 3
+                ? "Ramp tool armed — right-click a terrain start, then a terrain end."
+                : "Terrain brush armed — right-click terrain to queue a smooth height stroke.")
             : "Terrain brush stopped.";
     }
     ImGui::EndDisabled();
@@ -5300,7 +5363,10 @@ void AdtViewerModule::DrawTerrainSculptPanel()
     }
     if (terrainSculptActive_)
         ImGui::TextColored(ImVec4(0.94f, 0.52f, 0.18f, 1.0f),
-                           "Right-click terrain in the World Editor to sculpt. Escape cancels the brush.");
+                           terrainSculptMode_ == 3
+                               ? (terrainRampHasStart_ ? "Right-click the ramp end on terrain. Escape cancels the tool."
+                                                        : "Right-click the ramp start on terrain. Escape cancels the tool.")
+                               : "Right-click terrain in the World Editor to sculpt. Escape cancels the brush.");
     if (!terrainStatus_.empty())
         ImGui::TextDisabled("%s", terrainStatus_.c_str());
 
@@ -6172,6 +6238,33 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
     if (liveTerrainPreview_ && adtEdits_.terrainPendingCount() > 0)
         center.z = adtEdits_.PreviewTerrainZ(center.z, center.x + origin.x, center.y + origin.y);
 
+    // A ramp has a deliberate two-click interaction. Render its start/end guide
+    // instead of a circular brush so the grade direction and pending endpoint are
+    // obvious before the author commits the staged Flatten sequence.
+    if (terrainSculptMode_ == 3)
+    {
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const glm::vec3 worldEnd(center.x + origin.x, center.y + origin.y, center.z);
+        ImVec2 endScreen;
+        if (ProjectWorldPoint(worldEnd, origin, view, proj, p0, w, h, endScreen))
+        {
+            draw->AddCircle(endScreen, 7.0f, IM_COL32(255, 184, 74, 245), 16, 2.0f);
+            draw->AddText(ImVec2(endScreen.x + 9.0f, endScreen.y + 7.0f), IM_COL32(255, 232, 190, 255),
+                          terrainRampHasStart_ ? "Ramp end" : "Ramp start");
+        }
+        if (terrainRampHasStart_)
+        {
+            ImVec2 startScreen;
+            if (ProjectWorldPoint(terrainRampStart_, origin, view, proj, p0, w, h, startScreen) &&
+                ProjectWorldPoint(worldEnd, origin, view, proj, p0, w, h, endScreen))
+            {
+                draw->AddLine(startScreen, endScreen, IM_COL32(255, 138, 50, 230), 3.0f);
+                draw->AddCircleFilled(startScreen, 5.0f, IM_COL32(255, 212, 114, 255), 12);
+            }
+        }
+        return;
+    }
+
     constexpr int kSegments = 32;
     ImDrawList* draw = ImGui::GetWindowDrawList();
     ImVec2 previous{};
@@ -6198,10 +6291,10 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
                           view, proj, p0, w, h, centerScreen))
     {
         draw->AddCircleFilled(centerScreen, 4.0f, IM_COL32(255, 221, 160, 255), 10);
-        static const char* kModes[] = {"Raise", "Lower", "Flatten"};
+        static const char* kModes[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs"};
         draw->AddText(ImVec2(centerScreen.x + 8.0f, centerScreen.y + 6.0f),
                       IM_COL32(255, 234, 204, 255),
-                      kModes[std::clamp(terrainSculptMode_, 0, 2)]);
+                      kModes[std::clamp(terrainSculptMode_, 0, 3)]);
     }
 }
 
@@ -7491,6 +7584,105 @@ void AdtViewerModule::ApplySelectionOutline()
     else if (selKind_ == SelKind::Npc)        npcLayer_.SetOutline(selGuid_, col);
 }
 
+void AdtViewerModule::QueueTerrainStrokeAcrossTiles(
+    const adt::TerrainBrushStroke& stroke, int centerTileX, int centerTileY,
+    std::vector<AdtEditStore::TerrainStrokeRef>& outRefs)
+{
+    if (!std::isfinite(stroke.worldX) || !std::isfinite(stroke.worldY) ||
+        !std::isfinite(stroke.radius) || stroke.radius <= 0.01f)
+        return;
+    const float halfTile = adt::kTileSize * 0.5f;
+    for (int ty = std::max(0, centerTileY - 1); ty <= std::min(63, centerTileY + 1); ++ty)
+        for (int tx = std::max(0, centerTileX - 1); tx <= std::min(63, centerTileX + 1); ++tx)
+        {
+            bool exists = false;
+            for (const auto& tile : streamer_.world().tiles)
+                if (tile.first == tx && tile.second == ty) { exists = true; break; }
+            if (!exists)
+                continue;
+            const glm::vec2 tileCenter((31.5f - ty) * adt::kTileSize,
+                                       (31.5f - tx) * adt::kTileSize);
+            const float edgeX = std::max(std::fabs(stroke.worldX - tileCenter.x) - halfTile, 0.0f);
+            const float edgeY = std::max(std::fabs(stroke.worldY - tileCenter.y) - halfTile, 0.0f);
+            if (edgeX * edgeX + edgeY * edgeY > stroke.radius * stroke.radius)
+                continue;
+            const AdtEditStore::TerrainStrokeRef ref = adtEdits_.RecordTerrainStroke(tx, ty, stroke);
+            if (ref.id != 0)
+                outRefs.push_back(ref);
+        }
+}
+
+void AdtViewerModule::PushTerrainStrokeUndo(const std::vector<AdtEditStore::TerrainStrokeRef>& refs,
+                                            const char* label)
+{
+    if (refs.empty())
+        return;
+    const uint64_t generation = terrainHistoryGeneration_;
+    undo_.Push(MakeCommand(
+        [this, generation, refs]() {
+            if (generation == terrainHistoryGeneration_)
+                for (const auto& ref : refs)
+                    adtEdits_.RemoveTerrainStroke(ref.id);
+        },
+        [this, generation, refs]() {
+            if (generation == terrainHistoryGeneration_)
+                for (const auto& ref : refs)
+                    adtEdits_.RestoreTerrainStroke(ref);
+        }, label));
+}
+
+void AdtViewerModule::QueueTerrainRamp(const glm::vec3& start, const glm::vec3& requestedEnd)
+{
+    const glm::vec2 horizontal(requestedEnd.x - start.x, requestedEnd.y - start.y);
+    const float length = glm::length(horizontal);
+    if (length < 0.25f)
+    {
+        terrainStatus_ = "Ramp endpoints are too close together.";
+        return;
+    }
+
+    const float slopeRadians = glm::radians(std::clamp(terrainRampMaxSlopeDegrees_, 0.1f, 60.0f));
+    const float maxDelta = std::tan(slopeRadians) * length;
+    glm::vec3 end = requestedEnd;
+    end.z = std::clamp(end.z, start.z - maxDelta, start.z + maxDelta);
+    const float radius = std::clamp(terrainRampWidth_ * 0.5f, 1.0f, 100.0f);
+    const float spacing = std::max(1.0f, radius * 0.65f);
+    const int samples = std::clamp(static_cast<int>(std::ceil(length / spacing)) + 1, 2, 64);
+    std::vector<AdtEditStore::TerrainStrokeRef> refs;
+    refs.reserve(static_cast<size_t>(samples) * 3);
+    for (int sample = 0; sample < samples; ++sample)
+    {
+        const float t = static_cast<float>(sample) / static_cast<float>(samples - 1);
+        float heightT = t;
+        if (terrainRampStepCount_ >= 2)
+        {
+            const float divisions = static_cast<float>(terrainRampStepCount_ - 1);
+            heightT = std::round(t * divisions) / divisions;
+        }
+        adt::TerrainBrushStroke stroke;
+        stroke.mode = adt::TerrainBrushMode::Flatten;
+        stroke.worldX = glm::mix(start.x, end.x, t);
+        stroke.worldY = glm::mix(start.y, end.y, t);
+        stroke.radius = radius;
+        stroke.strength = 1.0f;
+        stroke.targetZ = glm::mix(start.z, end.z, heightT);
+        // World <-> ADT tile mapping mirrors the existing location overview and
+        // QueueTerrainStrokeAcrossTiles' center convention.
+        const int tileX = std::clamp(static_cast<int>(std::floor(32.0f - stroke.worldY / adt::kTileSize)), 0, 63);
+        const int tileY = std::clamp(static_cast<int>(std::floor(32.0f - stroke.worldX / adt::kTileSize)), 0, 63);
+        QueueTerrainStrokeAcrossTiles(stroke, tileX, tileY, refs);
+    }
+    if (refs.empty())
+    {
+        terrainStatus_ = "Ramp did not intersect a loaded terrain tile.";
+        return;
+    }
+    PushTerrainStrokeUndo(refs, terrainRampStepCount_ >= 2 ? "Build terrain stairs" : "Build terrain ramp");
+    terrainStatus_ = "Queued " + std::to_string(terrainRampStepCount_ >= 2 ? terrainRampStepCount_ : samples) +
+                     (terrainRampStepCount_ >= 2 ? " ramp stair level(s)" : " ramp grade sample(s)") +
+                     " across " + std::to_string(refs.size()) + " tile stroke(s) — save ADT edits to apply it.";
+}
+
 // Right-click (no drag) on terrain opens the add popup at the ground point. An object nearer than
 // the ground means the click was on an object, so no add is offered.
 void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4& proj,
@@ -7541,6 +7733,22 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
     if (terrainSculptActive_)
     {
         const glm::vec3 world(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z);
+        if (terrainSculptMode_ == 3)
+        {
+            if (!terrainRampHasStart_)
+            {
+                terrainRampStart_ = world;
+                terrainRampHasStart_ = true;
+                terrainStatus_ = "Ramp start captured — right-click the terrain end point.";
+            }
+            else
+            {
+                QueueTerrainRamp(terrainRampStart_, world);
+                terrainRampHasStart_ = false;
+            }
+            return;
+        }
+
         adt::TerrainBrushStroke stroke;
         stroke.mode = static_cast<adt::TerrainBrushMode>(std::clamp(terrainSculptMode_, 0, 2));
         stroke.worldX = world.x;
@@ -7550,46 +7758,14 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
         stroke.targetZ = terrainSampleFlattenZ_ ? world.z : terrainFlattenZ_;
         if (terrainSampleFlattenZ_ && stroke.mode == adt::TerrainBrushMode::Flatten)
             terrainFlattenZ_ = world.z;
-        // Duplicate a stroke only into neighboring ADTs whose terrain rectangle intersects the
-        // brush circle. This preserves seamless heights/normals across a streamed tile edge without
-        // attempting to create a missing WDT tile.
         std::vector<AdtEditStore::TerrainStrokeRef> refs;
-        const float halfTile = adt::kTileSize * 0.5f;
-        for (int ty = std::max(0, gty - 1); ty <= std::min(63, gty + 1); ++ty)
-            for (int tx = std::max(0, gtx - 1); tx <= std::min(63, gtx + 1); ++tx)
-            {
-                bool exists = false;
-                for (const auto& tile : streamer_.world().tiles)
-                    if (tile.first == tx && tile.second == ty) { exists = true; break; }
-                if (!exists)
-                    continue;
-                const glm::vec2 tileCenter((31.5f - ty) * adt::kTileSize,
-                                           (31.5f - tx) * adt::kTileSize);
-                const float edgeX = std::max(std::fabs(world.x - tileCenter.x) - halfTile, 0.0f);
-                const float edgeY = std::max(std::fabs(world.y - tileCenter.y) - halfTile, 0.0f);
-                if (edgeX * edgeX + edgeY * edgeY > stroke.radius * stroke.radius)
-                    continue;
-                const AdtEditStore::TerrainStrokeRef ref = adtEdits_.RecordTerrainStroke(tx, ty, stroke);
-                if (ref.id != 0)
-                    refs.push_back(ref);
-            }
+        QueueTerrainStrokeAcrossTiles(stroke, gtx, gty, refs);
         if (refs.empty())
         {
             terrainStatus_ = "Could not queue a terrain stroke for this tile.";
             return;
         }
-        const uint64_t generation = terrainHistoryGeneration_;
-        undo_.Push(MakeCommand(
-            [this, generation, refs]() {
-                if (generation == terrainHistoryGeneration_)
-                    for (const auto& ref : refs)
-                        adtEdits_.RemoveTerrainStroke(ref.id);
-            },
-            [this, generation, refs]() {
-                if (generation == terrainHistoryGeneration_)
-                    for (const auto& ref : refs)
-                        adtEdits_.RestoreTerrainStroke(ref);
-            }, "Sculpt terrain"));
+        PushTerrainStrokeUndo(refs, "Sculpt terrain");
         terrainStatus_ = "Queued terrain stroke across " + std::to_string(refs.size()) + " tile(s) — save ADT edits to apply it.";
         return;
     }
