@@ -347,6 +347,85 @@ void ApplyEventModelDisplays(IDatabase& db, uint32_t mapId, std::vector<MapSpawn
                       return a.displayId < b.displayId;
                   });
 }
+
+// Resolve server-backed combat behavior fields without assuming one core's schema. AzerothCore
+// currently exposes creature_template.detection_range; custom/older packs commonly use aggro_radius
+// and a few add a per-template/per-spawn leash_distance. Missing columns are normal — Studio keeps a
+// clearly-labelled preview fallback rather than inventing writes to unrelated core fields.
+void ApplyAiBehaviorFields(IDatabase& db, uint32_t mapId, const std::string& entryCol,
+                           const std::set<std::string>& creatureCols,
+                           const std::set<std::string>& templateCols,
+                           std::vector<MapSpawn>& spawns)
+{
+    if (spawns.empty())
+        return;
+    const std::string spawnAggro = FirstColumn(creatureCols,
+        {"aggro_radius", "aggro_range", "detection_range", "detectionrange", "sight_distance"});
+    const std::string templateAggro = FirstColumn(templateCols,
+        {"detection_range", "aggro_radius", "aggro_range", "detectionrange", "sight_distance"});
+    const std::string spawnLeash = FirstColumn(creatureCols,
+        {"leash_distance", "leash_range", "chase_distance"});
+    const std::string templateLeash = FirstColumn(templateCols,
+        {"leash_distance", "leash_range", "chase_distance"});
+    if (spawnAggro.empty() && templateAggro.empty() && spawnLeash.empty() && templateLeash.empty())
+        return;
+
+    auto col = [](const char* alias, const std::string& name) {
+        return name.empty() ? std::string("NULL")
+                            : (std::string(alias) + ".`" + name + "`");
+    };
+    const std::string query =
+        "SELECT c.guid, " + col("c", spawnAggro) + ", " + col("ct", templateAggro) + ", " +
+        col("c", spawnLeash) + ", " + col("ct", templateLeash) +
+        " FROM creature c JOIN creature_template ct ON ct.entry=c.`" + entryCol + "` WHERE c.map=" +
+        std::to_string(mapId);
+    DbError err;
+    auto rs = db.Query(query, err);
+    if (!rs)
+        return;
+
+    std::unordered_map<uint32_t, MapSpawn*> byGuid;
+    byGuid.reserve(spawns.size());
+    for (MapSpawn& spawn : spawns)
+        byGuid[spawn.guid] = &spawn;
+    auto saneDistance = [](float value, float fallback) {
+        return std::isfinite(value) && value >= 0.0f ? value : fallback;
+    };
+    while (rs->Next())
+    {
+        const auto found = byGuid.find(rs->GetUInt32(0));
+        if (found == byGuid.end())
+            continue;
+        MapSpawn& spawn = *found->second;
+        spawn.hasAggroRadiusColumn = !spawnAggro.empty() || !templateAggro.empty();
+        spawn.hasLeashDistanceColumn = !spawnLeash.empty() || !templateLeash.empty();
+
+        // A positive spawn override wins. A zero-valued non-null spawn column conventionally means
+        // "inherit template" on supported custom packs, while an explicitly nullable value also
+        // falls through safely to its template default.
+        const float cAggro = rs->GetFloat(1), tAggro = rs->GetFloat(2);
+        if (!spawnAggro.empty() && !rs->IsNull(1) && cAggro > 0.0f)
+        {
+            spawn.aiBehavior.aggroRadius = saneDistance(cAggro, spawn.aiBehavior.aggroRadius);
+            spawn.aggroRadiusFromSpawn = true;
+        }
+        else if (!templateAggro.empty() && !rs->IsNull(2))
+            spawn.aiBehavior.aggroRadius = saneDistance(tAggro, spawn.aiBehavior.aggroRadius);
+        else if (!spawnAggro.empty() && !rs->IsNull(1))
+            spawn.aiBehavior.aggroRadius = saneDistance(cAggro, spawn.aiBehavior.aggroRadius);
+
+        const float cLeash = rs->GetFloat(3), tLeash = rs->GetFloat(4);
+        if (!spawnLeash.empty() && !rs->IsNull(3) && cLeash > 0.0f)
+        {
+            spawn.aiBehavior.leashDistance = saneDistance(cLeash, spawn.aiBehavior.leashDistance);
+            spawn.leashDistanceFromSpawn = true;
+        }
+        else if (!templateLeash.empty() && !rs->IsNull(4))
+            spawn.aiBehavior.leashDistance = saneDistance(tLeash, spawn.aiBehavior.leashDistance);
+        else if (!spawnLeash.empty() && !rs->IsNull(3))
+            spawn.aiBehavior.leashDistance = saneDistance(cLeash, spawn.aiBehavior.leashDistance);
+    }
+}
 } // namespace
 
 DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
@@ -452,6 +531,7 @@ DbError MapSpawnRepository::LoadSpawnsForMap(IDatabase& db, uint32_t mapId,
     // each spawn and are selected live by SpawnFilter in NpcLayer.
     ApplyTemplateModelDisplays(db, out);
     ApplyEventModelDisplays(db, mapId, out);
+    ApplyAiBehaviorFields(db, mapId, entryCol, creatureCols, templateCols, out);
 
     // Merge game-event / pool / spawn-group gating (spawn_group spawnType 0 = creature).
     ApplyAssociations(db, "game_event_creature", "pool_creature", 0, out);
@@ -1120,6 +1200,67 @@ DbError MapSpawnRepository::UpdateCreatureTransform(IDatabase& db, uint32_t guid
         return e;
     }
     return db.Commit();
+}
+
+DbError MapSpawnRepository::UpdateCreatureAiBehavior(IDatabase& db, uint32_t guid, uint32_t entry,
+                                                       bool templateScope, const NpcAiBehavior& behavior,
+                                                       bool& outAggroPersisted, bool& outLeashPersisted) const
+{
+    outAggroPersisted = false;
+    outLeashPersisted = false;
+    if (guid == 0 || entry == 0)
+        return DbError{false, "A creature guid and template entry are required."};
+    if (!std::isfinite(behavior.aggroRadius) || behavior.aggroRadius < 0.0f ||
+        !std::isfinite(behavior.leashDistance) || behavior.leashDistance < 0.0f)
+        return DbError{false, "Aggro and leash distances must be finite non-negative yard values."};
+
+    const char* table = templateScope ? "creature_template" : "creature";
+    const std::set<std::string> cols = sql::ExistingCols(db, table);
+    // Do not guess optional behavior columns in SQL-export/no-introspection sessions. A guessed
+    // column makes a reviewable export fail on import; Studio preview persistence remains available.
+    if (cols.empty())
+        return DbError{false, "Live schema metadata is required to save aggro/leash behavior columns."};
+    const std::string aggroCol = FirstColumn(cols,
+        {"detection_range", "aggro_radius", "aggro_range", "detectionrange", "sight_distance"});
+    const std::string leashCol = FirstColumn(cols,
+        {"leash_distance", "leash_range", "chase_distance"});
+    if (aggroCol.empty() && leashCol.empty())
+        return DbError{false, std::string(table) + " has no recognized aggro or leash distance column."};
+
+    std::string set;
+    if (!aggroCol.empty())
+    {
+        set += "`" + aggroCol + "`=" + Num(behavior.aggroRadius);
+        outAggroPersisted = true;
+    }
+    if (!leashCol.empty())
+    {
+        if (!set.empty()) set += ", ";
+        set += "`" + leashCol + "`=" + Num(behavior.leashDistance);
+        outLeashPersisted = true;
+    }
+    db.BeginTransaction();
+    DbError e;
+    const std::string key = templateScope ? ("entry=" + std::to_string(entry))
+                                          : ("guid=" + std::to_string(guid));
+    db.Execute(std::string("UPDATE ") + table + " SET " + set + " WHERE " + key, e);
+    if (!e.ok)
+    {
+        db.Rollback();
+        outAggroPersisted = outLeashPersisted = false;
+        return e;
+    }
+    e = db.Commit();
+    if (!e.ok)
+    {
+        outAggroPersisted = outLeashPersisted = false;
+        return e;
+    }
+    if (!outAggroPersisted || !outLeashPersisted)
+        e.message = std::string("Saved available behavior column(s); ") +
+                    (!outAggroPersisted ? "aggro uses Studio preview fallback. " : "") +
+                    (!outLeashPersisted ? "leash uses Studio preview fallback." : "");
+    return e;
 }
 
 DbError MapSpawnRepository::LoadCreatureSpawn(IDatabase& db, uint32_t guid, CreatureSpawn& out) const

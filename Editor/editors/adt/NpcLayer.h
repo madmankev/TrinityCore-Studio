@@ -101,6 +101,22 @@ public:
     // Push a working waypoint path into one NPC's simulator, so edits preview immediately before Save.
     // The next map reload still reads the canonical rows from the database.
     bool SetWaypointPath(uint32_t guid, const WaypointPath& path);
+
+    // --- real-time AI behavior preview ---
+    // Per-spawn behavior is authored by the World Editor AI Behavior panel. Patrol Loop is the
+    // standard server waypoint behavior; PingPong/Once are preview modes useful for route design.
+    bool SetAiBehavior(uint32_t guid, const NpcAiBehavior& behavior);
+    const NpcAiBehavior* FindAiBehavior(uint32_t guid) const;
+    void SetAiPreviewTarget(bool enabled, const glm::vec3& worldPos);
+    struct AiPreviewState
+    {
+        glm::vec3 position{0.0f};
+        glm::vec3 home{0.0f};
+        bool chasing = false;
+        bool returning = false;
+        bool targetInRange = false;
+    };
+    bool GetAiPreviewState(uint32_t guid, AiPreviewState& out) const;
     // Highlight one guid (hover tint) on the next Build (guid 0 / alpha 0 clears it).
     void SetHighlight(uint32_t guid, const glm::vec4& color) { highlightGuid_ = guid; highlightColor_ = color; }
     // Selection outline for one guid: rgb color + width in .a (guid 0 / width 0 clears).
@@ -146,7 +162,13 @@ private:
     // Per-spawn simulation + render state.
     struct Npc
     {
+        enum class AiState : uint8_t { Patrol, Chasing, Returning };
         MapSpawn spawn;
+        NpcAiBehavior aiBehavior;
+        AiState aiState = AiState::Patrol;
+        int patrolDirection = 1;  // PingPong route direction (+1/-1)
+        bool patrolComplete = false;
+        bool targetInRange = false;
         glm::vec3 pos{0.0f};     // current simulated world position (TrinityCore coords)
         float heading = 0.0f;    // radians, faces movement while walking
         bool  moving = false;
@@ -207,6 +229,9 @@ private:
     std::unordered_set<std::string> failedHeld_;              // held-model paths that couldn't load
 
     std::vector<std::pair<float, int>> near_;   // per-frame scratch: (dist^2, npc index)
+
+    bool aiPreviewTargetEnabled_ = false;
+    glm::vec3 aiPreviewTarget_{0.0f};
 
     // Hover highlight: the guid tinted this frame (0 = none).
     uint32_t  highlightGuid_ = 0;

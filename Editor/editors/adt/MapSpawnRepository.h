@@ -90,6 +90,37 @@ enum class WaypointPathSource : uint8_t
     TemplateAddon,
 };
 
+// Studio patrol interpretation for the visual AI preview. Standard Trinity/Azeroth waypoint motion
+// loops; PingPong and Once are useful authoring previews that remain Studio-side unless a custom
+// server script implements them.
+enum class PatrolRoutePattern : uint8_t
+{
+    Loop,
+    PingPong,
+    Once,
+};
+
+inline const char* PatrolRoutePatternName(PatrolRoutePattern pattern)
+{
+    switch (pattern)
+    {
+        case PatrolRoutePattern::PingPong: return "Ping-pong";
+        case PatrolRoutePattern::Once: return "One-shot";
+        default: return "Loop";
+    }
+}
+
+// Per-spawn effective behavior used by the real-time World Editor simulation. Aggro/leash values
+// may originate in a live schema column (detection_range / leash_distance aliases) or a Studio
+// profile fallback on cores that do not expose per-creature leash data.
+struct NpcAiBehavior
+{
+    float aggroRadius = 20.0f;        // yards; 0 = never acquire the preview target
+    float leashDistance = 50.0f;      // yards from home; 0 = no preview leash
+    PatrolRoutePattern patrolPattern = PatrolRoutePattern::Loop;
+    bool aggroEnabled = true;
+};
+
 // Where the World Editor obtained a creature's base CreatureDisplayInfo id. The client needs this
 // id — not a CreatureModelData id — to select the matching M2, skin variations and character-NPC
 // customization. `creature_template_model` is the authoritative modern AzerothCore source, whereas
@@ -142,6 +173,13 @@ struct MapSpawn
     float    o = 0;              // creature.orientation (radians)
     uint8_t  movementType = 0;   // creature.MovementType (0 idle, 1 random, 2 waypoint)
     float    wanderDistance = 0; // creature.wander_distance (random-movement radius)
+    // Behavior defaults resolved from schema-aware aggro/leash columns when they exist. The
+    // PatrolRoutePattern is intentionally a Studio preview setting; it defaults to server-standard Loop.
+    NpcAiBehavior aiBehavior;
+    bool hasAggroRadiusColumn = false;
+    bool hasLeashDistanceColumn = false;
+    bool aggroRadiusFromSpawn = false;
+    bool leashDistanceFromSpawn = false;
     // `displayId` remains the resolved base value for existing callers. Use ResolveDisplay(filter)
     // when rendering/picking: it applies a selected game-event model as the server would.
     uint32_t displayId = 0;
@@ -308,6 +346,15 @@ public:
                                       const float rot[4]) const;
     // Persist a creature spawn's position + orientation, keyed by guid.
     DbError UpdateCreatureTransform(IDatabase& db, uint32_t guid, float x, float y, float z, float o) const;
+
+    // Save aggro/leash values through whichever live schema columns are available. Template scope
+    // targets creature_template (all spawns of entry); spawn scope targets creature.guid. The bool
+    // outputs tell the caller which requested values were actually represented by server columns;
+    // a core with no leash field can still use the Studio preview profile but cannot silently claim
+    // a DB/server behavior change.
+    DbError UpdateCreatureAiBehavior(IDatabase& db, uint32_t guid, uint32_t entry, bool templateScope,
+                                     const NpcAiBehavior& behavior, bool& outAggroPersisted,
+                                     bool& outLeashPersisted) const;
 
     // --- full-row spawn instance edit (World Editor NPC-instance panel) ---
     // Load the complete `creature` row for one guid into a CreatureSpawn (all editable columns;

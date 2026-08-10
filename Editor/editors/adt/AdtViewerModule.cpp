@@ -106,6 +106,11 @@ void AdtViewerModule::OnClientDataLoaded()
     runtimeTimeOfDay_ = 720.0f;
     selectedWorldLightId_ = 0;
     lightPlacementActive_ = false;
+    aiBehaviorEditGuid_ = 0;
+    aiBehaviorDirty_ = false;
+    aiPreviewTargetEnabled_ = false;
+    aiPreviewTargetPlacementActive_ = false;
+    aiPreviewTargetWorld_ = glm::vec3(0.0f);
     lightMarkers_.clear();
     outlinerDirty_ = true;
 }
@@ -188,6 +193,11 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
     bookmarks_.clear();
     lightingProfiles_.clear();
     lightingDrafts_.clear();
+    aiBehaviorProfiles_.clear();
+    aiBehaviorEdit_ = AiBehaviorProfileEntry{};
+    aiBehaviorOrig_ = AiBehaviorProfileEntry{};
+    aiBehaviorEditGuid_ = 0;
+    aiBehaviorDirty_ = false;
     lightingEdit_ = DefaultLightingProfile();
     lightingMapDir_.clear();
     lightingDirty_ = false;
@@ -242,6 +252,39 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
                                                 0.05f, 8.0f);
             inGameViewMode_ = preview.value("inGameView", false);
             liveTerrainPreview_ = preview.value("liveTerrainPreview", true);
+        }
+        if (editorNode.contains("aiBehavior") && editorNode["aiBehavior"].is_object())
+        {
+            const nlohmann::json& ai = editorNode["aiBehavior"];
+            showAiBehaviorOverlay_ = ai.value("showOverlay", true);
+            if (ai.contains("profiles") && ai["profiles"].is_array())
+                for (const nlohmann::json& p : ai["profiles"])
+                {
+                    if (!p.is_object())
+                        continue;
+                    const std::string mapDir = p.value("mapDir", std::string());
+                    if (mapDir.empty() || !p.contains("spawns") || !p["spawns"].is_array())
+                        continue;
+                    auto& map = aiBehaviorProfiles_[mapDir];
+                    for (const nlohmann::json& row : p["spawns"])
+                    {
+                        if (!row.is_object())
+                            continue;
+                        const uint32_t guid = row.value("guid", 0u);
+                        if (guid == 0)
+                            continue;
+                        AiBehaviorProfileEntry behavior;
+                        behavior.templateScope = row.value("templateScope", true);
+                        behavior.behavior.aggroEnabled = row.value("aggroEnabled", true);
+                        behavior.behavior.aggroRadius = std::clamp(finite(row.value("aggroRadius", 20.0f), 20.0f),
+                                                                    0.0f, 10000.0f);
+                        behavior.behavior.leashDistance = std::clamp(finite(row.value("leashDistance", 50.0f), 50.0f),
+                                                                       0.0f, 10000.0f);
+                        const int pattern = std::clamp(row.value("patrolPattern", 0), 0, 2);
+                        behavior.behavior.patrolPattern = static_cast<PatrolRoutePattern>(pattern);
+                        map[guid] = behavior;
+                    }
+                }
         }
         if (profiles)
             for (const nlohmann::json& j : *profiles)
@@ -377,6 +420,37 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
                                    {"simulationSpeed", worldSimulationSpeed_},
                                    {"inGameView", inGameViewMode_},
                                    {"liveTerrainPreview", liveTerrainPreview_}};
+
+    nlohmann::json behaviorProfiles = nlohmann::json::array();
+    std::vector<std::string> behaviorMaps;
+    behaviorMaps.reserve(aiBehaviorProfiles_.size());
+    for (const auto& pair : aiBehaviorProfiles_)
+        behaviorMaps.push_back(pair.first);
+    std::sort(behaviorMaps.begin(), behaviorMaps.end());
+    for (const std::string& mapDir : behaviorMaps)
+    {
+        nlohmann::json profile = {{"mapDir", mapDir}, {"spawns", nlohmann::json::array()}};
+        std::vector<uint32_t> guids;
+        const auto& entries = aiBehaviorProfiles_.at(mapDir);
+        guids.reserve(entries.size());
+        for (const auto& pair : entries)
+            guids.push_back(pair.first);
+        std::sort(guids.begin(), guids.end());
+        for (uint32_t guid : guids)
+        {
+            const AiBehaviorProfileEntry& behavior = entries.at(guid);
+            profile["spawns"].push_back({
+                {"guid", guid}, {"templateScope", behavior.templateScope},
+                {"aggroEnabled", behavior.behavior.aggroEnabled},
+                {"aggroRadius", behavior.behavior.aggroRadius},
+                {"leashDistance", behavior.behavior.leashDistance},
+                {"patrolPattern", static_cast<int>(behavior.behavior.patrolPattern)}
+            });
+        }
+        behaviorProfiles.push_back(std::move(profile));
+    }
+    editorNode["aiBehavior"] = {{"showOverlay", showAiBehaviorOverlay_},
+                                 {"profiles", std::move(behaviorProfiles)}};
 }
 
 void AdtViewerModule::Undo()
@@ -451,6 +525,7 @@ void AdtViewerModule::LoadNpcSpawns()
             ++eventOverrides;
     }
     npcLayer_.SetSpawns(std::move(spawns));
+    ApplyAiBehaviorProfiles();
     npcStatus_ = std::to_string(n) + " NPC spawns on this map (" +
                  std::to_string(serverOverrides) + " server overrides, " +
                  std::to_string(templateModelRows) + " template-model, " +
@@ -552,6 +627,7 @@ void AdtViewerModule::DrawPanels()
     DrawLocationsPanel();
     DrawTransformPanel();
     DrawFormationPanel();
+    DrawAiBehaviorPanel();
     DrawNpcInstancePanel();
     DrawGoInstancePanel();
     DrawWaypointPathPanel();
@@ -627,6 +703,11 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
     {
         undo_.Clear();
         undoMapDir_ = dir;
+        aiBehaviorEditGuid_ = 0;
+        aiBehaviorDirty_ = false;
+        aiPreviewTargetEnabled_ = false;
+        aiPreviewTargetPlacementActive_ = false;
+        aiBehaviorStatus_.clear();
     }
     if (!streamer_.OpenMap(dir))
     {
@@ -2156,6 +2237,340 @@ void AdtViewerModule::DrawFormationOverlay(const glm::mat4& view, const glm::mat
     }
 }
 
+void AdtViewerModule::ApplyAiBehaviorProfiles()
+{
+    std::vector<MapSpawn> spawns;
+    npcLayer_.SnapshotSpawns(spawns);
+    const auto profile = aiBehaviorProfiles_.find(selectedMapDir_);
+    for (const MapSpawn& spawn : spawns)
+    {
+        NpcAiBehavior behavior = spawn.aiBehavior;
+        if (profile != aiBehaviorProfiles_.end())
+        {
+            const auto saved = profile->second.find(spawn.guid);
+            if (saved != profile->second.end())
+                behavior = saved->second.behavior;
+        }
+        npcLayer_.SetAiBehavior(spawn.guid, behavior);
+    }
+    npcLayer_.SetAiPreviewTarget(aiPreviewTargetEnabled_, aiPreviewTargetWorld_);
+}
+
+void AdtViewerModule::SyncAiBehaviorEdit()
+{
+    if (selKind_ != SelKind::Npc)
+    {
+        if (!aiBehaviorDirty_)
+            aiBehaviorEditGuid_ = 0;
+        return;
+    }
+    if (aiBehaviorDirty_ || aiBehaviorEditGuid_ == selGuid_)
+        return;
+    const MapSpawn* spawn = npcLayer_.FindSpawn(selGuid_);
+    if (!spawn)
+    {
+        aiBehaviorEditGuid_ = 0;
+        return;
+    }
+    AiBehaviorProfileEntry state;
+    state.behavior = spawn->aiBehavior;
+    state.templateScope = !(spawn->aggroRadiusFromSpawn || spawn->leashDistanceFromSpawn);
+    const auto profile = aiBehaviorProfiles_.find(selectedMapDir_);
+    if (profile != aiBehaviorProfiles_.end())
+        if (const auto saved = profile->second.find(spawn->guid); saved != profile->second.end())
+            state = saved->second;
+    aiBehaviorEdit_ = state;
+    aiBehaviorOrig_ = state;
+    aiBehaviorEditGuid_ = spawn->guid;
+    aiBehaviorStatus_.clear();
+}
+
+void AdtViewerModule::ApplyAiBehaviorEdit(bool persistServerColumns)
+{
+    if (aiBehaviorEditGuid_ == 0)
+        return;
+    const MapSpawn* spawn = npcLayer_.FindSpawn(aiBehaviorEditGuid_);
+    if (!spawn)
+        return;
+    NpcAiBehavior& behavior = aiBehaviorEdit_.behavior;
+    behavior.aggroRadius = std::clamp(behavior.aggroRadius, 0.0f, 10000.0f);
+    behavior.leashDistance = std::clamp(behavior.leashDistance, 0.0f, 10000.0f);
+
+    bool dbAggro = false, dbLeash = false;
+    if (persistServerColumns)
+    {
+        if (!svc_ || !svc_->connected || !svc_->activeDb)
+        {
+            aiBehaviorStatus_ = "Connect a project database to save server behavior columns.";
+            return;
+        }
+        const DbError result = spawnRepo_.UpdateCreatureAiBehavior(*svc_->activeDb, spawn->guid,
+                                                                     spawn->entry, aiBehaviorEdit_.templateScope,
+                                                                     behavior, dbAggro, dbLeash);
+        if (!result.ok)
+        {
+            aiBehaviorStatus_ = "Server save unavailable: " + result.message +
+                                " Studio preview values remain staged.";
+            return;
+        }
+        aiBehaviorStatus_ = result.message.empty()
+            ? "Saved recognized server behavior column(s)."
+            : result.message;
+    }
+    else
+        aiBehaviorStatus_ = "Saved Studio AI preview behavior.";
+
+    aiBehaviorProfiles_[selectedMapDir_][spawn->guid] = aiBehaviorEdit_;
+    npcLayer_.SetAiBehavior(spawn->guid, behavior);
+    npcLayer_.SetAiPreviewTarget(aiPreviewTargetEnabled_, aiPreviewTargetWorld_);
+    aiBehaviorOrig_ = aiBehaviorEdit_;
+    aiBehaviorDirty_ = false;
+    if (svc_ && svc_->requestSaveSettings)
+        svc_->requestSaveSettings();
+    if (svc_ && svc_->setStatus)
+        svc_->setStatus(aiBehaviorStatus_);
+}
+
+bool AdtViewerModule::TryPlaceAiPreviewTarget(const glm::vec3& world)
+{
+    if (!aiPreviewTargetPlacementActive_)
+        return false;
+    aiPreviewTargetWorld_ = world;
+    aiPreviewTargetEnabled_ = true;
+    aiPreviewTargetPlacementActive_ = false;
+    npcLayer_.SetAiPreviewTarget(true, world);
+    aiBehaviorStatus_ = "Placed AI preview target. Move it to test aggro and leash behavior.";
+    return true;
+}
+
+void AdtViewerModule::DrawAiBehaviorOverlay(const glm::mat4& view, const glm::mat4& proj,
+                                             const ImVec2& p0, int w, int h)
+{
+    if (!showAiBehaviorOverlay_ || selKind_ != SelKind::Npc)
+        return;
+    const MapSpawn* spawn = npcLayer_.FindSpawn(selGuid_);
+    const NpcAiBehavior* behavior = npcLayer_.FindAiBehavior(selGuid_);
+    if (!spawn || !behavior)
+        return;
+    const glm::vec3 origin = streamer_.origin();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    auto ring = [&](float radius, ImU32 color, float thickness) {
+        if (radius <= 0.01f)
+            return;
+        constexpr int kSegments = 48;
+        ImVec2 previous{};
+        bool havePrevious = false;
+        for (int i = 0; i <= kSegments; ++i)
+        {
+            const float angle = (static_cast<float>(i) / kSegments) * 6.28318530718f;
+            ImVec2 at;
+            const glm::vec3 world(spawn->x + std::cos(angle) * radius,
+                                  spawn->y + std::sin(angle) * radius, spawn->z);
+            const bool visible = ProjectWorldPoint(world, origin, view, proj, p0, w, h, at);
+            if (visible && havePrevious)
+                draw->AddLine(previous, at, color, thickness);
+            previous = at;
+            havePrevious = visible;
+        }
+    };
+    // Orange/red is detection; cool blue is the maximum chase-return envelope.
+    if (behavior->aggroEnabled)
+        ring(behavior->aggroRadius, IM_COL32(255, 121, 58, 180), 2.0f);
+    ring(behavior->leashDistance, IM_COL32(95, 168, 255, 150), 1.25f);
+
+    NpcLayer::AiPreviewState state;
+    npcLayer_.GetAiPreviewState(spawn->guid, state);
+    ImVec2 npcAt;
+    if (ProjectWorldPoint(state.position, origin, view, proj, p0, w, h, npcAt))
+    {
+        const char* label = state.chasing ? "CHASING" : state.returning ? "RETURNING" :
+                            behavior->patrolPattern == PatrolRoutePattern::PingPong ? "PATROL: PING-PONG" :
+                            behavior->patrolPattern == PatrolRoutePattern::Once ? "PATROL: ONCE" : "PATROL: LOOP";
+        const ImU32 stateColor = state.chasing ? IM_COL32(255, 90, 68, 255) :
+                                 state.returning ? IM_COL32(111, 180, 255, 255) : IM_COL32(255, 220, 106, 240);
+        draw->AddText(ImVec2(npcAt.x + 9.0f, npcAt.y - 20.0f), stateColor, label);
+    }
+
+    if (aiPreviewTargetEnabled_)
+    {
+        ImVec2 targetAt;
+        if (ProjectWorldPoint(aiPreviewTargetWorld_, origin, view, proj, p0, w, h, targetAt))
+        {
+            draw->AddCircleFilled(targetAt, 7.0f, IM_COL32(236, 74, 216, 240), 14);
+            draw->AddCircle(targetAt, 7.0f, IM_COL32(255, 230, 252, 255), 14, 1.5f);
+            draw->AddLine(ImVec2(targetAt.x - 5.0f, targetAt.y), ImVec2(targetAt.x + 5.0f, targetAt.y),
+                          IM_COL32(55, 16, 50, 255), 1.4f);
+            draw->AddLine(ImVec2(targetAt.x, targetAt.y - 5.0f), ImVec2(targetAt.x, targetAt.y + 5.0f),
+                          IM_COL32(55, 16, 50, 255), 1.4f);
+            draw->AddText(ImVec2(targetAt.x + 9.0f, targetAt.y - 8.0f), IM_COL32(255, 222, 253, 255),
+                          "AI target");
+            if ((state.chasing || state.returning) && ProjectWorldPoint(state.position, origin, view, proj, p0, w, h, npcAt))
+                draw->AddLine(npcAt, targetAt, state.chasing ? IM_COL32(255, 90, 68, 215)
+                                                              : IM_COL32(111, 180, 255, 180), 1.8f);
+        }
+    }
+}
+
+void AdtViewerModule::DrawAiBehaviorPanel()
+{
+    if (!ImGui::Begin("AI Behavior"))
+    {
+        ImGui::End();
+        return;
+    }
+    if (selKind_ != SelKind::Npc)
+    {
+        if (!aiBehaviorDirty_)
+            SyncAiBehaviorEdit();
+        ImGui::TextWrapped("Select an NPC in the World Editor to configure its visual waypoint patrol, aggro radius, leash return distance, and preview target.");
+        ImGui::End();
+        return;
+    }
+    if (aiBehaviorDirty_ && aiBehaviorEditGuid_ != selGuid_)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.20f, 1.0f),
+                           "Guid %u has unsaved AI behavior edits.", aiBehaviorEditGuid_);
+        if (ImGui::Button("Save Studio behavior"))
+            ApplyAiBehaviorEdit(false);
+        ImGui::SameLine();
+        if (ImGui::Button("Discard and load selected"))
+        {
+            aiBehaviorDirty_ = false;
+            aiBehaviorEditGuid_ = 0;
+            SyncAiBehaviorEdit();
+        }
+        ImGui::End();
+        return;
+    }
+    SyncAiBehaviorEdit();
+    const MapSpawn* spawn = npcLayer_.FindSpawn(selGuid_);
+    if (!spawn || aiBehaviorEditGuid_ == 0)
+    {
+        ImGui::TextDisabled("The selected NPC is no longer available.");
+        ImGui::End();
+        return;
+    }
+
+    const std::string title = svc_ && svc_->lookups ? svc_->lookups->LabelCreature(spawn->entry)
+                                                      : ("entry " + std::to_string(spawn->entry));
+    ImGui::TextUnformatted(title.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("guid %u", spawn->guid);
+    if (ImGui::Checkbox("Show AI overlay", &showAiBehaviorOverlay_))
+        if (svc_ && svc_->requestSaveSettings)
+            svc_->requestSaveSettings();
+
+    bool changed = false;
+    bool targetChanged = false;
+    if (ImGui::CollapsingHeader("Detection and leash", ImGuiTreeNodeFlags_DefaultOpen))
+        if (BeginFieldTable("aibehaviorcombat", 164.0f))
+        {
+            FieldRow("Enable aggro preview"); changed |= ImGui::Checkbox("##aggroen", &aiBehaviorEdit_.behavior.aggroEnabled);
+            FieldRow("Aggro radius (yd)", "Preview target acquisition radius. Uses detection_range/aggro aliases when a live server column exists.");
+            changed |= InputFloatField("##aggro", aiBehaviorEdit_.behavior.aggroRadius);
+            FieldRow("Leash distance (yd)", "Maximum horizontal distance from home before the preview returns to patrol. A zero value disables the preview leash.");
+            changed |= InputFloatField("##leash", aiBehaviorEdit_.behavior.leashDistance);
+            FieldRow("Server save scope");
+            changed |= ImGui::Checkbox("Save to template (all spawns)", &aiBehaviorEdit_.templateScope);
+            EndFieldTable();
+        }
+
+    if (ImGui::CollapsingHeader("Patrol route", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        static const char* kPatterns[] = {"Loop (server standard)", "Ping-pong (preview)", "One-shot (preview)"};
+        int pattern = static_cast<int>(aiBehaviorEdit_.behavior.patrolPattern);
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::Combo("Pattern", &pattern, kPatterns, IM_ARRAYSIZE(kPatterns)))
+        {
+            aiBehaviorEdit_.behavior.patrolPattern = static_cast<PatrolRoutePattern>(std::clamp(pattern, 0, 2));
+            changed = true;
+        }
+        ImGui::TextDisabled("Waypoint Editor provides visual point creation, terrain placement, ordering and delays. Loop persists as normal core waypoint motion; Ping-pong/One-shot are Studio simulation patterns until backed by custom server scripting.");
+        if (spawn->pathId == 0)
+            ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.24f, 1.0f), "No waypoint path is currently bound to this NPC.");
+        else
+            ImGui::TextDisabled("Bound path %u (%s)", spawn->pathId, WaypointSourceLabel(spawn->PathSource()));
+        if (spawn->pathId != 0 && spawn->movementType != 2)
+        {
+            ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.24f, 1.0f), "Waypoint movement is not enabled for this spawn.");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Enable waypoint movement"))
+                EnableSelectedNpcWaypointMotion();
+        }
+        if (ImGui::Button("Open Waypoint Path panel") && svc_ && svc_->focusWindow)
+            svc_->focusWindow("Waypoint Path");
+    }
+
+    ImGui::SeparatorText("Live aggro / leash preview");
+    ImGui::Checkbox("Enable preview target", &aiPreviewTargetEnabled_);
+    if (BeginFieldTable("aitarget", 164.0f))
+    {
+        FieldRow("Target X"); targetChanged |= InputFloatField("##aitx", aiPreviewTargetWorld_.x);
+        FieldRow("Target Y"); targetChanged |= InputFloatField("##aity", aiPreviewTargetWorld_.y);
+        FieldRow("Target Z"); targetChanged |= InputFloatField("##aitz", aiPreviewTargetWorld_.z);
+        EndFieldTable();
+    }
+    if (ImGui::Button(aiPreviewTargetPlacementActive_ ? "Stop placing target" : "Place target on terrain"))
+    {
+        aiPreviewTargetPlacementActive_ = !aiPreviewTargetPlacementActive_;
+        if (aiPreviewTargetPlacementActive_)
+        {
+            inGameViewMode_ = false;
+            editMode_ = true;
+            terrainSculptActive_ = false;
+            lightPlacementActive_ = false;
+            brushActive_ = false;
+            waypointPlacementMode_ = WaypointPlacementMode::None;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Target at camera"))
+    {
+        const glm::vec3 local = camera_.mode() == ViewportCamera::Mode::Fly ? camera_.Eye() : camera_.center();
+        const glm::vec3 origin = streamer_.origin();
+        aiPreviewTargetWorld_ = glm::vec3(local.x + origin.x, local.y + origin.y, local.z);
+        aiPreviewTargetEnabled_ = true;
+    }
+    if (changed)
+    {
+        aiBehaviorEdit_.behavior.aggroRadius = std::clamp(aiBehaviorEdit_.behavior.aggroRadius, 0.0f, 10000.0f);
+        aiBehaviorEdit_.behavior.leashDistance = std::clamp(aiBehaviorEdit_.behavior.leashDistance, 0.0f, 10000.0f);
+        aiBehaviorDirty_ = true;
+    }
+    if (targetChanged)
+    {
+        aiPreviewTargetEnabled_ = true;
+        aiBehaviorStatus_ = "Moved AI preview target.";
+    }
+    npcLayer_.SetAiPreviewTarget(aiPreviewTargetEnabled_, aiPreviewTargetWorld_);
+    if (aiBehaviorDirty_)
+        npcLayer_.SetAiBehavior(spawn->guid, aiBehaviorEdit_.behavior); // immediate live feedback before Save
+
+    ImGui::BeginDisabled(!aiBehaviorDirty_);
+    if (ImGui::Button("Save Studio behavior"))
+        ApplyAiBehaviorEdit(false);
+    ImGui::SameLine();
+    if (ImGui::Button("Save recognized server values"))
+        ApplyAiBehaviorEdit(true);
+    ImGui::SameLine();
+    if (ImGui::Button("Revert behavior"))
+    {
+        aiBehaviorEdit_ = aiBehaviorOrig_;
+        aiBehaviorDirty_ = false;
+        npcLayer_.SetAiBehavior(spawn->guid, aiBehaviorEdit_.behavior);
+    }
+    ImGui::EndDisabled();
+
+    ImGui::TextDisabled("Schema: aggro %s; leash %s. Missing server fields stay safely in the Studio preview profile.",
+                        spawn->hasAggroRadiusColumn ? (spawn->aggroRadiusFromSpawn ? "spawn override" : "template/default") : "Studio fallback",
+                        spawn->hasLeashDistanceColumn ? (spawn->leashDistanceFromSpawn ? "spawn override" : "template/default") : "Studio fallback");
+    if (!aiBehaviorStatus_.empty())
+        ImGui::TextDisabled("%s", aiBehaviorStatus_.c_str());
+    ImGui::End();
+}
+
+
+
 void AdtViewerModule::DrawViewportPanel()
 {
     if (!ImGui::Begin("World Editor###ADT Viewer"))
@@ -2314,6 +2729,9 @@ void AdtViewerModule::DrawViewportPanel()
         ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.42f, 1.0f),
                            "Placement brush active: %s entry %u — right-click terrain; Esc stops.",
                            brushKind_ == 0 ? "NPC" : "GameObject", brushEntry_);
+    if (aiPreviewTargetPlacementActive_)
+        ImGui::TextColored(ImVec4(0.94f, 0.36f, 0.84f, 1.0f),
+                           "AI target placement active — right-click terrain; Esc stops.");
     if (lightPlacementActive_)
         ImGui::TextColored(ImVec4(1.0f, 0.76f, 0.28f, 1.0f),
                            "%s light placement active — right-click terrain; Esc stops.",
@@ -2403,6 +2821,11 @@ void AdtViewerModule::DrawViewportPanel()
             waypointPlacementMode_ = WaypointPlacementMode::None;
             waypointStatus_ = "Terrain waypoint tool cancelled.";
         }
+        else if (aiPreviewTargetPlacementActive_)
+        {
+            aiPreviewTargetPlacementActive_ = false;
+            aiBehaviorStatus_ = "AI target placement cancelled.";
+        }
         else if (lightPlacementActive_)
         {
             lightPlacementActive_ = false;
@@ -2479,6 +2902,7 @@ void AdtViewerModule::DrawViewportPanel()
     {
         DrawWaypointOverlay(view, proj, p0, w, h);
         DrawFormationOverlay(view, proj, p0, w, h);
+        DrawAiBehaviorOverlay(view, proj, p0, w, h);
         DrawLightOverlay(view, proj, p0, w, h);
         DrawNpcMarkerOverlay();
         DrawTerrainBrushOverlay(view, proj, p0, w, h, hovered);
@@ -5246,6 +5670,14 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
             AddWaypointAt(world);
         else
             MoveSelectedWaypointTo(world);
+        return;
+    }
+
+    // AI target placement is intentionally above lights/spawns: it is a pure preview control and
+    // must never create a persistent world object when an author is testing aggro/leash envelopes.
+    if (aiPreviewTargetPlacementActive_)
+    {
+        TryPlaceAiPreviewTarget(glm::vec3(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z));
         return;
     }
 

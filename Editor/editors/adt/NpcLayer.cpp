@@ -67,6 +67,7 @@ void NpcLayer::SetSpawns(std::vector<MapSpawn> spawns)
     {
         Npc n;
         n.spawn = s;
+        n.aiBehavior = s.aiBehavior;
         n.pos = glm::vec3(s.x, s.y, s.z);
         n.heading = s.o;
         n.rng = s.guid ? s.guid : (s.entry * 2654435761u + 1u);
@@ -78,6 +79,7 @@ void NpcLayer::AddSpawn(const MapSpawn& s)
 {
     Npc n;
     n.spawn = s;
+    n.aiBehavior = s.aiBehavior;
     n.pos = glm::vec3(s.x, s.y, s.z);
     n.heading = s.o;
     n.rng = s.guid ? s.guid : (s.entry * 2654435761u + 1u);
@@ -103,6 +105,61 @@ void NpcLayer::SnapshotSpawns(std::vector<MapSpawn>& out) const
         out.push_back(n.spawn);
 }
 
+bool NpcLayer::SetAiBehavior(uint32_t guid, const NpcAiBehavior& behavior)
+{
+    for (Npc& n : npcs_)
+    {
+        if (n.spawn.guid != guid)
+            continue;
+        n.aiBehavior = behavior;
+        n.aiBehavior.aggroRadius = std::isfinite(n.aiBehavior.aggroRadius)
+                                      ? std::max(n.aiBehavior.aggroRadius, 0.0f) : 0.0f;
+        n.aiBehavior.leashDistance = std::isfinite(n.aiBehavior.leashDistance)
+                                        ? std::max(n.aiBehavior.leashDistance, 0.0f) : 0.0f;
+        n.spawn.aiBehavior = n.aiBehavior;
+        // An authored behavior change should immediately restart any combat-return state and route
+        // traversal so its effect is visible without a map reload.
+        n.aiState = Npc::AiState::Patrol;
+        n.targetInRange = false;
+        n.hasTarget = false;
+        n.pauseMs = 0.0f;
+        n.patrolDirection = 1;
+        n.patrolComplete = false;
+        return true;
+    }
+    return false;
+}
+
+const NpcAiBehavior* NpcLayer::FindAiBehavior(uint32_t guid) const
+{
+    for (const Npc& n : npcs_)
+        if (n.spawn.guid == guid)
+            return &n.aiBehavior;
+    return nullptr;
+}
+
+void NpcLayer::SetAiPreviewTarget(bool enabled, const glm::vec3& worldPos)
+{
+    aiPreviewTargetEnabled_ = enabled;
+    aiPreviewTarget_ = worldPos;
+}
+
+bool NpcLayer::GetAiPreviewState(uint32_t guid, AiPreviewState& out) const
+{
+    for (const Npc& n : npcs_)
+    {
+        if (n.spawn.guid != guid)
+            continue;
+        out.position = n.pos;
+        out.home = glm::vec3(n.spawn.x, n.spawn.y, n.spawn.z);
+        out.chasing = n.aiState == Npc::AiState::Chasing;
+        out.returning = n.aiState == Npc::AiState::Returning;
+        out.targetInRange = n.targetInRange;
+        return true;
+    }
+    return false;
+}
+
 void NpcLayer::Clear()
 {
     if (renderer_)
@@ -121,6 +178,8 @@ void NpcLayer::Clear()
     failedHeld_.clear();
     npcs_.clear();
     near_.clear();
+    aiPreviewTargetEnabled_ = false;
+    aiPreviewTarget_ = glm::vec3(0.0f);
     displays_.clear();
     modelPaths_.clear();
     displayMapsLoaded_ = false;
@@ -335,13 +394,22 @@ void NpcLayer::Simulate(Npc& n, float dtMs, IDatabase* db)
     dtMs = std::min(dtMs, kMaxStepMs);
     n.animTime += dtMs;
 
-    // Paused (waypoint delay / wander rest): stand still.
-    if (n.pauseMs > 0.0f)
+    // Paused waypoint/wander actors still react immediately when the author moves the AI preview
+    // target into detection range — combat acquisition must not wait for a cosmetic patrol delay.
+    bool interruptPause = false;
+    if (aiPreviewTargetEnabled_ && n.aiBehavior.aggroEnabled && n.aiBehavior.aggroRadius > 0.0f)
+    {
+        const glm::vec2 delta(n.pos.x - aiPreviewTarget_.x, n.pos.y - aiPreviewTarget_.y);
+        interruptPause = glm::length(delta) <= n.aiBehavior.aggroRadius;
+    }
+    if (n.pauseMs > 0.0f && !interruptPause)
     {
         n.pauseMs -= dtMs;
         n.moving = false;
         return;
     }
+    if (interruptPause)
+        n.pauseMs = 0.0f;
 
     const float walkStep = kBaseWalkSpeed * (n.spawn.speedWalk > 0.0f ? n.spawn.speedWalk : 1.0f) *
                            dtMs / 1000.0f;
@@ -367,6 +435,58 @@ void NpcLayer::Simulate(Npc& n, float dtMs, IDatabase* db)
         n.moving = true;
         return false;
     };
+
+    const glm::vec3 home(n.spawn.x, n.spawn.y, n.spawn.z);
+    const float runStep = kBaseWalkSpeed * (n.spawn.speedRun > 0.0f ? n.spawn.speedRun : 1.14286f) *
+                          dtMs / 1000.0f;
+    auto distanceXY = [](const glm::vec3& a, const glm::vec3& b) {
+        const glm::vec2 d(a.x - b.x, a.y - b.y);
+        return glm::length(d);
+    };
+
+    // The World Editor has no connected player-object stream, so AI Behavior Configuration uses an
+    // explicit preview target. This intentionally models the useful authoring loop: patrol until a
+    // target enters aggro, chase it, then leash-return home before resuming the route.
+    n.targetInRange = false;
+    if (aiPreviewTargetEnabled_ && n.aiBehavior.aggroEnabled && n.aiBehavior.aggroRadius > 0.0f)
+    {
+        n.targetInRange = distanceXY(n.pos, aiPreviewTarget_) <= n.aiBehavior.aggroRadius;
+        if (n.aiState == Npc::AiState::Patrol && n.targetInRange)
+        {
+            n.aiState = Npc::AiState::Chasing;
+            n.pauseMs = 0.0f;
+            n.hasTarget = false;
+            n.patrolComplete = false;
+        }
+    }
+    else if (n.aiState == Npc::AiState::Chasing)
+        n.aiState = Npc::AiState::Returning;
+
+    if (n.aiState == Npc::AiState::Chasing)
+    {
+        if (n.aiBehavior.leashDistance > 0.0f && distanceXY(n.pos, home) > n.aiBehavior.leashDistance)
+        {
+            n.aiState = Npc::AiState::Returning;
+            n.pauseMs = 0.0f;
+        }
+        else
+        {
+            moveToward(aiPreviewTarget_, runStep);
+            return;
+        }
+    }
+    if (n.aiState == Npc::AiState::Returning)
+    {
+        if (moveToward(home, runStep))
+        {
+            n.aiState = Npc::AiState::Patrol;
+            n.pathIdx = 0;
+            n.patrolDirection = 1;
+            n.patrolComplete = false;
+            n.pauseMs = 300.0f;
+        }
+        return;
+    }
 
     const uint8_t mt = n.spawn.movementType;
 
@@ -421,8 +541,17 @@ void NpcLayer::Simulate(Npc& n, float dtMs, IDatabase* db)
             n.pos = glm::vec3(n.spawn.x, n.spawn.y, n.spawn.z);
             return;
         }
-        if (n.pathIdx >= static_cast<int>(n.path.size()))
-            n.pathIdx = 0;
+        if (n.aiBehavior.patrolPattern == PatrolRoutePattern::Once && n.patrolComplete)
+        {
+            n.moving = false;
+            return;
+        }
+        if (n.pathIdx < 0 || n.pathIdx >= static_cast<int>(n.path.size()))
+        {
+            n.pathIdx = n.aiBehavior.patrolPattern == PatrolRoutePattern::PingPong && n.patrolDirection < 0
+                            ? static_cast<int>(n.path.size()) - 1
+                            : 0;
+        }
         const uint8_t pointMove = n.pathIdx < static_cast<int>(n.pathMoveType.size())
                                       ? n.pathMoveType[n.pathIdx]
                                       : 0;
@@ -439,7 +568,29 @@ void NpcLayer::Simulate(Npc& n, float dtMs, IDatabase* db)
             if (n.pathIdx < static_cast<int>(n.pathOrientation.size()) &&
                 std::fabs(n.pathOrientation[n.pathIdx]) > 1e-6f)
                 n.heading = n.pathOrientation[n.pathIdx];
-            n.pathIdx = (n.pathIdx + 1) % static_cast<int>(n.path.size());
+            const int last = static_cast<int>(n.path.size()) - 1;
+            switch (n.aiBehavior.patrolPattern)
+            {
+                case PatrolRoutePattern::PingPong:
+                    if (n.pathIdx >= last)
+                        n.patrolDirection = -1;
+                    else if (n.pathIdx <= 0)
+                        n.patrolDirection = 1;
+                    n.pathIdx += n.patrolDirection;
+                    break;
+                case PatrolRoutePattern::Once:
+                    if (n.pathIdx >= last)
+                    {
+                        n.pathIdx = last;
+                        n.patrolComplete = true;
+                    }
+                    else
+                        ++n.pathIdx;
+                    break;
+                default:
+                    n.pathIdx = (n.pathIdx + 1) % static_cast<int>(n.path.size());
+                    break;
+            }
         }
         return;
     }
@@ -826,6 +977,9 @@ bool NpcLayer::UpdateSpawnEditable(uint32_t guid, const MapSpawn& fields)
             n.pathOrientation.clear();
             n.pathMoveType.clear();
             n.pathIdx = 0;
+            n.patrolDirection = 1;
+            n.patrolComplete = false;
+            n.aiState = Npc::AiState::Patrol;
         }
         return true;
     }
@@ -852,6 +1006,9 @@ bool NpcLayer::SetSpawnPathBinding(uint32_t guid, uint32_t pathId, uint32_t spaw
         n.pathOrientation.clear();
         n.pathMoveType.clear();
         n.pathIdx = 0;
+        n.patrolDirection = 1;
+        n.patrolComplete = false;
+        n.aiState = Npc::AiState::Patrol;
         n.pauseMs = 0.0f;
         n.hasTarget = false;
         n.pos = glm::vec3(n.spawn.x, n.spawn.y, n.spawn.z);
@@ -886,6 +1043,9 @@ bool NpcLayer::SetWaypointPath(uint32_t guid, const WaypointPath& path)
         }
         n.pathTried = true;  // this working copy is authoritative until the next binding change/reload
         n.pathIdx = 0;
+        n.patrolDirection = 1;
+        n.patrolComplete = false;
+        n.aiState = Npc::AiState::Patrol;
         n.pauseMs = 0.0f;
         n.hasTarget = false;
         n.pos = glm::vec3(n.spawn.x, n.spawn.y, n.spawn.z);

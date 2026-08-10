@@ -48,6 +48,7 @@ public:
                 {"Locations", DockSlot::Left, true},
                 {"Transform", DockSlot::Left, true},
                 {"Formation", DockSlot::Left, true},
+                {"AI Behavior", DockSlot::Left, true},
                 {"NPC Instance", DockSlot::Left, true},
                 {"GameObject Instance", DockSlot::Left, true},
                 {"Waypoint Path", DockSlot::Bottom, true},
@@ -117,6 +118,13 @@ private:
     void DrawFormationPanel();
     void SyncFormationEdit();
     void SaveFormationEdit();
+    void DrawAiBehaviorPanel();
+    void SyncAiBehaviorEdit();
+    void ApplyAiBehaviorEdit(bool persistServerColumns);
+    void ApplyAiBehaviorProfiles();
+    void DrawAiBehaviorOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
+                               int w, int h);
+    bool TryPlaceAiPreviewTarget(const glm::vec3& world);
     void DeleteFormationEdit();
     void ApplyFormationState(uint32_t memberGuid, const FormationState& state);
     void DrawFormationOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
@@ -219,6 +227,11 @@ private:
     {
         bool present = false;
         CreatureFormationMember row;
+    };
+    struct AiBehaviorProfileEntry
+    {
+        NpcAiBehavior behavior;
+        bool templateScope = true;  // DB save target when a recognized schema field is available
     };
     void RebuildOutliner();
     void DrawSelectionToolbar();
@@ -424,6 +437,19 @@ private:
     uint32_t formationEditGuid_ = 0;
     bool formationDirty_ = false;
     std::string formationStatus_;
+
+    // AI Behavior Configuration is map-scoped Studio state layered over any recognized server
+    // detection/leash columns. It drives the optional real-time preview target in NpcLayer.
+    std::unordered_map<std::string, std::unordered_map<uint32_t, AiBehaviorProfileEntry>> aiBehaviorProfiles_;
+    AiBehaviorProfileEntry aiBehaviorEdit_;
+    AiBehaviorProfileEntry aiBehaviorOrig_;
+    uint32_t aiBehaviorEditGuid_ = 0;
+    bool aiBehaviorDirty_ = false;
+    bool showAiBehaviorOverlay_ = true;
+    bool aiPreviewTargetEnabled_ = false;
+    bool aiPreviewTargetPlacementActive_ = false;
+    glm::vec3 aiPreviewTargetWorld_{0.0f};
+    std::string aiBehaviorStatus_;
 
     // Reusable terrain-click placement palette. Unlike the one-shot context menu, a palette entry
     // stays armed for rapid map dressing and keeps an inexpensive spacing guard for the session.
