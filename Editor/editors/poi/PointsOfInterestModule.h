@@ -30,7 +30,7 @@ protected:
     const char* NounPlural() const override { return "points of interest"; }
     std::string RowLabel(const DbRecord& rec) const override;
     int TabCount() const override { return 1; }
-    const char* TabName(int tab) const override { return "POI"; }
+    const char* TabName(int) const override { return "POI"; }
     void DrawTab(int tab, DbRecord& rec) override;
 };
 } // namespace we

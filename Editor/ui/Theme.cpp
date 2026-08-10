@@ -86,28 +86,30 @@ void ApplyTheme(float dpiScale, ThemeKind kind)
     const bool bliz = (kind == ThemeKind::Blizzard);
 
     // --- metrics ---
-    s.WindowPadding     = ImVec2(12, 12);
-    s.FramePadding      = ImVec2(9, 5);
-    s.CellPadding       = ImVec2(8, 5);
-    s.ItemSpacing       = ImVec2(9, 7);
+    // A denser, clearer workbench rhythm: cards/panels breathe, while editable controls stay
+    // compact enough for data-heavy Trinity/Azeroth tables.
+    s.WindowPadding     = ImVec2(14, 12);
+    s.FramePadding      = ImVec2(10, 6);
+    s.CellPadding       = ImVec2(9, 6);
+    s.ItemSpacing       = ImVec2(10, 8);
     s.ItemInnerSpacing  = ImVec2(8, 6);
-    s.IndentSpacing     = 20.0f;
-    s.ScrollbarSize     = 13.0f;
-    s.GrabMinSize       = 11.0f;
+    s.IndentSpacing     = 22.0f;
+    s.ScrollbarSize     = 14.0f;
+    s.GrabMinSize       = 12.0f;
 
     s.WindowBorderSize  = 1.0f;
     s.ChildBorderSize   = 1.0f;
     s.PopupBorderSize   = 1.0f;
-    s.FrameBorderSize   = 0.0f;
+    s.FrameBorderSize   = 1.0f;
     s.TabBorderSize     = 0.0f;
 
-    s.WindowRounding    = 7.0f;
-    s.ChildRounding     = 7.0f;
-    s.FrameRounding     = 6.0f;
-    s.PopupRounding     = 6.0f;
-    s.ScrollbarRounding = 9.0f;
-    s.GrabRounding      = 6.0f;
-    s.TabRounding       = 6.0f;
+    s.WindowRounding    = 10.0f;
+    s.ChildRounding     = 8.0f;
+    s.FrameRounding     = 7.0f;
+    s.PopupRounding     = 9.0f;
+    s.ScrollbarRounding = 10.0f;
+    s.GrabRounding      = 7.0f;
+    s.TabRounding       = 7.0f;
 
     s.WindowTitleAlign  = ImVec2(0.02f, 0.5f);
     s.WindowMenuButtonPosition = ImGuiDir_None;
@@ -117,11 +119,11 @@ void ApplyTheme(float dpiScale, ThemeKind kind)
     // --- palette ---------------------------------------------------------
     // Blizzard: warm charcoal + gold, with a translucent window bg so the parchment
     // backdrop shows through. Dark: flat neutral charcoal (opaque), same gold accent.
-    // Blizzard: docked panels are transparent so the (darkened) parchment backdrop
-    // drawn by the App shows through as the panel surface. Modals/popups use the
-    // opaque PopupBg, so they stay solid. Dark: fully opaque flat panels.
-    const float wbgA = bliz ? 0.00f : 1.00f;   // window bg alpha
-    const float mbgA = bliz ? 0.45f : 1.00f;   // menu bar bg alpha
+    // The refreshed Blizzard skin keeps a trace of parchment while restoring solid panel
+    // surfaces and strong field boundaries. The old fully-transparent dock windows looked
+    // atmospheric but made dense inspectors and forms difficult to scan.
+    const float wbgA = bliz ? 0.86f : 1.00f;   // window bg alpha
+    const float mbgA = bliz ? 0.92f : 1.00f;   // menu bar bg alpha
 
     const ImVec4 bg        = bliz ? ImVec4(0.118f, 0.106f, 0.088f, wbgA)
                                   : ImVec4(0.107f, 0.109f, 0.122f, wbgA);
@@ -139,7 +141,8 @@ void ApplyTheme(float dpiScale, ThemeKind kind)
                                   : ImVec4(0.900f, 0.905f, 0.915f, 1.00f);
     const ImVec4 textDim   = bliz ? ImVec4(0.575f, 0.540f, 0.470f, 1.00f)
                                   : ImVec4(0.540f, 0.548f, 0.570f, 1.00f);
-    const ImVec4 border    = ImVec4(0.000f, 0.000f, 0.000f, 0.45f);
+    const ImVec4 border    = bliz ? ImVec4(0.43f, 0.34f, 0.20f, 0.62f)
+                                  : ImVec4(0.30f, 0.34f, 0.43f, 0.62f);
     const ImVec4 accent    = ImVec4(0.855f, 0.647f, 0.216f, 1.00f); // WoW gold (both)
     const ImVec4 accentHov = ImVec4(0.945f, 0.745f, 0.315f, 1.00f);
     const ImVec4 accentDim = ImVec4(0.855f, 0.647f, 0.216f, 0.38f);
@@ -149,8 +152,9 @@ void ApplyTheme(float dpiScale, ThemeKind kind)
     c[ImGuiCol_Text]                 = text;
     c[ImGuiCol_TextDisabled]         = textDim;
     c[ImGuiCol_WindowBg]             = bg;
-    c[ImGuiCol_ChildBg]              = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_PopupBg]              = ImVec4(0.100f, 0.090f, 0.074f, 0.98f);
+    c[ImGuiCol_ChildBg]              = bliz ? ImVec4(child.x, child.y, child.z, 0.74f)
+                                            : child;
+    c[ImGuiCol_PopupBg]              = ImVec4(0.082f, 0.076f, 0.070f, 0.99f);
     c[ImGuiCol_Border]               = border;
     c[ImGuiCol_BorderShadow]         = ImVec4(0, 0, 0, 0);
     c[ImGuiCol_FrameBg]              = frame;

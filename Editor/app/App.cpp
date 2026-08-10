@@ -2,6 +2,7 @@
 
 #include "app/App.h"
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -394,6 +395,11 @@ int App::Run(bool selftest, bool demo)
         {
             if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_K))
                 showConnectModal = true;
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_P))
+            {
+                showCommandPalette = true;
+                commandQuery.clear();
+            }
             if (ImGui::IsKeyPressed(ImGuiKey_F11, false))
                 ToggleMaximize();
             // Shell-owned, dispatched to the active module's own undo stack. The
@@ -431,8 +437,9 @@ int App::Run(bool selftest, bool demo)
         else
         {
         DrawMenuBar();
-        DrawEditorRail();   // left strip; shrinks the viewport work area
-        DrawStatusBar();    // bottom strip; shrinks the viewport work area
+        DrawWorkspaceBar();
+        DrawEditorRail();   // left navigation; shrinks the viewport work area
+        DrawStatusBar();    // bottom context strip; shrinks the viewport work area
         ImGuiID dockspaceId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
 
         // Arrange panels into a sensible default the first time (or on request).
@@ -455,6 +462,7 @@ int App::Run(bool selftest, bool demo)
         activeModule()->DrawPanels();
         DrawSharedPanels();
         DrawSharedModals();
+        DrawCommandPalette();
         activeModule()->DrawModals();
         DrawLoadingOverlay();
         }
@@ -561,7 +569,14 @@ void App::DrawMenuBar()
     {
         m->DrawViewMenu();   // this editor's panel toggles
         ImGui::MenuItem("Log", nullptr, &showLog);
+        if (ImGui::MenuItem("Compact navigation", nullptr, &railCollapsed))
+            SaveSettings();
         ImGui::Separator();
+        if (ImGui::MenuItem("Command Palette", "Ctrl+P"))
+        {
+            showCommandPalette = true;
+            commandQuery.clear();
+        }
         if (ImGui::MenuItem("Reset Layout"))
         {
             showLog = true;
@@ -581,77 +596,230 @@ void App::DrawMenuBar()
 }
 
 // ---------------------------------------------------------------------------
+void App::DrawWorkspaceBar()
+{
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float h = 38.0f * dpiScale;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f * dpiScale, 7.0f * dpiScale));
+    if (ImGui::BeginViewportSideBar("##workspacebar", vp, ImGuiDir_Up, h,
+                                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings))
+    {
+        IEditorModule* module = activeModule();
+        const std::string project = activeProject.name.empty() ? "No project" : activeProject.name;
+        ImGui::TextUnformatted(project.c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("/  %s", module->DisplayName());
+
+        const ImVec4 connectionColor = connected ? ImVec4(0.28f, 0.84f, 0.54f, 1.0f)
+                                                   : ImVec4(0.92f, 0.47f, 0.35f, 1.0f);
+        const char* connectionText = connected ? (mode == WriteMode::Live ? "LIVE DB" : "SQL EXPORT")
+                                               : "OFFLINE";
+        const float rightButtons = 306.0f * dpiScale;
+        const float x = ImGui::GetWindowContentRegionMax().x - rightButtons;
+        if (x > ImGui::GetCursorPosX())
+            ImGui::SetCursorPosX(x);
+        ImGui::PushStyleColor(ImGuiCol_Button, connectionColor);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(connectionColor.x + 0.06f,
+                                                               connectionColor.y + 0.06f,
+                                                               connectionColor.z + 0.04f, 1.0f));
+        if (ImGui::Button(connectionText, ImVec2(90.0f * dpiScale, 0)))
+        {
+            if (connected)
+                Disconnect();
+            else
+                showConnectModal = true;
+        }
+        ImGui::PopStyleColor(2);
+        ImGui::SameLine();
+        if (ImGui::Button("Command", ImVec2(94.0f * dpiScale, 0)))
+        {
+            showCommandPalette = true;
+            commandQuery.clear();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Command palette (Ctrl+P)");
+        ImGui::SameLine();
+        if (ImGui::Button("Preferences", ImVec2(106.0f * dpiScale, 0)))
+            showPrefs = true;
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
+
+// ---------------------------------------------------------------------------
 void App::DrawEditorRail()
 {
-    // Slim vertical strip of editor modules on the far left, one button per module in
-    // modules_ order (the button index IS the activeEditor index). Drawn as a viewport
-    // side bar so the dockspace auto-fits beside it. Glyph and tooltip come from the
-    // module itself (RailGlyph/DisplayName), so adding a module to modules_ is the only
-    // change needed — the rail has no separate list to keep in sync.
-    // Single-letter glyphs are placeholders for real client icons.
-    const float railW = 52.0f * dpiScale;
+    // The original one-letter strip was fast but made a 20+ editor workspace hard to scan.
+    // This adaptive rail exposes names, groups, search, and an intentional compact mode while
+    // remaining a viewport sidebar so the docked workspace always lays out around it.
+    const float railW = (railCollapsed ? 64.0f : 242.0f) * dpiScale;
     ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 9));
-    // Thin scrollbar so the rail can scroll (many editors overflow the strip) without the buttons
-    // losing much width; mouse-wheel scrolls too (NoScrollWithMouse removed).
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                        railCollapsed ? ImVec2(8.0f * dpiScale, 10.0f * dpiScale)
+                                      : ImVec2(10.0f * dpiScale, 10.0f * dpiScale));
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 8.0f * dpiScale);
     if (ImGui::BeginViewportSideBar("##editorrail", vp, ImGuiDir_Left, railW,
                                     ImGuiWindowFlags_NoSavedSettings))
     {
-        const float btnH = 40.0f * dpiScale;
-        for (int i = 0; i < static_cast<int>(modules_.size()); ++i)
+        if (railCollapsed)
         {
-            IEditorModule* m = modules_[i].get();
-            ImGui::PushID(i);
-            const bool active = (i == activeEditor);
-            if (active)
-                ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-            if (ImGui::Button(m->RailGlyph(), ImVec2(-FLT_MIN, btnH)))
-                activeEditor = i;
-            if (active)
-                ImGui::PopStyleColor();
+            if (ImGui::Button(">>", ImVec2(-FLT_MIN, 0)))
+            {
+                railCollapsed = false;
+                SaveSettings();
+            }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", m->DisplayName());
-            ImGui::Spacing();
-            ImGui::PopID();
+                ImGui::SetTooltip("Expand workspace navigation");
+        }
+        else
+        {
+            ImGui::TextDisabled("WORKSPACE");
+            ImGui::SameLine();
+            ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - ImGui::GetFrameHeight());
+            if (ImGui::SmallButton("<<"))
+            {
+                railCollapsed = true;
+                SaveSettings();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Collapse workspace navigation");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            InputTextString("Search modules##rail", railSearch);
+            ImGui::Separator();
+        }
+
+        auto groupFor = [](const char* id) -> int {
+            const std::string key = id ? id : "";
+            if (key == "quest" || key == "item" || key == "creature" || key == "gameobject" ||
+                key == "achievement" || key == "title" || key == "broadcasttext" || key == "spell" ||
+                key == "talent" || key == "skill")
+                return 0; // content
+            if (key == "smartai" || key == "conditions" || key == "loot" || key == "creaturetext" ||
+                key == "gossip" || key == "pagetext" || key == "poi" || key == "npctext" ||
+                key == "gameevent")
+                return 1; // logic
+            return 2;     // visual/data tools
+        };
+        auto matches = [&](IEditorModule* module) {
+            if (railSearch.empty())
+                return true;
+            const std::string q = railSearch;
+            auto lower = [](std::string text) {
+                for (char& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                return text;
+            };
+            return lower(module->DisplayName()).find(lower(q)) != std::string::npos ||
+                   lower(module->Id()).find(lower(q)) != std::string::npos;
+        };
+        static const char* groups[] = {"CONTENT", "LOGIC & SCRIPTS", "WORLD & DATA"};
+        for (int group = 0; group < 3; ++group)
+        {
+            bool any = false;
+            for (const auto& module : modules_)
+                if (groupFor(module->Id()) == group && matches(module.get())) { any = true; break; }
+            if (!any)
+                continue;
+            if (!railCollapsed)
+            {
+                ImGui::Spacing();
+                ImGui::TextDisabled("%s", groups[group]);
+            }
+            for (int i = 0; i < static_cast<int>(modules_.size()); ++i)
+            {
+                IEditorModule* module = modules_[i].get();
+                if (groupFor(module->Id()) != group || !matches(module))
+                    continue;
+                ImGui::PushID(i);
+                const bool active = i == activeEditor;
+                const float h = (railCollapsed ? 42.0f : 38.0f) * dpiScale;
+                const ImVec2 size(-FLT_MIN, h);
+                if (ImGui::Selectable("##module", active, 0, size))
+                {
+                    activeEditor = i;
+                    railSearch.clear();
+                }
+                const ImVec2 min = ImGui::GetItemRectMin();
+                ImDrawList* draw = ImGui::GetWindowDrawList();
+                const ImU32 glyphBg = active ? IM_COL32(211, 156, 57, 255) : IM_COL32(60, 68, 88, 230);
+                const float glyphSize = h - 10.0f * dpiScale;
+                const ImVec2 glyphMin(min.x + 5.0f * dpiScale, min.y + 5.0f * dpiScale);
+                const ImVec2 glyphMax(glyphMin.x + glyphSize, glyphMin.y + glyphSize);
+                draw->AddRectFilled(glyphMin, glyphMax, glyphBg, 6.0f * dpiScale);
+                const ImVec2 textSize = ImGui::CalcTextSize(module->RailGlyph());
+                draw->AddText(ImVec2(glyphMin.x + (glyphSize - textSize.x) * 0.5f,
+                                     glyphMin.y + (glyphSize - textSize.y) * 0.5f),
+                              IM_COL32(18, 20, 26, 255), module->RailGlyph());
+                if (!railCollapsed)
+                {
+                    draw->AddText(ImVec2(glyphMax.x + 9.0f * dpiScale,
+                                         min.y + (h - ImGui::GetTextLineHeight()) * 0.5f),
+                                  ImGui::GetColorU32(active ? ImGuiCol_Text : ImGuiCol_TextDisabled),
+                                  module->DisplayName());
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", module->DisplayName());
+                ImGui::PopID();
+            }
+        }
+        if (!railCollapsed && !railSearch.empty())
+        {
+            bool found = false;
+            for (const auto& module : modules_)
+                if (matches(module.get())) { found = true; break; }
+            if (!found)
+                ImGui::TextDisabled("No modules match \"%s\".", railSearch.c_str());
         }
     }
     ImGui::End();
-    ImGui::PopStyleVar(2);  // WindowPadding + ScrollbarSize
+    ImGui::PopStyleVar(2);
 }
 
 // ---------------------------------------------------------------------------
 void App::DrawStatusBar()
 {
     ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 3));
-    const float h = ImGui::GetFrameHeight() + 4.0f;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f * dpiScale, 4.0f * dpiScale));
+    const float h = ImGui::GetFrameHeight() + 8.0f * dpiScale;
     if (ImGui::BeginViewportSideBar("##statusbar", vp, ImGuiDir_Down, h,
                                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings))
     {
-        auto sep = [] { ImGui::SameLine(); ImGui::TextDisabled("  |  "); ImGui::SameLine(); };
-        IEditorModule* m = activeModule();
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(m->DisplayName());
-        sep();
-        if (connected)
+        IEditorModule* module = activeModule();
+        const ImVec4 online = ImVec4(0.28f, 0.84f, 0.54f, 1.0f);
+        const ImVec4 offline = ImVec4(0.92f, 0.47f, 0.35f, 1.0f);
+        ImGui::TextColored(connected ? online : offline, "●");
+        ImGui::SameLine(0.0f, 5.0f * dpiScale);
+        ImGui::TextDisabled("%s", connected ? (mode == WriteMode::Live ? "Live database" : "SQL export")
+                                              : "Offline workspace");
+        ImGui::SameLine();
+        ImGui::TextDisabled("·");
+        ImGui::SameLine();
+        ImGui::TextUnformatted(module->DisplayName());
+        if (module->HasRecord())
         {
-            ImGui::Text("Connected (%s)", mode == WriteMode::SqlExport ? "SQL export" : "live");
-            sep();
-            ImGui::TextDisabled("%s", CoreFlavorName(activeCoreFlavor));
+            ImGui::SameLine();
+            ImGui::TextDisabled("·");
+            ImGui::SameLine();
+            ImGui::TextUnformatted(module->RecordSummary().c_str());
         }
-        else
-            ImGui::TextDisabled("Disconnected");
-        sep();
-        if (m->HasRecord())
-            ImGui::TextUnformatted(m->RecordSummary().c_str());
-        else
-            ImGui::TextDisabled("No record open");
-        if (!statusLine.empty())
+
+        const std::string right = connected
+            ? (std::string(CoreFlavorName(activeCoreFlavor)) + "  •  Ctrl+P command palette")
+            : std::string("Ctrl+P command palette");
+        const float rightW = ImGui::CalcTextSize(right.c_str()).x;
+        const float remaining = ImGui::GetWindowContentRegionMax().x - ImGui::GetCursorPosX();
+        if (!statusLine.empty() && remaining > rightW + 100.0f * dpiScale)
         {
-            sep();
+            ImGui::SameLine();
+            ImGui::TextDisabled("·");
+            ImGui::SameLine();
+            ImGui::PushTextWrapPos(ImGui::GetWindowContentRegionMax().x - rightW - 16.0f * dpiScale);
             ImGui::TextDisabled("%s", statusLine.c_str());
+            ImGui::PopTextWrapPos();
         }
+        const float rightX = ImGui::GetWindowContentRegionMax().x - rightW;
+        if (rightX > ImGui::GetCursorPosX())
+            ImGui::SetCursorPosX(rightX);
+        ImGui::TextDisabled("%s", right.c_str());
     }
     ImGui::End();
     ImGui::PopStyleVar();
@@ -666,17 +834,20 @@ void App::BuildDefaultLayout(unsigned int dockspaceId)
     ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
 
     ImGuiID center = dockspaceId;
-    ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.22f, nullptr, &center);
-    ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.22f, nullptr, &center);
+    ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20f, nullptr, &center);
+    ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.27f, nullptr, &center);
+    ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.23f, nullptr, &center);
 
-    // The shared Log always sits bottom; the active module contributes its own windows
-    // (browser -> left, editor -> center, validation -> bottom, tabbed with Log).
+    // A proper editor layout has stable roles: catalog/navigation left, the document or live
+    // viewport center, contextual inspectors right, and logs/timelines below. Modules that only
+    // provide the original Left/Center/Bottom slots remain fully backward compatible.
     ImGui::DockBuilderDockWindow("Log", bottom);
     for (const PanelDesc& p : activeModule()->Panels())
     {
-        ImGuiID target = (p.slot == DockSlot::Left)   ? left
+        ImGuiID target = (p.slot == DockSlot::Left)     ? left
+                         : (p.slot == DockSlot::Right)  ? right
                          : (p.slot == DockSlot::Bottom) ? bottom
-                                                        : center;
+                                                         : center;
         ImGui::DockBuilderDockWindow(p.title, target);
     }
     ImGui::DockBuilderFinish(dockspaceId);
@@ -703,6 +874,81 @@ void App::DrawSharedPanels()
         ImGui::End();
     }
 }
+
+void App::DrawCommandPalette()
+{
+    if (showCommandPalette)
+    {
+        ImGui::OpenPopup("Command Palette");
+        showCommandPalette = false;
+    }
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.22f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(620.0f * dpiScale, vp->WorkSize.x - 40.0f * dpiScale),
+                                    0.0f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowBgAlpha(1.0f);
+    if (!ImGui::BeginPopupModal("Command Palette", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+        return;
+
+    ImGui::TextDisabled("Navigate modules and common workspace commands");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::IsWindowAppearing())
+        ImGui::SetKeyboardFocusHere();
+    InputTextString("Search##command", commandQuery);
+    const std::string q = commandQuery;
+    auto lower = [](std::string value) {
+        for (char& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return value;
+    };
+    const std::string query = lower(q);
+    auto match = [&](const std::string& label) {
+        return query.empty() || lower(label).find(query) != std::string::npos;
+    };
+    ImGui::Separator();
+    if (ImGui::BeginChild("##commands", ImVec2(0, 320.0f * dpiScale), true))
+    {
+        auto command = [&](const char* label, const char* hint, auto&& fn) {
+            if (!match(label))
+                return;
+            if (ImGui::Selectable(label, false, 0, ImVec2(0, 30.0f * dpiScale)))
+            {
+                fn();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", hint);
+        };
+        command("Connect to database", "Ctrl+K", [&] { showConnectModal = true; });
+        command("Preferences", "appearance and editor settings", [&] { showPrefs = true; });
+        command("Reset current layout", "restore navigation / canvas / inspector layout", [&] {
+            forceLayout = true;
+            showLog = true;
+        });
+        command("Close project", "return to project hub", [&] { CloseProject(); });
+        ImGui::SeparatorText("Editors");
+        for (int i = 0; i < static_cast<int>(modules_.size()); ++i)
+        {
+            IEditorModule* module = modules_[i].get();
+            const std::string label = std::string(module->RailGlyph()) + "  " + module->DisplayName();
+            if (!match(label) && !match(module->Id()))
+                continue;
+            if (ImGui::Selectable(label.c_str(), i == activeEditor, 0, ImVec2(0, 30.0f * dpiScale)))
+            {
+                activeEditor = i;
+                railSearch.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Open %s", module->DisplayName());
+        }
+    }
+    ImGui::EndChild();
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 
 void App::DrawSharedModals()
 {
@@ -1217,6 +1463,12 @@ void App::LoadSettings()
         // per-project (config/projects.json + each project's project.json).
         if (j.contains("theme"))
             themePref = j["theme"].get<std::string>();
+        railCollapsed = j.value("railCollapsed", false);
+        // The inspector column/right-slot layout is a deliberate workspace revision. Rebuild once
+        // for existing installations so the new information hierarchy is actually visible instead
+        // of being hidden behind an obsolete saved dock tree.
+        if (j.value("uiLayoutRevision", 0) < 2)
+            forceLayout = true;
 
         // Per-module settings under "editors": { "<id>": {...} }. Back-compat: an old
         // flat "customIdStart" key is forwarded into the quest module's node.
@@ -1245,6 +1497,8 @@ void App::SaveSettings()
         std::filesystem::create_directories("config", ec);
         nlohmann::json j;
         j["theme"] = themePref;
+        j["railCollapsed"] = railCollapsed;
+        j["uiLayoutRevision"] = 2;
         for (const auto& m : modules_)
         {
             nlohmann::json node;

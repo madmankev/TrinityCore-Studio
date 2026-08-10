@@ -42,20 +42,23 @@ public:
     {
         // Keep the pre-v0.5 ImGui IDs after ### so existing users retain their saved docking layout
         // while the visible product language moves from "ADT Viewer" to "World Editor".
+        // The World Editor is intentionally arranged like a DCC tool: navigation/catalogs left,
+        // the continuously-rendered map canvas in the center, contextual inspectors right, and
+        // authoring timelines/brushes below. Existing dock IDs stay stable after ### where needed.
         return {{"World Browser###ADT Browser", DockSlot::Left, true},
                 {"World Outliner", DockSlot::Left, true},
                 {"Spawn Palette", DockSlot::Left, true},
                 {"Locations", DockSlot::Left, true},
-                {"Transform", DockSlot::Left, true},
-                {"Formation", DockSlot::Left, true},
-                {"AI Behavior", DockSlot::Left, true},
-                {"Script Triggers", DockSlot::Left, true},
-                {"NPC Instance", DockSlot::Left, true},
-                {"GameObject Instance", DockSlot::Left, true},
+                {"Transform", DockSlot::Right, true},
+                {"Formation", DockSlot::Right, true},
+                {"AI Behavior", DockSlot::Right, true},
+                {"Script Triggers", DockSlot::Right, true},
+                {"NPC Instance", DockSlot::Right, true},
+                {"GameObject Instance", DockSlot::Right, true},
+                {"Light Editor", DockSlot::Right, true},
+                {"Realtime Preview", DockSlot::Right, true},
                 {"Waypoint Path", DockSlot::Bottom, true},
                 {"Terrain Sculpt", DockSlot::Bottom, true},
-                {"Light Editor", DockSlot::Left, true},
-                {"Realtime Preview", DockSlot::Left, true},
                 {"World Editor###ADT Viewer", DockSlot::Center, true}};
     }
     void DrawPanels() override;

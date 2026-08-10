@@ -122,6 +122,10 @@ turn on **Edit**:
 
 ### Shared features
 
+- **Refreshed workspace UI**: a project-aware command bar, grouped/searchable editor navigation,
+  Ctrl+P command palette, responsive project cards, and a three-column navigation/canvas/inspector
+  default layout. The World Editor automatically places catalogs left, live map center, inspectors
+  right, and route/terrain tools below; use **View → Reset Layout** at any time.
 - Browse & search by ID or name, with type/quality/rank filters, server-side sort,
   and paging.
 - Create (blank or from an **archetype template**), **Clone**, **Delete**, **Revert**,

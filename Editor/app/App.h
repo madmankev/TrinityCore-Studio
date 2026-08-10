@@ -81,8 +81,10 @@ private:
 
     // --- per-frame drawing ---
     void DrawMenuBar();
-    void DrawEditorRail();   // left vertical strip: pick the active editor module
-    void DrawStatusBar();    // bottom bar: editor | connection | record | status
+    void DrawWorkspaceBar(); // project/context/action strip below the menu
+    void DrawEditorRail();   // left navigation: workspace modules grouped and searchable
+    void DrawStatusBar();    // bottom context/status strip
+    void DrawCommandPalette();
     void DrawSharedPanels(); // shell-owned dock windows (Log, About)
     void DrawSharedModals(); // Connect + Preferences
     void BuildDefaultLayout(unsigned int dockspaceId);
@@ -127,6 +129,10 @@ private:
     bool layoutBuilt = false;
     bool forceLayout = false;
     int layoutEditor = -1;   // activeEditor the current dock layout was built for
+    bool railCollapsed = false;
+    bool showCommandPalette = false;
+    std::string railSearch;
+    std::string commandQuery;
     int demoTab = -1;
     int activeEditor = 0;   // index into modules_
     std::string shotPath;   // non-empty => headless screenshot mode

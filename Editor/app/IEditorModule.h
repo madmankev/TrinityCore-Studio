@@ -18,8 +18,9 @@ struct EditorServices;
 // Where a module panel docks in the default layout.
 enum class DockSlot
 {
-    Left,    // browser column
-    Center,  // main editor
+    Left,    // browser/navigation column
+    Center,  // main editor/canvas
+    Right,   // inspector/properties column
     Bottom,  // tabbed with the shared Log
 };
 

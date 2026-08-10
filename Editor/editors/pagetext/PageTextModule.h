@@ -31,7 +31,7 @@ protected:
     const char* NounPlural() const override { return "pages"; }
     std::string RowLabel(const DbRecord& rec) const override;
     int TabCount() const override { return 1; }
-    const char* TabName(int tab) const override { return "Page"; }
+    const char* TabName(int) const override { return "Page"; }
     void DrawTab(int tab, DbRecord& rec) override;
 };
 } // namespace we

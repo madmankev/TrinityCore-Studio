@@ -32,7 +32,7 @@ protected:
     const char* NounPlural() const override { return "npc texts"; }
     std::string RowLabel(const DbRecord& rec) const override;
     int TabCount() const override { return 1; }
-    const char* TabName(int tab) const override { return "Groups"; }
+    const char* TabName(int) const override { return "Groups"; }
     void DrawTab(int tab, DbRecord& rec) override;
 };
 } // namespace we

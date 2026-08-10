@@ -82,24 +82,36 @@ void ProjectSelectScreen::Draw(ProjectStore& store, ProjectSelectCallbacks& cb, 
                      ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus |
                      ImGuiWindowFlags_NoSavedSettings);
 
-    ImGui::Dummy(ImVec2(0, 8 * dpiScale));
-    ImGui::TextUnformatted("TrinityCore Studio");
-    ImGui::SameLine();
-    ImGui::TextDisabled(" —  Projects");
-    ImGui::Spacing();
-    ImGui::TextDisabled("Create, configure, and open a project. A project bundles a database "
-                        "connection and a WoW client-data folder.");
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    // Toolbar: New Project + search (always visible, above the scrolling list).
-    if (ImGui::Button("New Project...", ImVec2(150 * dpiScale, 0)))
+    // A real launchpad rather than a plain list: the hierarchy describes what a project owns,
+    // gives the primary action prominence, and leaves the project cards to carry the detail.
+    const float heroH = 116.0f * dpiScale;
+    ImGui::BeginChild("##projecthero", ImVec2(0, heroH), false,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const ImVec2 heroMin = ImGui::GetWindowPos();
+    const ImVec2 heroMax(heroMin.x + ImGui::GetWindowSize().x, heroMin.y + ImGui::GetWindowSize().y);
+    ImDrawList* hero = ImGui::GetWindowDrawList();
+    hero->AddRectFilledMultiColor(heroMin, heroMax,
+                                  IM_COL32(35, 47, 72, 255), IM_COL32(29, 35, 52, 255),
+                                  IM_COL32(20, 24, 35, 255), IM_COL32(25, 31, 46, 255));
+    hero->AddRect(heroMin, heroMax, IM_COL32(111, 135, 180, 100), 8.0f * dpiScale);
+    ImGui::SetCursorPos(ImVec2(20.0f * dpiScale, 18.0f * dpiScale));
+    ImGui::TextUnformatted("TRINITYCORE STUDIO");
+    ImGui::TextColored(ImVec4(0.73f, 0.78f, 0.91f, 1.0f), "World-building workspace");
+    ImGui::TextDisabled("Projects keep client assets, a world database connection, and editor settings together.");
+    ImGui::SetCursorPos(ImVec2(20.0f * dpiScale, 82.0f * dpiScale));
+    ImGui::TextDisabled("WoW 3.3.5a  •  TrinityCore + AzerothCore  •  Live / SQL export");
+    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowSize().x - 176.0f * dpiScale, 38.0f * dpiScale));
+    if (ImGui::Button("Create project", ImVec2(154.0f * dpiScale, 34.0f * dpiScale)))
         BeginCreate();
+    ImGui::EndChild();
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("PROJECT LIBRARY");
     ImGui::SameLine();
-    ImGui::TextUnformatted("Search");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    InputTextString("##projsearch", search);
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX() + 10.0f * dpiScale,
+                                  ImGui::GetWindowContentRegionMax().x - 300.0f * dpiScale));
+    ImGui::SetNextItemWidth(300.0f * dpiScale);
+    InputTextString("Search projects##projsearch", search);
     ImGui::Spacing();
 
     DrawList(store, cb, dpiScale);
@@ -115,81 +127,119 @@ void ProjectSelectScreen::Draw(ProjectStore& store, ProjectSelectCallbacks& cb, 
 // ---------------------------------------------------------------------------
 void ProjectSelectScreen::DrawList(ProjectStore& store, ProjectSelectCallbacks& cb, float dpiScale)
 {
-    // Fill the rest of the window (the toolbar with New Project sits above this).
-    ImGui::BeginChild("##projlist", ImVec2(0, 0), true);
+    ImGui::BeginChild("##projlist", ImVec2(0, 0), false);
 
     const auto& entries = store.Entries();
     bool anyShown = false;
-    const float rowH = ImGui::GetTextLineHeight() * 2.0f + ImGui::GetStyle().FramePadding.y * 2.0f;
-    const float btnW = 84 * dpiScale;
+    const float cardH = 88.0f * dpiScale;
+    const float actionW = 78.0f * dpiScale;
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
+
+    auto chip = [](ImDrawList* draw, const ImVec2& pos, const char* text, ImU32 bg, ImU32 fg) {
+        const ImVec2 size = ImGui::CalcTextSize(text);
+        const ImVec2 pad(7.0f, 3.0f);
+        const ImVec2 end(pos.x + size.x + pad.x * 2.0f, pos.y + size.y + pad.y * 2.0f);
+        draw->AddRectFilled(pos, end, bg, 5.0f);
+        draw->AddText(ImVec2(pos.x + pad.x, pos.y + pad.y), fg, text);
+        return end.x - pos.x;
+    };
 
     for (int i = 0; i < static_cast<int>(entries.size()); ++i)
     {
         const ProjectEntry& e = entries[i];
-        if (!ContainsNoCase(e.config.name, search) &&
-            !ContainsNoCase(e.config.location, search))
+        if (!ContainsNoCase(e.config.name, search) && !ContainsNoCase(e.config.location, search))
             continue;
         anyShown = true;
-
         ImGui::PushID(i);
-        const bool isSel = (e.config.location == selectedLocation);
-
+        const bool selected = e.config.location == selectedLocation;
         const float avail = ImGui::GetContentRegionAvail().x;
-        const float nameW = avail - (btnW * 3.0f) - (spacing * 3.0f);
-
-        // The selectable row: single click selects, double click loads.
-        if (ImGui::Selectable("##row", isSel,
-                              ImGuiSelectableFlags_AllowDoubleClick, ImVec2(nameW, rowH)))
+        const float buttonsW = actionW * 3.0f + spacing * 2.0f + 14.0f * dpiScale;
+        const ImVec2 cardStart = ImGui::GetCursorScreenPos();
+        // Keep the card's selectable region clear of the action buttons. Overlapping an
+        // InvisibleButton with buttons makes ImGui assign the click to the card first.
+        ImGui::InvisibleButton("##projectcard", ImVec2(std::max(80.0f * dpiScale, avail - buttonsW), cardH));
+        const bool hovered = ImGui::IsItemHovered();
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
         {
             selectedLocation = e.config.location;
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && e.valid)
                 TryLoad(e.config, cb);
         }
+        const ImVec2 min = cardStart;
+        const ImVec2 max(min.x + avail, min.y + cardH);
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImU32 bg = selected ? IM_COL32(54, 71, 105, 245)
+                       : hovered ? IM_COL32(43, 53, 76, 245)
+                                 : IM_COL32(30, 36, 50, 235);
+        draw->AddRectFilled(min, max, bg, 8.0f * dpiScale);
+        draw->AddRect(min, max, selected ? IM_COL32(210, 161, 63, 220)
+                                         : IM_COL32(92, 108, 140, 120), 8.0f * dpiScale,
+                      0, selected ? 2.0f : 1.0f);
 
-        // Overlay the name + path text on top of the selectable.
-        const ImVec2 rowMin = ImGui::GetItemRectMin();
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImVec2 pad = ImGui::GetStyle().FramePadding;
-        const ImU32 nameCol = ImGui::GetColorU32(ImGuiCol_Text);
-        const ImU32 pathCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-        dl->AddText(ImVec2(rowMin.x + pad.x, rowMin.y + pad.y),
-                    e.valid ? nameCol : ImGui::GetColorU32(ImVec4(0.9f, 0.5f, 0.4f, 1.0f)),
-                    e.config.name.c_str());
-        const std::string sub = e.valid ? e.config.location : (e.error);
-        dl->AddText(ImVec2(rowMin.x + pad.x, rowMin.y + pad.y + ImGui::GetTextLineHeight()),
-                    pathCol, sub.c_str());
+        const float iconSize = 48.0f * dpiScale;
+        const ImVec2 iconMin(min.x + 14.0f * dpiScale, min.y + (cardH - iconSize) * 0.5f);
+        const ImVec2 iconMax(iconMin.x + iconSize, iconMin.y + iconSize);
+        draw->AddRectFilled(iconMin, iconMax,
+                             e.valid ? IM_COL32(213, 160, 58, 255) : IM_COL32(176, 79, 63, 255),
+                             8.0f * dpiScale);
+        const std::string initial = e.config.name.empty() ? "?" : std::string(1, e.config.name[0]);
+        const ImVec2 initialSize = ImGui::CalcTextSize(initial.c_str());
+        draw->AddText(ImVec2(iconMin.x + (iconSize - initialSize.x) * 0.5f,
+                             iconMin.y + (iconSize - initialSize.y) * 0.5f),
+                      IM_COL32(25, 28, 36, 255), initial.c_str());
 
-        // Right-hand action buttons, vertically centered against the row.
-        ImGui::SameLine();
-        if (!e.valid)
-            ImGui::BeginDisabled();
-        if (ImGui::Button("Load", ImVec2(btnW, rowH)))
+        const float textX = iconMax.x + 12.0f * dpiScale;
+        draw->AddText(ImVec2(textX, min.y + 14.0f * dpiScale),
+                      e.valid ? ImGui::GetColorU32(ImGuiCol_Text) : IM_COL32(255, 173, 154, 255),
+                      e.config.name.c_str());
+        const std::string subtitle = e.valid ? e.config.location : e.error;
+        draw->AddText(ImVec2(textX, min.y + 37.0f * dpiScale), ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                      subtitle.c_str());
+        float chipX = textX;
+        const float chipY = min.y + 60.0f * dpiScale;
+        const char* mode = e.config.writeMode == WriteMode::Live ? "LIVE" : "SQL EXPORT";
+        chipX += chip(draw, ImVec2(chipX, chipY), mode,
+                       e.config.writeMode == WriteMode::Live ? IM_COL32(43, 116, 77, 230)
+                                                             : IM_COL32(89, 78, 139, 230),
+                       IM_COL32(226, 239, 231, 255)) + 6.0f * dpiScale;
+        const char* core = CoreFlavorName(e.config.coreFlavor);
+        chip(draw, ImVec2(chipX, chipY), core, IM_COL32(61, 75, 105, 230), IM_COL32(218, 226, 244, 255));
+
+        ImGui::SetCursorScreenPos(ImVec2(max.x - buttonsW, min.y + (cardH - ImGui::GetFrameHeight()) * 0.5f));
+        if (!e.valid) ImGui::BeginDisabled();
+        if (ImGui::Button("Open", ImVec2(actionW, 0)))
         {
             selectedLocation = e.config.location;
             TryLoad(e.config, cb);
         }
-        if (!e.valid)
-            ImGui::EndDisabled();
+        if (!e.valid) ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Settings", ImVec2(btnW, rowH)))
+        if (ImGui::Button("Edit", ImVec2(actionW, 0)))
             BeginSettings(e.config);
         ImGui::SameLine();
-        if (ImGui::Button("Delete", ImVec2(btnW, rowH)))
+        if (ImGui::Button("Remove", ImVec2(actionW, 0)))
         {
             deleteName = e.config.name;
             deleteLocation = e.config.location;
             requestDelete = true;
         }
+        // Restore normal flow below the card before spacing.
+        ImGui::SetCursorScreenPos(ImVec2(min.x, max.y));
+        ImGui::Dummy(ImVec2(0, 8.0f * dpiScale));
         ImGui::PopID();
     }
 
     if (!anyShown)
     {
-        ImGui::Spacing();
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float w = ImGui::GetContentRegionAvail().x;
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        draw->AddRectFilled(p, ImVec2(p.x + w, p.y + 100.0f * dpiScale), IM_COL32(31, 37, 51, 235), 8.0f * dpiScale);
+        ImGui::SetCursorScreenPos(ImVec2(p.x + 20.0f * dpiScale, p.y + 20.0f * dpiScale));
+        ImGui::TextUnformatted(store.Entries().empty() ? "Start with a project" : "No matching projects");
         ImGui::TextDisabled(store.Entries().empty()
-                                ? "  No projects yet. Click \"New Project...\" to create one."
-                                : "  No projects match your search.");
+                                ? "Create a project to connect client data and your world database."
+                                : "Try a different project name or folder search.");
     }
 
     ImGui::EndChild();
