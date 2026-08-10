@@ -66,13 +66,13 @@ turn on **Edit**:
 4. **Build formations:** select an NPC and use **Formation** to create a leader/self row, join a
    leader GUID, set distance/angle/group-AI/path-direction points, or remove membership. Purple
    world links make leader/member relationships visible and selectable in context.
-5. **Sculpt terrain safely:** use **Terrain Sculpt** to arm Raise, Lower, Flatten, or the live
-   **Ramp / Stairs** composer, or **Noise / Terrainify**. Right-click a ramp start and end; Studio
-   clamps the requested grade and emits a continuous or stepped sequence of overlap-safe Flatten
-   strokes. Terrainify expands a seeded fractal field into deterministic Raise/Lower strokes, while
-   **Terrain Stamp** applies reusable Hill, Valley, Crater, or yaw-rotated Ridge presets. All
-   preview immediately, rebuild MCVT/MCNR data across intersected ADT tiles on **Save ADT edits**,
-   support Ctrl+Z/Ctrl+Y, and reload from the project overlay after save.
+5. **Sculpt terrain safely:** use **Terrain Sculpt** to arm Raise, Lower, Flatten, **Smooth**,
+   the live **Ramp / Stairs** composer, **Noise / Terrainify**, or **Terrain Stamp**. Smooth samples
+   a local Laplacian-style field before emitting its staged Flatten sequence, with iteration, blend,
+   and sharp-edge preservation controls. Ramps clamp grades; Terrainify expands seeded fractal
+   noise; stamps provide Hill, Valley, Crater, and yaw-rotated Ridge presets. All preview
+   immediately, rebuild MCVT/MCNR data across intersected ADT tiles on **Save ADT edits**, support
+   Ctrl+Z/Ctrl+Y, and reload from the project overlay after save.
 6. **Light the scene:** open **Light Editor** for a WoWEdit-style point/spot-light list. Add a
    point or spot at the camera, or arm terrain placement and right-click the world. Select its
    colored marker to edit position, range, falloff, HDR color/intensity, and spot cone/direction.

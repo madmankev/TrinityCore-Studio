@@ -20,6 +20,8 @@
   ADT replay.
 - Live Terrain Stamp presets for Hill, Valley, Crater, and yaw-rotated Ridge compositions; each
   expands to normal staged ADT strokes and therefore keeps live preview/undo/save behavior.
+- Live Smooth tool with local Laplacian-style sampling, iteration/blend controls, optional
+  sharp-edge preservation, deterministic staged Flatten expansion, live preview, and one-step undo.
 - Spawn Palette Array / Grid placement for NPCs and GameObjects: terrain-snapped rows/columns with
   centered anchoring, skipped-cell reporting, persisted settings, and a compound CommandStack undo.
 - Portable `WowEdit/` C++17 architecture with MVC-facing panel controllers,

@@ -248,6 +248,17 @@ void AdtViewerModule::HandleShortcuts()
         if (svc_ && svc_->focusWindow)
             svc_->focusWindow("Terrain Sculpt");
     }
+    if (ImGui::IsKeyPressed(ImGuiKey_S, false) && streamerInit_ && !loadedName_.empty() && !streamer_.wmoOnly())
+    {
+        terrainSculptMode_ = 6;
+        terrainRampHasStart_ = false;
+        terrainSculptActive_ = true;
+        inGameViewMode_ = false;
+        editMode_ = true;
+        terrainStatus_ = "Terrain smooth armed (S) — right-click terrain to queue a staged Laplacian-style blend.";
+        if (svc_ && svc_->focusWindow)
+            svc_->focusWindow("Terrain Sculpt");
+    }
 }
 
 void AdtViewerModule::DrawMainMenuExtensions()
@@ -286,6 +297,7 @@ void AdtViewerModule::DrawMainMenuExtensions()
             if (ImGui::MenuItem("Ramp / Stairs", "R")) armTerrain(3);
             if (ImGui::MenuItem("Noise / Terrainify", "N")) armTerrain(4);
             if (ImGui::MenuItem("Terrain Stamp / Preset")) armTerrain(5);
+            if (ImGui::MenuItem("Smooth / Preserve Edges", "S")) armTerrain(6);
             ImGui::Separator();
             if (ImGui::MenuItem("Terrain Sculpt Panel...")) focus("Terrain Sculpt");
             ImGui::EndMenu();
@@ -800,6 +812,10 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
             terrainNoiseSeed_ = terrain.value("noiseSeed", terrainNoiseSeed_);
         terrainStampPreset_ = std::clamp(terrain.value("stampPreset", terrainStampPreset_), 0, 3);
         terrainStampYawDegrees_ = finite(terrain.value("stampYawDegrees", terrainStampYawDegrees_), terrainStampYawDegrees_);
+        terrainSmoothIterations_ = std::clamp(terrain.value("smoothIterations", terrainSmoothIterations_), 1, 8);
+        terrainSmoothBlend_ = std::clamp(finite(terrain.value("smoothBlend", terrainSmoothBlend_), terrainSmoothBlend_), 0.05f, 1.0f);
+        terrainSmoothPreserveEdges_ = terrain.value("smoothPreserveEdges", terrainSmoothPreserveEdges_);
+        terrainSmoothEdgeThreshold_ = std::clamp(finite(terrain.value("smoothEdgeThreshold", terrainSmoothEdgeThreshold_), terrainSmoothEdgeThreshold_), 0.01f, 100.0f);
         }
         if (editorNode.contains("spawnPalette") && editorNode["spawnPalette"].is_object())
         {
@@ -1076,7 +1092,11 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
                                   {"noiseOctaves", terrainNoiseOctaves_},
                                   {"noiseSeed", terrainNoiseSeed_},
                                   {"stampPreset", terrainStampPreset_},
-                                  {"stampYawDegrees", terrainStampYawDegrees_}};
+                                  {"stampYawDegrees", terrainStampYawDegrees_},
+                                  {"smoothIterations", terrainSmoothIterations_},
+                                  {"smoothBlend", terrainSmoothBlend_},
+                                  {"smoothPreserveEdges", terrainSmoothPreserveEdges_},
+                                  {"smoothEdgeThreshold", terrainSmoothEdgeThreshold_}};
 
     editorNode["spawnPalette"] = {{"kind", brushKind_},
                                    {"placementMode", brushPlacementMode_},
@@ -4442,7 +4462,7 @@ void AdtViewerModule::DrawViewportPanel()
                            WorldLightTypeName(lightPlacementType_));
     if (terrainSculptActive_)
     {
-        static const char* kSculptNames[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs", "Noise / Terrainify", "Terrain Stamp"};
+        static const char* kSculptNames[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs", "Noise / Terrainify", "Terrain Stamp", "Smooth"};
         if (terrainSculptMode_ == 3)
             ImGui::TextColored(ImVec4(0.94f, 0.52f, 0.18f, 1.0f),
                                "Terrain ramp active: %s — right-click %s; Esc stops.",
@@ -4451,7 +4471,7 @@ void AdtViewerModule::DrawViewportPanel()
         else
             ImGui::TextColored(ImVec4(0.94f, 0.52f, 0.18f, 1.0f),
                                "Terrain sculpt active: %s, %.1f yd radius — right-click terrain; Esc stops.",
-                               kSculptNames[std::clamp(terrainSculptMode_, 0, 5)], terrainBrushRadius_);
+                               kSculptNames[std::clamp(terrainSculptMode_, 0, 6)], terrainBrushRadius_);
     }
 
     ImGui::TextDisabled("loaded %d tiles (%d pending), %d objects, %d models", streamer_.loadedTiles(),
@@ -5489,7 +5509,8 @@ void AdtViewerModule::DrawTerrainSculptPanel()
     ImGui::RadioButton("Flatten", &terrainSculptMode_, 2); ImGui::SameLine();
     ImGui::RadioButton("Ramp / Stairs", &terrainSculptMode_, 3); ImGui::SameLine();
     ImGui::RadioButton("Noise / Terrainify", &terrainSculptMode_, 4); ImGui::SameLine();
-    ImGui::RadioButton("Terrain Stamp", &terrainSculptMode_, 5);
+    ImGui::RadioButton("Terrain Stamp", &terrainSculptMode_, 5); ImGui::SameLine();
+    ImGui::RadioButton("Smooth", &terrainSculptMode_, 6);
     if (previousTerrainMode != terrainSculptMode_)
         terrainRampHasStart_ = false;
 
@@ -5543,6 +5564,22 @@ void AdtViewerModule::DrawTerrainSculptPanel()
         }
         ImGui::TextDisabled("One terrain click emits a reusable hill, valley, crater, or ridge stamp as normal staged ADT strokes.");
     }
+    else if (terrainSculptMode_ == 6)
+    {
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::SliderFloat("Smooth radius", &terrainBrushRadius_, 2.0f, 100.0f, "%.1f yd", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetNextItemWidth(180.0f);
+        ImGui::SliderInt("Smooth iterations", &terrainSmoothIterations_, 1, 8);
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::SliderFloat("Smooth blend", &terrainSmoothBlend_, 0.05f, 1.0f, "%.2f");
+        ImGui::Checkbox("Preserve sharp edges", &terrainSmoothPreserveEdges_);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!terrainSmoothPreserveEdges_);
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SliderFloat("Edge threshold", &terrainSmoothEdgeThreshold_, 0.05f, 20.0f, "%.2f yd", ImGuiSliderFlags_Logarithmic);
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("Builds a local Laplacian-style field, then expands it to staged Flatten strokes so the live preview and saved ADT replay agree.");
+    }
     else
     {
         ImGui::SetNextItemWidth(220.0f);
@@ -5584,7 +5621,9 @@ void AdtViewerModule::DrawTerrainSculptPanel()
                     ? "Terrainify noise armed — right-click terrain to queue a deterministic noise stamp."
                     : terrainSculptMode_ == 5
                         ? "Terrain stamp armed — right-click terrain to apply the selected preset."
-                        : "Terrain brush armed — right-click terrain to queue a smooth height stroke.")
+                        : terrainSculptMode_ == 6
+                            ? "Terrain smooth armed — right-click terrain to queue a Laplacian-style blend."
+                            : "Terrain brush armed — right-click terrain to queue a smooth height stroke.")
             : "Terrain brush stopped.";
     }
     ImGui::EndDisabled();
@@ -6536,10 +6575,10 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
                           view, proj, p0, w, h, centerScreen))
     {
         draw->AddCircleFilled(centerScreen, 4.0f, IM_COL32(255, 221, 160, 255), 10);
-        static const char* kModes[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs", "Noise / Terrainify", "Terrain Stamp"};
+        static const char* kModes[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs", "Noise / Terrainify", "Terrain Stamp", "Smooth"};
         draw->AddText(ImVec2(centerScreen.x + 8.0f, centerScreen.y + 6.0f),
                       IM_COL32(255, 234, 204, 255),
-                      kModes[std::clamp(terrainSculptMode_, 0, 5)]);
+                      kModes[std::clamp(terrainSculptMode_, 0, 6)]);
     }
 }
 
@@ -8041,6 +8080,113 @@ void AdtViewerModule::QueueTerrainStamp(const glm::vec3& center, int centerTileX
                      std::to_string(refs.size()) + " tile strokes) — save ADT edits to apply it.";
 }
 
+void AdtViewerModule::QueueTerrainSmooth(const glm::vec3& center, int centerTileX, int centerTileY)
+{
+    (void)centerTileX;
+    (void)centerTileY;
+    const float radius = std::clamp(terrainBrushRadius_, 2.0f, 100.0f);
+    const int iterations = std::clamp(terrainSmoothIterations_, 1, 8);
+    const float blend = std::clamp(terrainSmoothBlend_, 0.05f, 1.0f);
+    const float edgeThreshold = std::max(0.01f, terrainSmoothEdgeThreshold_);
+    const int side = std::clamp(3 + static_cast<int>(std::ceil(radius / 18.0f)), 3, 5);
+    const float spacing = (radius * 2.0f) / static_cast<float>(side - 1);
+    const float neighborDistance = std::max(0.75f, spacing * 0.72f);
+    const float childRadius = std::max(1.0f, spacing * 0.90f);
+    const glm::vec3 origin = streamer_.origin();
+
+    struct SmoothNode
+    {
+        float x = 0.0f, y = 0.0f, current = 0.0f, target = 0.0f;
+        int tileX = 0, tileY = 0;
+    };
+    auto sampleHeight = [&](float worldX, float worldY, float& outHeight, int& outTileX, int& outTileY) {
+        glm::vec3 hit;
+        float hitDistance = -1.0f;
+        if (!streamer_.GroundHit(glm::vec3(worldX - origin.x, worldY - origin.y, 10000.0f),
+                                glm::vec3(0.0f, 0.0f, -1.0f), hit, hitDistance, outTileX, outTileY))
+            return false;
+        // PreviewTerrainZ deliberately applies every staged stroke, including smooth
+        // samples emitted by earlier iterations, while GroundHit supplies the immutable
+        // streamed base mesh beneath them.
+        outHeight = adtEdits_.PreviewTerrainZ(hit.z, worldX, worldY);
+        return std::isfinite(outHeight);
+    };
+
+    std::vector<AdtEditStore::TerrainStrokeRef> refs;
+    refs.reserve(static_cast<size_t>(side * side * iterations * 2));
+    int generated = 0;
+    for (int iteration = 0; iteration < iterations; ++iteration)
+    {
+        std::vector<SmoothNode> nodes;
+        nodes.reserve(static_cast<size_t>(side * side));
+        for (int gy = 0; gy < side; ++gy)
+            for (int gx = 0; gx < side; ++gx)
+            {
+                const float localX = -radius + static_cast<float>(gx) * spacing;
+                const float localY = -radius + static_cast<float>(gy) * spacing;
+                const float distance = std::sqrt(localX * localX + localY * localY);
+                if (distance > radius)
+                    continue;
+                SmoothNode node;
+                node.x = center.x + localX;
+                node.y = center.y + localY;
+                if (!sampleHeight(node.x, node.y, node.current, node.tileX, node.tileY))
+                    continue;
+
+                float sum = 0.0f;
+                int count = 0;
+                static constexpr float kOffsets[][2] = {{-1.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, -1.0f}, {0.0f, 1.0f}};
+                for (const auto& offset : kOffsets)
+                {
+                    float neighborHeight = 0.0f;
+                    int neighborTileX = 0, neighborTileY = 0;
+                    if (!sampleHeight(node.x + offset[0] * neighborDistance,
+                                      node.y + offset[1] * neighborDistance,
+                                      neighborHeight, neighborTileX, neighborTileY))
+                        continue;
+                    if (terrainSmoothPreserveEdges_ && std::fabs(neighborHeight - node.current) > edgeThreshold)
+                        continue;
+                    sum += neighborHeight;
+                    ++count;
+                }
+                if (count == 0)
+                    continue;
+                const float radialT = std::clamp(1.0f - distance / radius, 0.0f, 1.0f);
+                const float radialWeight = radialT * radialT * (3.0f - 2.0f * radialT);
+                node.target = node.current + (sum / static_cast<float>(count) - node.current) * blend * radialWeight;
+                if (std::fabs(node.target - node.current) > 0.001f)
+                    nodes.push_back(node);
+            }
+
+        if (nodes.empty())
+            break;
+        // Compute targets for the complete iteration before recording any strokes;
+        // this is a proper local Laplacian pass instead of scan-order-dependent blur.
+        for (const SmoothNode& node : nodes)
+        {
+            adt::TerrainBrushStroke stroke;
+            stroke.mode = adt::TerrainBrushMode::Flatten;
+            stroke.worldX = node.x;
+            stroke.worldY = node.y;
+            stroke.radius = childRadius;
+            stroke.strength = 1.0f;
+            stroke.targetZ = node.target;
+            QueueTerrainStrokeAcrossTiles(stroke, node.tileX, node.tileY, refs);
+            ++generated;
+        }
+    }
+
+    if (refs.empty())
+    {
+        terrainStatus_ = "Terrain smooth did not find enough loaded ground samples.";
+        return;
+    }
+    PushTerrainStrokeUndo(refs, "Smooth terrain");
+    terrainStatus_ = "Queued Laplacian-style terrain smooth (" + std::to_string(generated) +
+                     " local samples, " + std::to_string(refs.size()) +
+                     " tile strokes) — save ADT edits to apply it.";
+}
+
 // Right-click (no drag) on terrain opens the add popup at the ground point. An object nearer than
 // the ground means the click was on an object, so no add is offered.
 void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4& proj,
@@ -8114,6 +8260,11 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
         if (terrainSculptMode_ == 5)
         {
             QueueTerrainStamp(world, gtx, gty);
+            return;
+        }
+        if (terrainSculptMode_ == 6)
+        {
+            QueueTerrainSmooth(world, gtx, gty);
             return;
         }
 

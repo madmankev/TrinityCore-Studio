@@ -44,9 +44,13 @@ large spike.
 
 ### Smooth
 
-Smooth applies a local Laplacian neighborhood blend. Increase iterations slowly;
-excessive smoothing removes ridges. Preserve-edge behavior should be used around
-cliffs, roads, and structures.
+The live **Smooth** tool samples a local Laplacian-style neighborhood field before
+it emits its staged Flatten strokes. Increase iterations slowly; excessive
+smoothing removes ridges. Blend controls the amount per iteration, and
+**Preserve sharp edges** ignores neighbors beyond the chosen height threshold so
+cliffs, roads, and structures do not collapse into the surrounding terrain. The
+same generated strokes drive real-time preview, Ctrl+Z/Ctrl+Y, and the eventual
+MCVT/MCNR save/reload.
 
 ### Flatten / Ramp
 
