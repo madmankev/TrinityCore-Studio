@@ -801,6 +801,19 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
         terrainStampPreset_ = std::clamp(terrain.value("stampPreset", terrainStampPreset_), 0, 3);
         terrainStampYawDegrees_ = finite(terrain.value("stampYawDegrees", terrainStampYawDegrees_), terrainStampYawDegrees_);
         }
+        if (editorNode.contains("spawnPalette") && editorNode["spawnPalette"].is_object())
+        {
+            const nlohmann::json& palette = editorNode["spawnPalette"];
+            brushKind_ = std::clamp(palette.value("kind", brushKind_), 0, 1);
+            brushPlacementMode_ = std::clamp(palette.value("placementMode", brushPlacementMode_), 0, 1);
+            brushYaw_ = finite(palette.value("yaw", brushYaw_), brushYaw_);
+            brushMinSpacing_ = std::clamp(finite(palette.value("minimumSpacing", brushMinSpacing_), brushMinSpacing_), 0.0f, 100.0f);
+            brushGridRows_ = std::clamp(palette.value("gridRows", brushGridRows_), 1, 16);
+            brushGridColumns_ = std::clamp(palette.value("gridColumns", brushGridColumns_), 1, 16);
+            brushGridSpacingX_ = std::clamp(finite(palette.value("gridSpacingX", brushGridSpacingX_), brushGridSpacingX_), 0.1f, 100.0f);
+            brushGridSpacingY_ = std::clamp(finite(palette.value("gridSpacingY", brushGridSpacingY_), brushGridSpacingY_), 0.1f, 100.0f);
+            brushGridCenterOnClick_ = palette.value("gridCenterOnClick", brushGridCenterOnClick_);
+        }
         if (editorNode.contains("spellEffectPreview") && editorNode["spellEffectPreview"].is_object())
         {
             const nlohmann::json& preview = editorNode["spellEffectPreview"];
@@ -1064,6 +1077,16 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
                                   {"noiseSeed", terrainNoiseSeed_},
                                   {"stampPreset", terrainStampPreset_},
                                   {"stampYawDegrees", terrainStampYawDegrees_}};
+
+    editorNode["spawnPalette"] = {{"kind", brushKind_},
+                                   {"placementMode", brushPlacementMode_},
+                                   {"yaw", brushYaw_},
+                                   {"minimumSpacing", brushMinSpacing_},
+                                   {"gridRows", brushGridRows_},
+                                   {"gridColumns", brushGridColumns_},
+                                   {"gridSpacingX", brushGridSpacingX_},
+                                   {"gridSpacingY", brushGridSpacingY_},
+                                   {"gridCenterOnClick", brushGridCenterOnClick_}};
 
     editorNode["spellEffectPreview"] = {{"spellId", spellPreview_.definition.id},
                                           {"loop", spellPreview_.loop},
@@ -1968,6 +1991,62 @@ bool AdtViewerModule::CanBrushPlace(const glm::vec3& world) const
     return true;
 }
 
+void AdtViewerModule::PlaceSpawnGrid(const glm::vec3& anchor)
+{
+    if (!svc_ || !svc_->connected || !svc_->activeDb || brushEntry_ == 0)
+    {
+        brushStatus_ = "Connect a project database and select a template before placing a grid.";
+        return;
+    }
+    const int rows = std::clamp(brushGridRows_, 1, 16);
+    const int columns = std::clamp(brushGridColumns_, 1, 16);
+    const float spacingX = std::max(0.1f, brushGridSpacingX_);
+    const float spacingY = std::max(0.1f, brushGridSpacingY_);
+    const float offsetX = brushGridCenterOnClick_ ? static_cast<float>(columns - 1) * spacingX * 0.5f : 0.0f;
+    const float offsetY = brushGridCenterOnClick_ ? static_cast<float>(rows - 1) * spacingY * 0.5f : 0.0f;
+    const glm::vec3 origin = streamer_.origin();
+    int placed = 0;
+    int skipped = 0;
+    undo_.BeginMacro(brushKind_ == 0 ? "Place NPC grid" : "Place GameObject grid");
+    for (int row = 0; row < rows; ++row)
+        for (int column = 0; column < columns; ++column)
+        {
+            const glm::vec3 requested(anchor.x + static_cast<float>(column) * spacingX - offsetX,
+                                      anchor.y + static_cast<float>(row) * spacingY - offsetY,
+                                      anchor.z);
+            glm::vec3 localGround;
+            float hitDistance = -1.0f;
+            int tileX = 0, tileY = 0;
+            const glm::vec3 top(requested.x - origin.x, requested.y - origin.y, 10000.0f);
+            if (!streamer_.GroundHit(top, glm::vec3(0.0f, 0.0f, -1.0f), localGround, hitDistance, tileX, tileY))
+            {
+                ++skipped;
+                continue;
+            }
+            if (liveTerrainPreview_ && adtEdits_.terrainPendingCount() > 0)
+                localGround.z = adtEdits_.PreviewTerrainZ(localGround.z, localGround.x + origin.x,
+                                                          localGround.y + origin.y);
+            const glm::vec3 snapped(localGround.x + origin.x, localGround.y + origin.y, localGround.z);
+            const bool added = brushKind_ == 0 ? PerformAddNpcAt(brushEntry_, snapped, brushYaw_)
+                                                : PerformAddGameObjectAt(brushEntry_, snapped, brushYaw_);
+            if (added)
+            {
+                ++placed;
+                brushPlacements_.push_back({brushKind_, brushEntry_, snapped});
+            }
+            else
+                ++skipped;
+        }
+    undo_.EndMacro();
+    if (placed == 0)
+        brushStatus_ = "Grid placement found no writable loaded terrain cells.";
+    else
+        brushStatus_ = "Placed " + std::to_string(placed) + " " +
+                       (brushKind_ == 0 ? "NPC" : "GameObject") + " grid cell(s)" +
+                       (skipped ? "; skipped " + std::to_string(skipped) + " cell(s) without terrain or DB success." : ".") +
+                       " Undo removes the whole grid as one operation.";
+}
+
 void AdtViewerModule::RebuildOutliner()
 {
     outlinerEntries_.clear();
@@ -2187,26 +2266,62 @@ void AdtViewerModule::DrawSpawnPalettePanel()
     ImGui::SetNextItemWidth(145.0f);
     if (ImGui::InputFloat("Yaw (degrees)", &yawDegrees, 1.0f, 15.0f, "%.1f"))
         brushYaw_ = glm::radians(yawDegrees);
-    ImGui::SetNextItemWidth(180.0f);
-    ImGui::DragFloat("Minimum spacing", &brushMinSpacing_, 0.1f, 0.0f, 100.0f, "%.1f yd");
-    if (ImGui::Button(brushActive_ ? "Stop placement brush" : "Arm placement brush"))
+
+    ImGui::SeparatorText("Placement mode");
+    if (ImGui::RadioButton("Brush / scatter", &brushPlacementMode_, 0))
+        brushActive_ = false;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Array / grid", &brushPlacementMode_, 1))
+        brushActive_ = false;
+    if (brushPlacementMode_ == 0)
+    {
+        ImGui::SetNextItemWidth(180.0f);
+        ImGui::DragFloat("Minimum spacing", &brushMinSpacing_, 0.1f, 0.0f, 100.0f, "%.1f yd");
+    }
+    else
+    {
+        ImGui::SetNextItemWidth(130.0f);
+        ImGui::SliderInt("Rows", &brushGridRows_, 1, 16);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(130.0f);
+        ImGui::SliderInt("Columns", &brushGridColumns_, 1, 16);
+        ImGui::SetNextItemWidth(170.0f);
+        ImGui::DragFloat("Spacing X", &brushGridSpacingX_, 0.1f, 0.1f, 100.0f, "%.1f yd");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(170.0f);
+        ImGui::DragFloat("Spacing Y", &brushGridSpacingY_, 0.1f, 0.1f, 100.0f, "%.1f yd");
+        ImGui::Checkbox("Center grid on terrain click", &brushGridCenterOnClick_);
+        ImGui::TextDisabled("One terrain click will place up to %d snapped %s instances as one undo step.",
+                            brushGridRows_ * brushGridColumns_, brushKind_ == 0 ? "NPC" : "GameObject");
+    }
+
+    const char* armLabel = brushPlacementMode_ == 0
+        ? (brushActive_ ? "Stop placement brush" : "Arm placement brush")
+        : (brushActive_ ? "Stop grid placement" : "Arm grid placement");
+    if (ImGui::Button(armLabel))
     {
         if (brushEntry_ == 0)
-            brushStatus_ = "Choose a template entry before arming the brush.";
+            brushStatus_ = "Choose a template entry before arming placement.";
         else
         {
             brushActive_ = !brushActive_;
-            brushStatus_ = brushActive_ ? "Brush armed — right-click terrain to place repeatedly. Escape cancels."
-                                        : "Brush stopped.";
+            brushStatus_ = brushActive_
+                ? (brushPlacementMode_ == 0
+                    ? "Brush armed — right-click terrain to place repeatedly. Escape cancels."
+                    : "Grid armed — right-click terrain to place the configured array. Escape cancels.")
+                : "Placement tool stopped.";
         }
     }
     if (brushActive_)
         ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.42f, 1.0f),
-                           "%s brush active: entry %u", brushKind_ == 0 ? "NPC" : "GameObject", brushEntry_);
+                           brushPlacementMode_ == 0 ? "%s brush active: entry %u" : "%s grid active: %dx%d entry %u",
+                           brushKind_ == 0 ? "NPC" : "GameObject", brushGridRows_, brushGridColumns_, brushEntry_);
     if (!brushStatus_.empty())
         ImGui::TextDisabled("%s", brushStatus_.c_str());
     ImGui::Separator();
-    ImGui::TextWrapped("This is a rapid version of the right-click Add menu. Every stamp is a normal database spawn, gets its own undo command, and can be moved precisely afterward. The spacing guard applies only to stamps made in this session; set it to 0 to allow overlap.");
+    ImGui::TextWrapped(brushPlacementMode_ == 0
+        ? "This is a rapid version of the right-click Add menu. Every stamp is a normal database spawn, gets its own undo command, and can be moved precisely afterward. The spacing guard applies only to stamps made in this session; set it to 0 to allow overlap."
+        : "Array/Grid placement samples terrain under every cell, then creates normal database spawns in one compound undo command. Cells without loaded terrain are skipped and reported; no off-map or floating placeholder is inserted.");
     ImGui::End();
 }
 
@@ -4304,9 +4419,16 @@ void AdtViewerModule::DrawViewportPanel()
     if (!goStatus_.empty())
         ImGui::TextDisabled("%s", goStatus_.c_str());
     if (brushActive_)
-        ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.42f, 1.0f),
-                           "Placement brush active: %s entry %u — right-click terrain; Esc stops.",
-                           brushKind_ == 0 ? "NPC" : "GameObject", brushEntry_);
+    {
+        if (brushPlacementMode_ == 0)
+            ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.42f, 1.0f),
+                               "Placement brush active: %s entry %u — right-click terrain; Esc stops.",
+                               brushKind_ == 0 ? "NPC" : "GameObject", brushEntry_);
+        else
+            ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.42f, 1.0f),
+                               "Grid placement active: %dx%d %s entry %u — right-click terrain; Esc stops.",
+                               brushGridRows_, brushGridColumns_, brushKind_ == 0 ? "NPC" : "GameObject", brushEntry_);
+    }
     if (aiPreviewTargetPlacementActive_)
         ImGui::TextColored(ImVec4(0.94f, 0.36f, 0.84f, 1.0f),
                            "AI target placement active — right-click terrain; Esc stops.");
@@ -8063,6 +8185,11 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
     if (brushActive_ && brushEntry_ != 0)
     {
         const glm::vec3 world(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z);
+        if (brushPlacementMode_ == 1)
+        {
+            PlaceSpawnGrid(world);
+            return;
+        }
         if (!CanBrushPlace(world))
         {
             brushStatus_ = "Skipped placement: closer than the configured session spacing.";

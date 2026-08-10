@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -56,6 +57,32 @@ inline std::unique_ptr<IUndoCommand> MakeCommand(std::function<void()> undo,
     return std::make_unique<LambdaCommand>(std::move(undo), std::move(redo), label);
 }
 
+// A compound command contains edits that have already been applied. Undo walks
+// backward (so a grid placement deletes its newest spawn first); redo preserves
+// the original creation order. Used by scatter/array/path authoring tools.
+class CompositeCommand final : public IUndoCommand
+{
+public:
+    CompositeCommand(std::string label, std::vector<std::unique_ptr<IUndoCommand>> commands)
+        : label_(std::move(label)), commands_(std::move(commands)) {}
+
+    void Undo() override
+    {
+        for (auto it = commands_.rbegin(); it != commands_.rend(); ++it)
+            (*it)->Undo();
+    }
+    void Redo() override
+    {
+        for (const std::unique_ptr<IUndoCommand>& command : commands_)
+            command->Redo();
+    }
+    const char* Label() const override { return label_.c_str(); }
+
+private:
+    std::string label_;
+    std::vector<std::unique_ptr<IUndoCommand>> commands_;
+};
+
 class CommandStack
 {
 public:
@@ -66,11 +93,40 @@ public:
     {
         if (!cmd)
             return;
-        undo_.push_back(std::move(cmd));
-        if (undo_.size() > kMax)
-            undo_.erase(undo_.begin(), undo_.begin() + (undo_.size() - kMax));
-        redo_.clear();
+        if (!macros_.empty())
+        {
+            // The caller already performed the mutation; retain it in the active
+            // macro rather than making a separate history entry.
+            macros_.back().commands.push_back(std::move(cmd));
+            return;
+        }
+        PushApplied(std::move(cmd));
     }
+
+    // Collect already-applied commands into one reversible history step. Macros
+    // nest safely: an inner macro becomes one child of its outer macro.
+    void BeginMacro(const char* label = "Multiple edits")
+    {
+        macros_.push_back({label ? label : "Multiple edits", {}});
+    }
+
+    void EndMacro()
+    {
+        if (macros_.empty())
+            return;
+        MacroFrame frame = std::move(macros_.back());
+        macros_.pop_back();
+        if (frame.commands.empty())
+            return;
+        std::unique_ptr<IUndoCommand> compound =
+            std::make_unique<CompositeCommand>(std::move(frame.label), std::move(frame.commands));
+        if (!macros_.empty())
+            macros_.back().commands.push_back(std::move(compound));
+        else
+            PushApplied(std::move(compound));
+    }
+
+    bool IsRecordingMacro() const { return !macros_.empty(); }
 
     bool CanUndo() const { return !undo_.empty(); }
     bool CanRedo() const { return !redo_.empty(); }
@@ -101,14 +157,30 @@ public:
     {
         undo_.clear();
         redo_.clear();
+        macros_.clear();
     }
 
     size_t UndoDepth() const { return undo_.size(); }
     size_t RedoDepth() const { return redo_.size(); }
 
 private:
+    struct MacroFrame
+    {
+        std::string label;
+        std::vector<std::unique_ptr<IUndoCommand>> commands;
+    };
+
+    void PushApplied(std::unique_ptr<IUndoCommand> cmd)
+    {
+        undo_.push_back(std::move(cmd));
+        if (undo_.size() > kMax)
+            undo_.erase(undo_.begin(), undo_.begin() + (undo_.size() - kMax));
+        redo_.clear();
+    }
+
     std::vector<std::unique_ptr<IUndoCommand>> undo_;
     std::vector<std::unique_ptr<IUndoCommand>> redo_;
+    std::vector<MacroFrame> macros_;
     static constexpr size_t kMax = 200; // cap; drop oldest when exceeded
 };
 } // namespace we

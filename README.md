@@ -59,8 +59,10 @@ turn on **Edit**:
    release; ADT placements are batched into the project's `edited-client` overlay.
 3. **Dress a map quickly:** choose an NPC or GameObject template in **Spawn Palette**, arm the
    brush, and right-click terrain repeatedly. The palette retains yaw and has a per-session
-   minimum-spacing guard; each placed spawn remains an ordinary undoable database instance. You
-   can also load the selected NPC/GO template straight into the brush from **Transform**.
+   minimum-spacing guard; each placed spawn remains an ordinary undoable database instance. Switch
+   to **Array / Grid** to configure rows, columns, spacing, and centered anchoring; one terrain
+   click samples every loaded cell to ground and creates the entire array as one compound undo step.
+   You can also load the selected NPC/GO template straight into the brush from **Transform**.
 4. **Build formations:** select an NPC and use **Formation** to create a leader/self row, join a
    leader GUID, set distance/angle/group-AI/path-direction points, or remove membership. Purple
    world links make leader/member relationships visible and selectable in context.

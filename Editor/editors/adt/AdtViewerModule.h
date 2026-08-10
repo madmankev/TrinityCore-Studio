@@ -114,6 +114,7 @@ private:
     void FrameWorldPosition(const glm::vec3& world, float radius = 75.0f);
     void FrameSelection();
     bool CanBrushPlace(const glm::vec3& world) const;
+    void PlaceSpawnGrid(const glm::vec3& anchor);
 
     // --- object selection + transform gizmo (see AdtViewerModule.cpp) ---
     enum class SelKind { None, Doodad, GameObject, Npc };
@@ -633,11 +634,17 @@ private:
     // Reusable terrain-click placement palette. Unlike the one-shot context menu, a palette entry
     // stays armed for rapid map dressing and keeps an inexpensive spacing guard for the session.
     int brushKind_ = 0;          // 0 NPC, 1 GameObject
+    int brushPlacementMode_ = 0; // 0 terrain brush, 1 array / grid
     uint32_t brushEntry_ = 0;
     char brushSearch_[128] = {0};
     bool brushActive_ = false;
     float brushYaw_ = 0.0f;
     float brushMinSpacing_ = 2.0f;
+    int brushGridRows_ = 3;
+    int brushGridColumns_ = 3;
+    float brushGridSpacingX_ = 3.0f;
+    float brushGridSpacingY_ = 3.0f;
+    bool brushGridCenterOnClick_ = true;
     std::vector<BrushPlacement> brushPlacements_;
     std::string brushStatus_;
 

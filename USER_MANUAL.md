@@ -101,7 +101,10 @@ favorites, recent assets, thumbnails, model statistics, and drag/drop placement.
 - **Single placement:** select an asset and click ground.
 - **Scatter brush:** set density, seed, scale/rotation variance, normal alignment,
   overlap avoidance, and height offset.
-- **Array/grid:** choose rows, columns, and spacing for fences/interiors.
+- **Array/grid:** choose rows, columns, X/Y spacing, and centered anchoring for
+  fences/interiors. In the live Spawn Palette, one terrain click ground-snaps every
+  loaded cell, skips cells with no terrain/failed DB write, and records all successful
+  NPC/GameObject placements as one compound undo operation.
 - **Path placement:** lay points along a spline for lamps, trees, or walls.
 - **Surface density:** paint an object density field for foliage.
 

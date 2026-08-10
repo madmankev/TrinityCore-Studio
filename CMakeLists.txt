@@ -62,6 +62,10 @@ if(BUILD_TESTING AND WOWEDIT_BUILD_TESTS)
     add_executable(WowEditIntegrationTests tests/integration_tests/world_project_tests.cpp)
     target_link_libraries(WowEditIntegrationTests PRIVATE WowEdit::Core)
     add_test(NAME WowEditIntegrationTests COMMAND WowEditIntegrationTests)
+
+    add_executable(EditorCommandStackTests tests/unit_tests/editor_command_stack_tests.cpp)
+    target_include_directories(EditorCommandStackTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Editor")
+    add_test(NAME EditorCommandStackTests COMMAND EditorCommandStackTests)
 endif()
 
 if(WOWEDIT_BUILD_BENCHMARKS)
