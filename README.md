@@ -88,8 +88,10 @@ turn on **Edit**:
 9. **Author script events:** use **Script Triggers** to add a circle/box area entry/exit trigger,
    click-on-NPC/GameObject interaction trigger, proximity trigger, or delayed/repeating timer. Place
    the cyan script player in the 3D world and use Click-to-interact to preview events in the live log.
-   Every trigger records a custom hook, event id, and optional SmartAI action-list reference; Studio
-   saves this map-scoped metadata safely when a stock 3.3.5 schema has no native arbitrary-volume table.
+   Every trigger records a custom hook, event id, and optional SmartAI action-list reference, plus
+   an ordered delayed action sequence for hooks, SmartAI lists, spell casts, text, or GameObject
+   state previews. Copy a trigger manifest JSON for a custom server hook; Studio saves this map-scoped
+   metadata safely when a stock 3.3.5 schema has no native arbitrary-volume table.
 10. **Edit an NPC route:** select an NPC and open **Waypoint Path**. The panel identifies whether
    its route comes from the creature template (shared) or its `creature_addon` row (local). Use
    **Make local copy** before changing a shared route when the change is map/spawn-specific;

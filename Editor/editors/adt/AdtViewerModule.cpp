@@ -115,6 +115,7 @@ void AdtViewerModule::OnClientDataLoaded()
     scriptTriggerDrafts_.clear();
     scriptTriggersEdit_.clear();
     scriptTriggerRuntime_.clear();
+    pendingScriptTriggerActions_.clear();
     scriptTriggerLog_.clear();
     scriptTriggerMapDir_.clear();
     scriptTriggersDirty_ = false;
@@ -212,11 +213,13 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
     scriptTriggerDrafts_.clear();
     scriptTriggersEdit_.clear();
     scriptTriggerRuntime_.clear();
+    pendingScriptTriggerActions_.clear();
     scriptTriggerLog_.clear();
     scriptTriggerMapDir_.clear();
     scriptTriggersDirty_ = false;
     selectedScriptTriggerId_ = 0;
     nextScriptTriggerId_ = 1;
+    nextScriptTriggerActionId_ = 1;
     showScriptTriggerOverlay_ = true;
     scriptPreviewPlayerEnabled_ = false;
     scriptPreviewPlayerFollowCamera_ = false;
@@ -358,6 +361,26 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
                         trigger.scriptEventId = row.value("scriptEventId", 0u);
                         trigger.smartActionListId = row.value("smartActionListId", 0u);
                         trigger.note = row.value("note", std::string());
+                        if (row.contains("actions") && row["actions"].is_array())
+                            for (const nlohmann::json& actionRow : row["actions"])
+                            {
+                                if (!actionRow.is_object() || trigger.actions.size() >= 32)
+                                    continue;
+                                ScriptTriggerAction action;
+                                action.id = actionRow.value("id", uint64_t(0));
+                                if (action.id == 0)
+                                    action.id = nextScriptTriggerActionId_++;
+                                action.enabled = actionRow.value("enabled", true);
+                                action.type = static_cast<ScriptTriggerActionType>(
+                                    std::clamp(actionRow.value("type", 0), 0, 4));
+                                action.delaySeconds = std::clamp(finite(actionRow.value("delay", 0.0f), 0.0f),
+                                                                 0.0f, 86400.0f);
+                                action.hook = actionRow.value("hook", std::string());
+                                action.value = actionRow.value("value", 0u);
+                                action.text = actionRow.value("text", std::string());
+                                nextScriptTriggerActionId_ = std::max(nextScriptTriggerActionId_, action.id + 1);
+                                trigger.actions.push_back(std::move(action));
+                            }
                         if (trigger.name.empty())
                             trigger.name = "Trigger " + std::to_string(trigger.id);
                         nextScriptTriggerId_ = std::max(nextScriptTriggerId_, trigger.id + 1);
@@ -446,6 +469,7 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
         scriptTriggerProfiles_.clear();
         nextWorldLightId_ = 1;
         nextScriptTriggerId_ = 1;
+        nextScriptTriggerActionId_ = 1;
     }
 }
 
@@ -548,7 +572,8 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
             return a.id < b.id;
         });
         for (const ScriptEventTrigger& trigger : ordered)
-            profile["triggers"].push_back({
+        {
+            nlohmann::json row = {
                 {"id", trigger.id}, {"name", trigger.name}, {"enabled", trigger.enabled},
                 {"type", static_cast<int>(trigger.type)}, {"areaShape", static_cast<int>(trigger.areaShape)},
                 {"x", trigger.center.x}, {"y", trigger.center.y}, {"z", trigger.center.z},
@@ -558,8 +583,16 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
                 {"targetGuid", trigger.targetGuid}, {"timerDelay", trigger.timerDelaySeconds},
                 {"timerRepeat", trigger.timerRepeatSeconds}, {"scriptHook", trigger.scriptHook},
                 {"scriptEventId", trigger.scriptEventId}, {"smartActionListId", trigger.smartActionListId},
-                {"note", trigger.note}
-            });
+                {"note", trigger.note}, {"actions", nlohmann::json::array()}
+            };
+            for (const ScriptTriggerAction& action : trigger.actions)
+                row["actions"].push_back({
+                    {"id", action.id}, {"enabled", action.enabled}, {"type", static_cast<int>(action.type)},
+                    {"delay", action.delaySeconds}, {"hook", action.hook}, {"value", action.value},
+                    {"text", action.text}
+                });
+            profile["triggers"].push_back(std::move(row));
+        }
         triggerProfiles.push_back(std::move(profile));
     }
     editorNode["scriptTriggers"] = {{"showOverlay", showScriptTriggerOverlay_},
@@ -832,6 +865,7 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
         scriptTriggerCenterPlacementActive_ = false;
         scriptInteractionMode_ = false;
         scriptTriggerRuntime_.clear();
+        pendingScriptTriggerActions_.clear();
         scriptTriggerLog_.clear();
         scriptPreviewTimeSeconds_ = 0.0f;
         scriptTriggerStatus_.clear();
@@ -2726,6 +2760,7 @@ void AdtViewerModule::LoadScriptTriggersForMap(const std::string& mapDir)
     }
     selectedScriptTriggerId_ = scriptTriggersEdit_.empty() ? 0 : scriptTriggersEdit_.front().id;
     scriptTriggerRuntime_.clear();
+    pendingScriptTriggerActions_.clear();
     scriptTriggerLog_.clear();
     scriptPreviewTimeSeconds_ = 0.0f;
     scriptPreviewPlayerEnabled_ = false;
@@ -2761,6 +2796,7 @@ void AdtViewerModule::RevertScriptTriggers()
     scriptTriggersDirty_ = false;
     selectedScriptTriggerId_ = scriptTriggersEdit_.empty() ? 0 : scriptTriggersEdit_.front().id;
     scriptTriggerRuntime_.clear();
+    pendingScriptTriggerActions_.clear();
     scriptTriggerLog_.clear();
     scriptPreviewTimeSeconds_ = 0.0f;
     scriptTriggerStatus_ = "Reverted script triggers to the saved Studio profile.";
@@ -2814,20 +2850,111 @@ void AdtViewerModule::FireScriptTrigger(uint64_t triggerId, const char* reason)
     std::string detail = reason ? reason : "triggered";
     detail += " — " + trigger.name;
     if (!trigger.scriptHook.empty())
-        detail += " | hook: " + trigger.scriptHook;
+        detail += " | legacy hook: " + trigger.scriptHook;
     if (trigger.scriptEventId != 0)
         detail += " | event: " + std::to_string(trigger.scriptEventId);
     if (trigger.smartActionListId != 0)
         detail += " | SmartAI list: " + std::to_string(trigger.smartActionListId);
-    if (trigger.scriptHook.empty() && trigger.scriptEventId == 0 && trigger.smartActionListId == 0)
+    if (trigger.actions.empty() && trigger.scriptHook.empty() && trigger.scriptEventId == 0 &&
+        trigger.smartActionListId == 0)
         detail += " | no server hook bound (preview event only)";
+    if (!trigger.actions.empty())
+        detail += " | queued actions: " + std::to_string(trigger.actions.size());
     scriptTriggerLog_.push_back({trigger.id, scriptPreviewTimeSeconds_, std::move(detail)});
+    if (scriptTriggerLog_.size() > 100)
+        scriptTriggerLog_.erase(scriptTriggerLog_.begin(), scriptTriggerLog_.begin() +
+                                 static_cast<std::ptrdiff_t>(scriptTriggerLog_.size() - 100));
+    scriptTriggerStatus_ = scriptTriggerLog_.back().text;
+
+    // Preserve legacy single-hook fields, then append an ordered preview sequence. A delay of zero
+    // executes in the current world tick; later actions remain queued against this trigger id.
+    if (trigger.actions.empty())
+    {
+        if (!trigger.scriptHook.empty())
+        {
+            ScriptTriggerAction legacy;
+            legacy.type = ScriptTriggerActionType::ScriptHook;
+            legacy.hook = trigger.scriptHook;
+            ExecuteScriptTriggerAction(trigger.id, legacy);
+        }
+        if (trigger.smartActionListId != 0)
+        {
+            ScriptTriggerAction legacy;
+            legacy.type = ScriptTriggerActionType::SmartActionList;
+            legacy.value = trigger.smartActionListId;
+            ExecuteScriptTriggerAction(trigger.id, legacy);
+        }
+    }
+    else
+        for (const ScriptTriggerAction& action : trigger.actions)
+            if (action.enabled)
+                pendingScriptTriggerActions_.push_back({trigger.id, action,
+                                                        std::max(action.delaySeconds, 0.0f)});
+    if (svc_ && svc_->setStatus)
+        svc_->setStatus(scriptTriggerStatus_);
+}
+
+void AdtViewerModule::ExecuteScriptTriggerAction(uint64_t triggerId, const ScriptTriggerAction& action)
+{
+    if (!action.enabled)
+        return;
+    const char* kind = action.type == ScriptTriggerActionType::ScriptHook ? "hook" :
+                       action.type == ScriptTriggerActionType::SmartActionList ? "SmartAI action-list" :
+                       action.type == ScriptTriggerActionType::CastSpell ? "cast spell" :
+                       action.type == ScriptTriggerActionType::TalkText ? "talk text" : "toggle GameObject";
+    std::string detail = std::string("action ") + kind;
+    if (action.type == ScriptTriggerActionType::ScriptHook)
+        detail += action.hook.empty() ? " (unnamed)" : (": " + action.hook);
+    else if (action.type == ScriptTriggerActionType::TalkText)
+        detail += action.text.empty() ? " (empty)" : (": " + action.text);
+    else
+        detail += " " + std::to_string(action.value);
+
+    // A GameObject state flip is the one sequence action that has a useful immediate world-side
+    // preview; it remains session-only until a normal GameObject Instance save is requested.
+    if (action.type == ScriptTriggerActionType::ToggleGameObject && action.value != 0)
+    {
+        if (MapGameObject* go = goLayer_.FindSpawn(action.value))
+        {
+            go->state = go->state == 0 ? 1 : 0;
+            detail += " (preview state toggled)";
+        }
+        else
+            detail += " (guid not loaded)";
+    }
+    scriptTriggerLog_.push_back({triggerId, scriptPreviewTimeSeconds_, std::move(detail)});
     if (scriptTriggerLog_.size() > 100)
         scriptTriggerLog_.erase(scriptTriggerLog_.begin(), scriptTriggerLog_.begin() +
                                  static_cast<std::ptrdiff_t>(scriptTriggerLog_.size() - 100));
     scriptTriggerStatus_ = scriptTriggerLog_.back().text;
     if (svc_ && svc_->setStatus)
         svc_->setStatus(scriptTriggerStatus_);
+}
+
+void AdtViewerModule::ProcessPendingScriptTriggerActions(float dtSeconds)
+{
+    const float dt = std::max(dtSeconds, 0.0f);
+    for (size_t i = 0; i < pendingScriptTriggerActions_.size(); )
+    {
+        PendingScriptTriggerAction& pending = pendingScriptTriggerActions_[i];
+        const auto trigger = std::find_if(scriptTriggersEdit_.begin(), scriptTriggersEdit_.end(),
+                                          [&](const ScriptEventTrigger& t) { return t.id == pending.triggerId; });
+        if (trigger == scriptTriggersEdit_.end() || !trigger->enabled)
+        {
+            pendingScriptTriggerActions_.erase(pendingScriptTriggerActions_.begin() + static_cast<std::ptrdiff_t>(i));
+            continue;
+        }
+        pending.remainingSeconds -= dt;
+        if (pending.remainingSeconds > 1e-5f)
+        {
+            ++i;
+            continue;
+        }
+        const uint64_t triggerId = pending.triggerId;
+        const ScriptTriggerAction action = pending.action;
+        pendingScriptTriggerActions_.erase(pendingScriptTriggerActions_.begin() + static_cast<std::ptrdiff_t>(i));
+        ExecuteScriptTriggerAction(triggerId, action);
+    }
 }
 
 void AdtViewerModule::FireInteractionTriggers(int objectKind, uint32_t guid)
@@ -2928,6 +3055,7 @@ void AdtViewerModule::EvaluateScriptTriggers(float dtMs)
             }
         }
     }
+    ProcessPendingScriptTriggerActions(dt);
 }
 
 void AdtViewerModule::DrawScriptTriggerOverlay(const glm::mat4& view, const glm::mat4& proj,
@@ -3283,6 +3411,99 @@ void AdtViewerModule::DrawScriptTriggersPanel()
         }
     }
 
+    ImGui::SeparatorText("Ordered action sequence");
+    auto addAction = [&](ScriptTriggerActionType type) {
+        if (trigger.actions.size() >= 32)
+        {
+            scriptTriggerStatus_ = "This trigger already has the 32-action preview safety limit.";
+            return;
+        }
+        ScriptTriggerAction action;
+        action.id = nextScriptTriggerActionId_++;
+        action.type = type;
+        if (type == ScriptTriggerActionType::ScriptHook)
+            action.hook = trigger.scriptHook;
+        else if (type == ScriptTriggerActionType::SmartActionList)
+            action.value = trigger.smartActionListId;
+        trigger.actions.push_back(std::move(action));
+        changed = true;
+    };
+    if (ImGui::SmallButton("+ Hook")) addAction(ScriptTriggerActionType::ScriptHook);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ SmartAI")) addAction(ScriptTriggerActionType::SmartActionList);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Spell")) addAction(ScriptTriggerActionType::CastSpell);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Talk")) addAction(ScriptTriggerActionType::TalkText);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Toggle GO")) addAction(ScriptTriggerActionType::ToggleGameObject);
+
+    int moveUp = -1, moveDown = -1, eraseAction = -1;
+    ImGui::BeginChild("##triggeractions", ImVec2(0, 175), true);
+    static const char* kActionTypes[] = {"Script hook", "SmartAI action list", "Cast spell", "Talk text", "Toggle GameObject"};
+    for (int i = 0; i < static_cast<int>(trigger.actions.size()); ++i)
+    {
+        ScriptTriggerAction& action = trigger.actions[i];
+        ImGui::PushID(static_cast<int>(action.id & 0x7fffffff));
+        bool enabled = action.enabled;
+        if (ImGui::Checkbox("##actionenabled", &enabled)) { action.enabled = enabled; changed = true; }
+        ImGui::SameLine();
+        ImGui::Text("%02d", i + 1);
+        ImGui::SameLine();
+        int actionType = static_cast<int>(action.type);
+        ImGui::SetNextItemWidth(145.0f);
+        if (ImGui::Combo("##actiontype", &actionType, kActionTypes, IM_ARRAYSIZE(kActionTypes)))
+        {
+            action.type = static_cast<ScriptTriggerActionType>(std::clamp(actionType, 0, 4));
+            changed = true;
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(70.0f);
+        if (ImGui::InputFloat("##actiondelay", &action.delaySeconds, 0.1f, 1.0f, "%.2fs")) changed = true;
+        if (action.type == ScriptTriggerActionType::ScriptHook)
+        {
+            ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f);
+            if (InputTextString("##actionhook", action.hook)) changed = true;
+        }
+        else if (action.type == ScriptTriggerActionType::TalkText)
+        {
+            ImGui::SameLine(); ImGui::SetNextItemWidth(180.0f);
+            if (InputTextString("##actiontext", action.text)) changed = true;
+        }
+        else
+        {
+            ImGui::SameLine(); ImGui::SetNextItemWidth(95.0f);
+            if (InputU32("##actionvalue", action.value)) changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("^")) moveUp = i;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("v")) moveDown = i;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) eraseAction = i;
+        ImGui::PopID();
+    }
+    if (trigger.actions.empty())
+        ImGui::TextDisabled("No ordered actions: legacy Script hook / Event ID / SmartAI list fields above dispatch directly.");
+    ImGui::EndChild();
+    if (moveUp > 0)
+    {
+        std::swap(trigger.actions[moveUp], trigger.actions[moveUp - 1]);
+        changed = true;
+    }
+    else if (moveDown >= 0 && moveDown + 1 < static_cast<int>(trigger.actions.size()))
+    {
+        std::swap(trigger.actions[moveDown], trigger.actions[moveDown + 1]);
+        changed = true;
+    }
+    else if (eraseAction >= 0)
+    {
+        trigger.actions.erase(trigger.actions.begin() + eraseAction);
+        changed = true;
+    }
+    for (ScriptTriggerAction& action : trigger.actions)
+        action.delaySeconds = std::clamp(action.delaySeconds, 0.0f, 86400.0f);
+
     trigger.radius = std::clamp(trigger.radius, 0.1f, 10000.0f);
     trigger.boxExtents = glm::clamp(trigger.boxExtents, glm::vec3(0.1f), glm::vec3(10000.0f));
     trigger.height = std::clamp(trigger.height, 0.0f, 10000.0f);
@@ -3291,16 +3512,40 @@ void AdtViewerModule::DrawScriptTriggersPanel()
     if (changed)
     {
         scriptTriggerRuntime_.erase(trigger.id);
+        pendingScriptTriggerActions_.erase(
+            std::remove_if(pendingScriptTriggerActions_.begin(), pendingScriptTriggerActions_.end(),
+                           [&](const PendingScriptTriggerAction& pending) { return pending.triggerId == trigger.id; }),
+            pendingScriptTriggerActions_.end());
         MarkScriptTriggersDirty("Updated script trigger preview.");
     }
 
     if (ImGui::Button("Test fire now"))
         FireScriptTrigger(trigger.id, "manual test");
     ImGui::SameLine();
+    if (ImGui::Button("Copy trigger manifest"))
+    {
+        nlohmann::json manifest = {
+            {"map", scriptTriggerMapDir_}, {"id", trigger.id}, {"name", trigger.name},
+            {"type", static_cast<int>(trigger.type)}, {"scriptHook", trigger.scriptHook},
+            {"scriptEventId", trigger.scriptEventId}, {"smartActionListId", trigger.smartActionListId},
+            {"actions", nlohmann::json::array()}
+        };
+        for (const ScriptTriggerAction& action : trigger.actions)
+            manifest["actions"].push_back({
+                {"id", action.id}, {"enabled", action.enabled}, {"type", static_cast<int>(action.type)},
+                {"delay", action.delaySeconds}, {"hook", action.hook}, {"value", action.value}, {"text", action.text}
+            });
+        const std::string text = manifest.dump(2);
+        ImGui::SetClipboardText(text.c_str());
+        scriptTriggerStatus_ = "Copied selected trigger manifest JSON to the clipboard.";
+    }
+    ImGui::SameLine();
     if (ImGui::Button("Duplicate trigger"))
     {
         ScriptEventTrigger copy = trigger;
         copy.id = nextScriptTriggerId_++;
+        for (ScriptTriggerAction& action : copy.actions)
+            action.id = nextScriptTriggerActionId_++;
         copy.name += " Copy";
         copy.center += glm::vec3(1.0f, 1.0f, 0.0f);
         scriptTriggersEdit_.push_back(std::move(copy));
@@ -3317,6 +3562,10 @@ void AdtViewerModule::DrawScriptTriggersPanel()
                                                   [id](const ScriptEventTrigger& t) { return t.id == id; }),
                                    scriptTriggersEdit_.end());
         scriptTriggerRuntime_.erase(id);
+        pendingScriptTriggerActions_.erase(
+            std::remove_if(pendingScriptTriggerActions_.begin(), pendingScriptTriggerActions_.end(),
+                           [id](const PendingScriptTriggerAction& pending) { return pending.triggerId == id; }),
+            pendingScriptTriggerActions_.end());
         selectedScriptTriggerId_ = scriptTriggersEdit_.empty() ? 0 : scriptTriggersEdit_.front().id;
         MarkScriptTriggersDirty("Deleted script trigger.");
         ImGui::End();

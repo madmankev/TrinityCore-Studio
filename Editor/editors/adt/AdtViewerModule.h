@@ -113,6 +113,7 @@ private:
         bool dirty = false;
     };
     struct FormationState;
+    struct ScriptTriggerAction;
     void SyncTransformEdit();
     void ApplyTransformEdit();
     void RevertTransformEdit();
@@ -133,6 +134,8 @@ private:
     void MarkScriptTriggersDirty(const char* status = nullptr);
     void EvaluateScriptTriggers(float dtMs);
     void FireScriptTrigger(uint64_t triggerId, const char* reason);
+    void ProcessPendingScriptTriggerActions(float dtSeconds);
+    void ExecuteScriptTriggerAction(uint64_t triggerId, const ScriptTriggerAction& action);
     void FireInteractionTriggers(int objectKind, uint32_t guid);
     void DrawScriptTriggerOverlay(const glm::mat4& view, const glm::mat4& proj, const ImVec2& p0,
                                   int w, int h);
@@ -169,6 +172,19 @@ private:
     enum class ScriptTriggerType : uint8_t { Area, Interaction, Proximity, Timer };
     enum class ScriptTriggerObjectKind : uint8_t { None, Npc, GameObject };
     enum class ScriptTriggerAreaShape : uint8_t { Circle, Box };
+    // Ordered actions form a small visual event sequence. They remain metadata for a server hook,
+    // while the World Editor executes a faithful, timed preview/log of each action.
+    enum class ScriptTriggerActionType : uint8_t { ScriptHook, SmartActionList, CastSpell, TalkText, ToggleGameObject };
+    struct ScriptTriggerAction
+    {
+        uint64_t id = 0;
+        bool enabled = true;
+        ScriptTriggerActionType type = ScriptTriggerActionType::ScriptHook;
+        float delaySeconds = 0.0f;  // delay relative to trigger dispatch
+        std::string hook;
+        uint32_t value = 0;         // SmartAI list / spell / target GameObject guid
+        std::string text;           // optional talk text / action note
+    };
     struct ScriptEventTrigger
     {
         uint64_t id = 0;
@@ -188,6 +204,7 @@ private:
         uint32_t scriptEventId = 0;        // optional script event id / message key
         uint32_t smartActionListId = 0;    // optional SmartAI timed action-list reference
         std::string note;
+        std::vector<ScriptTriggerAction> actions; // ordered delayed sequence; legacy metadata above remains supported
     };
     struct ScriptTriggerRuntime
     {
@@ -201,6 +218,12 @@ private:
         uint64_t triggerId = 0;
         float timeSeconds = 0.0f;
         std::string text;
+    };
+    struct PendingScriptTriggerAction
+    {
+        uint64_t triggerId = 0;
+        ScriptTriggerAction action;
+        float remainingSeconds = 0.0f;
     };
     // WoWEdit-style Studio light authoring. WotLK ADTs do not carry standalone editable
     // point/spot-light records, so these are deliberately a Studio settings layer: non-destructive,
@@ -511,9 +534,11 @@ private:
     std::unordered_map<std::string, std::vector<ScriptEventTrigger>> scriptTriggerDrafts_;
     std::vector<ScriptEventTrigger> scriptTriggersEdit_;
     std::unordered_map<uint64_t, ScriptTriggerRuntime> scriptTriggerRuntime_;
+    std::vector<PendingScriptTriggerAction> pendingScriptTriggerActions_;
     std::vector<ScriptTriggerLogEntry> scriptTriggerLog_;
     std::string scriptTriggerMapDir_;
     uint64_t nextScriptTriggerId_ = 1;
+    uint64_t nextScriptTriggerActionId_ = 1;
     uint64_t selectedScriptTriggerId_ = 0;
     bool scriptTriggersDirty_ = false;
     bool showScriptTriggerOverlay_ = true;
