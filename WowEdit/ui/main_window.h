@@ -9,12 +9,14 @@
 #include "io/map_serializer.h"
 #include "scripting/script_engine.h"
 #include "terrain/terrain_editor.h"
+#include "editing/road_path_tool.h"
 #include "ui/chunk_operations_panel.h"
 #include "ui/content_browser.h"
 #include "ui/creature_editor_panel.h"
 #include "ui/debug_panel.h"
 #include "ui/menu_bar.h"
 #include "ui/property_panel.h"
+#include "ui/road_path_panel.h"
 #include "ui/spell_effect_previewer.h"
 #include "ui/terrain_tools_panel.h"
 #include "ui/theme_manager.h"
@@ -50,6 +52,7 @@ public:
     Toolbar& toolbar() { return toolbar_; }
     PanelVisibility& panels() { return panels_; }
     SpellEffectPreviewer& spellPreviewer() { return spellPreviewer_; }
+    RoadPathPanel& roadPathPanel() { return roadPathPanel_; }
     std::string lastAction() const { return lastAction_; }
 
 private:
@@ -69,6 +72,8 @@ private:
     PanelVisibility panels_;
     TerrainEditor terrainEditor_;
     TerrainToolsPanel terrainTools_;
+    RoadPathTool roadPathTool_;
+    RoadPathPanel roadPathPanel_;
     WorldChunkClipboard chunkClipboard_;
     ChunkOperationsPanel chunkOperations_;
     ContentBrowser contentBrowser_;

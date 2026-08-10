@@ -15,8 +15,9 @@
 - Portable `WowEdit/` C++17 architecture with MVC-facing panel controllers,
   complete menu command model, `ICommand`/macro history, and EventBus.
 - Heightmap, texture-splat, water, terrain chunk LOD, terrain tools, erosion,
-  object/octree selection, transform snapping, creature/waypoint/AI preview,
-  spell timeline, and world clipboard systems.
+  command-backed Road / Path Tool grading/material/preview meshes, object/octree
+  selection, transform snapping, creature/waypoint/AI preview, spell timeline,
+  and world clipboard systems.
 - JSON + atomic binary `.wowedit` serializer, asset inspection, export, version
   control facade, plugins, scripting bridge, profiling, procedural starter assets,
   GLSL 4.5 shader sources, CMake/CTest, unit/integration/benchmark targets.

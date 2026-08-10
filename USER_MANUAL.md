@@ -54,12 +54,19 @@ Sample a target point, then flatten with a blend rate to avoid a hard plateau.
 Ramp accepts start/end heights, width, and a maximum slope constraint. Use it for
 roads, ramps, stairs foundations, and traversable cliffs.
 
-### Noise, stamps, erosion
+### Noise, stamps, erosion, and roads
 
 Noise is deterministic from frequency/amplitude/octaves/seed. Stamps can be
 scaled and rotated; thermal erosion moves material downhill above a talus angle,
 while hydraulic erosion simulates short rain droplets. All outcomes are commands:
 undo immediately if an iteration is too destructive.
+
+The **Road / Path Tool** turns ordered control points into a slope-clamped
+centerline grade, blends soft shoulders into surrounding terrain, paints the
+chosen splat layer, and produces a lightweight preview strip for a renderer or
+exporter. Use terrain-conforming mode for trails; turn it off and author heights
+for bridges, ramps, and deliberately graded roads. The full terrain/material
+operation is one undoable macro.
 
 ## 4. Texturing basics
 

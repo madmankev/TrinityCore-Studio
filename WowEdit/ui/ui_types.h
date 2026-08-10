@@ -21,6 +21,7 @@ struct PanelVisibility
     bool properties = true;
     bool hierarchy = true;
     bool terrainTools = true;
+    bool roadPath = false;
     bool texturePalette = true;
     bool doodadBrowser = true;
     bool creatureEditor = true;

@@ -277,7 +277,8 @@ buildable/testable on Windows, Linux, and macOS.
   native `.wowedit` JSON manifests with atomic binary height/splat attachments.
 - Command-backed doodad placement/selection/transforms/scatter/grouping,
   creature spawn configuration, waypoint visualization, patrol/chase/leash
-  simulation, spell-effect timeline preview, chunk copy/paste transforms,
+  simulation, spell-effect timeline preview, **Road / Path Tool** terrain grading
+  with soft shoulders/material paint/preview strips, chunk copy/paste transforms,
   plugin, scripting, import/export, profiling, and version-control facades.
 - A complete menu model for all File, Edit, View, Terrain, Objects, Creatures,
   Quest, Spells, Tools, Window, and Help workflows documented below; the

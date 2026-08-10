@@ -7,8 +7,9 @@
 namespace wowedit
 {
 MainWindow::MainWindow()
-    : terrainEditor_(commands_, &events_), terrainTools_(terrainEditor_), chunkClipboard_(&commands_),
-      chunkOperations_(chunkClipboard_), doodads_(&commands_, &events_), creatures_(&commands_, &events_),
+    : terrainEditor_(commands_, &events_), terrainTools_(terrainEditor_), roadPathTool_(commands_, &events_),
+      roadPathPanel_(roadPathTool_), chunkClipboard_(&commands_), chunkOperations_(chunkClipboard_),
+      doodads_(&commands_, &events_), creatures_(&commands_, &events_),
       creatureEditor_(creatures_), propertyPanel_(commands_), debugPanel_(Logger::instance(), profiler_)
 {
     RegisterCoreApiBindings(scripts_, database_, commands_);
@@ -80,6 +81,8 @@ void MainWindow::bindMenuActions()
     menuBar_.bind("window.properties", [this] { togglePanel(&PanelVisibility::properties); });
     menuBar_.bind("window.hierarchy", [this] { togglePanel(&PanelVisibility::hierarchy); });
     menuBar_.bind("window.terrain_tools", [this] { togglePanel(&PanelVisibility::terrainTools); });
+    menuBar_.bind("window.road_path", [this] { togglePanel(&PanelVisibility::roadPath); });
+    menuBar_.bind("terrain.road", [this] { panels_.roadPath = true; });
     menuBar_.bind("window.texture_palette", [this] { togglePanel(&PanelVisibility::texturePalette); });
     menuBar_.bind("window.doodad_browser", [this] { togglePanel(&PanelVisibility::doodadBrowser); });
     menuBar_.bind("window.creature_editor", [this] { togglePanel(&PanelVisibility::creatureEditor); });

@@ -21,6 +21,16 @@ int main(int argc, char** argv)
     island.heightmap.applyBrush({32.0f, 0.0f, 32.0f}, 22.0f, 8.0f, wowedit::BrushFalloffType::Gaussian,
                                 wowedit::Heightmap::BrushOperation::Noise);
     island.splatmap.applyHeightBasedBlending(island.heightmap);
+
+    // A command-backed road demonstrates the path tool in the sample project:
+    // it grades a slope-constrained trail and paints the dirt layer in one undo step.
+    wowedit::RoadPathTool road(editor.commands());
+    road.settings().width = 4.5f;
+    road.settings().shoulderWidth = 2.0f;
+    road.settings().textureLayer = 1; // dirt
+    road.settings().conformToTerrain = true;
+    road.build(island, {{8.0f, 0.0f, 18.0f}, {27.0f, 0.0f, 30.0f}, {48.0f, 0.0f, 49.0f}});
+
     island.water.setGlobalHeight(-0.2f);
     for (std::uint32_t y = 0; y < 12; ++y)
         for (std::uint32_t x = 0; x < 64; ++x)

@@ -2,6 +2,7 @@
 #include "core/event_system.h"
 #include "objects/doodad_manager.h"
 #include "editing/world_chunk_clipboard.h"
+#include "editing/road_path_tool.h"
 #include "terrain/terrain_chunk.h"
 #include "terrain/heightmap.h"
 #include "terrain/texture_splatmap.h"
@@ -69,6 +70,27 @@ int main()
         const std::uint64_t id = doodads.placeDoodad(doodad); Expect(doodads.find(id) != nullptr, "place doodad");
         doodads.moveDoodad(id, {8.0f, 2.0f, 3.0f}); Expect(doodads.find(id)->position.x == 8.0f, "move doodad");
         doodads.commandManager().undo(); Expect(doodads.find(id)->position.x == 1.0f, "undo doodad move");
+
+        wowedit::CommandManager roadCommands;
+        wowedit::TerrainChunk roadChunk(0, 0, 32, 1.0f);
+        wowedit::RoadPathTool road(roadCommands);
+        road.settings().width = 4.0f;
+        road.settings().shoulderWidth = 1.5f;
+        road.settings().conformToTerrain = false;
+        road.settings().textureLayer = 2;
+        road.settings().elevationBlend = 1.0f;
+        const std::vector<glm::vec3> roadPoints{{2.0f, 2.0f, 2.0f}, {29.0f, 4.0f, 29.0f}};
+        const wowedit::RoadBuildResult roadResult = road.build(roadChunk, roadPoints);
+        Expect(roadResult.terrainVerticesChanged > 0 && roadResult.textureTexelsChanged > 0, "road grades and paints terrain");
+        Expect(roadChunk.heightmap.getHeight(15, 15) > 0.5f, "road applies centerline grade");
+        Expect(roadChunk.splatmap.sampleDominantLayer(15, 15) == 2, "road paints selected material");
+        const wowedit::Mesh roadPreview = road.buildPreviewMesh(roadChunk, roadPoints);
+        Expect(!roadPreview.empty(), "road preview mesh generated");
+        roadCommands.undo();
+        Near(roadChunk.heightmap.getHeight(15, 15), 0.0f, 0.001f, "road undo restores terrain");
+        Expect(roadChunk.splatmap.sampleDominantLayer(15, 15) == 0, "road undo restores material");
+        roadCommands.redo();
+        Expect(roadChunk.heightmap.getHeight(15, 15) > 0.5f, "road redo restores terrain");
 
         wowedit::TerrainChunk source(0, 0, 8, 1.0f);
         source.heightmap.setHeight(2, 2, 42.0f);
