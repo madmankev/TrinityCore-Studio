@@ -95,7 +95,11 @@ textures. Use **Layer Manager** to choose the active quartet.
   vegetation tone, or baked mood.
 
 Use auto-blend as a starting point only; inspect cliffs, shorelines, and paths
-manually.
+manually. In the live World Editor, **Terrain Paint** writes radial MCCV
+per-vertex tint strokes. Choose a tint, opacity, and radius; right-click to
+stage it, then save ADT edits to safely create/update MCCV chunks and reload the
+authoritative client-overlay result. This is ideal for baked dirt, vegetation
+variation, shoreline darkness, and localized mood tinting.
 
 ## 5. Object composition
 

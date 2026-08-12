@@ -55,11 +55,35 @@ struct TerrainBrushResult
     float maxWorldZ = 0.0f;
 };
 
+// A radial tint stroke over MCCV terrain vertex colors. WoW stores MCCV as
+// BGRA bytes scaled around 0x7F == neutral white; Studio accepts normalized RGB
+// and blends toward it by opacity/falloff. Missing MCCV chunks are created safely.
+struct TerrainVertexColorStroke
+{
+    float worldX = 0.0f;
+    float worldY = 0.0f;
+    float radius = 8.0f;
+    float color[3] = {1.0f, 1.0f, 1.0f};
+    float opacity = 1.0f;
+};
+
+struct TerrainVertexColorResult
+{
+    int touchedVertices = 0;
+    int touchedChunks = 0;
+};
+
 // Patch one terrain brush stroke into an ADT tile in-place. Only MCVT/MCNR payload bytes change;
 // chunk layout, placements, textures, and liquid data remain untouched. Returns false for malformed
 // tiles/strokes or when no vertex lies inside the brush radius.
 bool SculptTerrain(std::vector<uint8_t>& bytes, const TerrainBrushStroke& stroke,
                    TerrainBrushResult* result = nullptr);
+
+// Paint/tint MCCV vertex colors. If an MCNK has no MCCV payload, one is
+// appended and the ADT's MCIN offsets/sizes are rebuilt before painting. Other
+// terrain, texture, placement, and liquid chunks remain byte-preserved.
+bool PaintTerrainVertexColor(std::vector<uint8_t>& bytes, const TerrainVertexColorStroke& stroke,
+                             TerrainVertexColorResult* result = nullptr);
 
 // Invert PlacementMatrix (AdtLoader.cpp): turn a streamer-local placement matrix + the streamer
 // map origin back into MDDF/MODF raw fields. `localTransform` is the object's transform in the

@@ -58,6 +58,23 @@ public:
     // hit/flatten sampling onto the staged preview before the authoritative ADT is saved/reloaded.
     float PreviewTerrainZ(float baseZ, float worldX, float worldY) const;
 
+    // A staged radial MCCV tint stroke. Unlike height operations this has no
+    // universal stock-server representation; Flush safely creates/updates MCCV
+    // payloads in the edited-client ADT overlay.
+    struct VertexColorStrokeRef
+    {
+        uint64_t id = 0;
+        int tileX = 0, tileY = 0;
+        adt::TerrainVertexColorStroke stroke;
+    };
+    VertexColorStrokeRef RecordVertexColorStroke(int tileX, int tileY,
+                                                  const adt::TerrainVertexColorStroke& stroke);
+    bool RemoveVertexColorStroke(uint64_t id);
+    bool RestoreVertexColorStroke(const VertexColorStrokeRef& stroke);
+    void ClearVertexColorStrokes();
+    int vertexColorPendingCount() const;
+    void SnapshotVertexColorStrokes(std::vector<VertexColorStrokeRef>& out) const;
+
     int  pendingCount() const;
     bool empty() const { return pendingCount() == 0; }
 
@@ -81,5 +98,7 @@ private:
     // not coalesce: Raise then Flatten is semantically different from the reverse sequence.
     std::unordered_map<uint32_t, std::vector<TerrainStrokeRef>> terrain_;
     uint64_t nextTerrainStrokeId_ = 1;
+    std::unordered_map<uint32_t, std::vector<VertexColorStrokeRef>> vertexColors_;
+    uint64_t nextVertexColorStrokeId_ = 1;
 };
 } // namespace we

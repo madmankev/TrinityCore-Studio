@@ -60,6 +60,7 @@ public:
                 {"Spell Effect Previewer", DockSlot::Right, true},
                 {"Waypoint Path", DockSlot::Bottom, true},
                 {"Terrain Sculpt", DockSlot::Bottom, true},
+                {"Terrain Paint", DockSlot::Bottom, true},
                 {"World Validation", DockSlot::Bottom, true},
                 {"World Editor###ADT Viewer", DockSlot::Center, true}};
     }
@@ -463,6 +464,7 @@ private:
     enum class WaypointPlacementMode { None, Add, MoveSelected };
     void DrawWaypointPathPanel();
     void DrawTerrainSculptPanel();
+    void DrawTerrainPaintPanel();
     void SyncWaypointPathToSelection(bool discardCurrent = false);
     void ResetWaypointPathEditor();
     void MarkWaypointPathDirty();
@@ -487,6 +489,9 @@ private:
     void QueueTerrainNoise(const glm::vec3& center, int centerTileX, int centerTileY);
     void QueueTerrainStamp(const glm::vec3& center, int centerTileX, int centerTileY);
     void QueueTerrainSmooth(const glm::vec3& center, int centerTileX, int centerTileY);
+    void QueueVertexColorStrokeAcrossTiles(const adt::TerrainVertexColorStroke& stroke, int centerTileX, int centerTileY,
+                                           std::vector<AdtEditStore::VertexColorStrokeRef>& outRefs);
+    void PushVertexColorUndo(const std::vector<AdtEditStore::VertexColorStrokeRef>& refs, const char* label);
 
     // NPC model fallbacks: map markers remain visible/selectable when a custom display ID cannot be
     // resolved to an M2, and make a missing WoW client-model pack immediately diagnosable.
@@ -766,8 +771,13 @@ private:
     float terrainSmoothBlend_ = 0.55f;
     bool terrainSmoothPreserveEdges_ = true;
     float terrainSmoothEdgeThreshold_ = 4.0f;
+    bool terrainVertexPaintActive_ = false;
+    float terrainVertexPaintRadius_ = 8.0f;
+    float terrainVertexPaintColor_[3] = {1.0f, 0.78f, 0.42f};
+    float terrainVertexPaintOpacity_ = 0.65f;
     uint64_t terrainHistoryGeneration_ = 1;
     std::string terrainStatus_;
+    std::string terrainPaintStatus_;
 
     // Right-click "add object here" flow.
     ImVec2    rightPressPos_{0, 0};

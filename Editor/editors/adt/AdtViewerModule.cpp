@@ -146,7 +146,9 @@ void AdtViewerModule::OnClientDataLoaded()
     brushActive_ = false;
     adtEdits_.SetMap("");
     terrainSculptActive_ = false;
+    terrainVertexPaintActive_ = false;
     terrainRampHasStart_ = false;
+    terrainPaintStatus_.clear();
     ++terrainHistoryGeneration_;
     terrainStatus_.clear();
     // Client/project data changed: do not carry an unsaved map-light draft into a different
@@ -281,6 +283,7 @@ void AdtViewerModule::DrawMainMenuExtensions()
     const auto armTerrain = [this, &focus](int mode) {
         terrainSculptMode_ = mode;
         terrainRampHasStart_ = false;
+        terrainVertexPaintActive_ = false;
         terrainSculptActive_ = true;
         inGameViewMode_ = false;
         editMode_ = true;
@@ -319,6 +322,7 @@ void AdtViewerModule::DrawMainMenuExtensions()
             focus("World Editor###ADT Viewer");
         }
         ImGui::Separator();
+        if (ImGui::MenuItem("Vertex Color Paint...")) focus("Terrain Paint");
         if (ImGui::MenuItem("Light Editor...")) focus("Light Editor");
         ImGui::EndMenu();
     }
@@ -403,6 +407,7 @@ void AdtViewerModule::DrawMainMenuExtensions()
         if (ImGui::MenuItem("Properties / Transform")) focus("Transform");
         if (ImGui::MenuItem("Hierarchy / Outliner")) focus("World Outliner");
         if (ImGui::MenuItem("Terrain Tools")) focus("Terrain Sculpt");
+        if (ImGui::MenuItem("Terrain Paint")) focus("Terrain Paint");
         if (ImGui::MenuItem("World Validation")) focus("World Validation");
         if (ImGui::MenuItem("Creature Editor")) focus("NPC Instance");
         if (ImGui::MenuItem("Quest Trigger Panel")) focus("Script Triggers");
@@ -816,6 +821,11 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
         terrainSmoothBlend_ = std::clamp(finite(terrain.value("smoothBlend", terrainSmoothBlend_), terrainSmoothBlend_), 0.05f, 1.0f);
         terrainSmoothPreserveEdges_ = terrain.value("smoothPreserveEdges", terrainSmoothPreserveEdges_);
         terrainSmoothEdgeThreshold_ = std::clamp(finite(terrain.value("smoothEdgeThreshold", terrainSmoothEdgeThreshold_), terrainSmoothEdgeThreshold_), 0.01f, 100.0f);
+        terrainVertexPaintRadius_ = std::clamp(finite(terrain.value("vertexPaintRadius", terrainVertexPaintRadius_), terrainVertexPaintRadius_), 1.0f, 100.0f);
+        terrainVertexPaintOpacity_ = std::clamp(finite(terrain.value("vertexPaintOpacity", terrainVertexPaintOpacity_), terrainVertexPaintOpacity_), 0.01f, 1.0f);
+        terrainVertexPaintColor_[0] = std::clamp(finite(terrain.value("vertexPaintR", terrainVertexPaintColor_[0]), terrainVertexPaintColor_[0]), 0.0f, 4.0f);
+        terrainVertexPaintColor_[1] = std::clamp(finite(terrain.value("vertexPaintG", terrainVertexPaintColor_[1]), terrainVertexPaintColor_[1]), 0.0f, 4.0f);
+        terrainVertexPaintColor_[2] = std::clamp(finite(terrain.value("vertexPaintB", terrainVertexPaintColor_[2]), terrainVertexPaintColor_[2]), 0.0f, 4.0f);
         }
         if (editorNode.contains("spawnPalette") && editorNode["spawnPalette"].is_object())
         {
@@ -1096,7 +1106,12 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
                                   {"smoothIterations", terrainSmoothIterations_},
                                   {"smoothBlend", terrainSmoothBlend_},
                                   {"smoothPreserveEdges", terrainSmoothPreserveEdges_},
-                                  {"smoothEdgeThreshold", terrainSmoothEdgeThreshold_}};
+                                  {"smoothEdgeThreshold", terrainSmoothEdgeThreshold_},
+                                  {"vertexPaintRadius", terrainVertexPaintRadius_},
+                                  {"vertexPaintOpacity", terrainVertexPaintOpacity_},
+                                  {"vertexPaintR", terrainVertexPaintColor_[0]},
+                                  {"vertexPaintG", terrainVertexPaintColor_[1]},
+                                  {"vertexPaintB", terrainVertexPaintColor_[2]}};
 
     editorNode["spawnPalette"] = {{"kind", brushKind_},
                                    {"placementMode", brushPlacementMode_},
@@ -1367,6 +1382,7 @@ void AdtViewerModule::DrawPanels()
     DrawGoInstancePanel();
     DrawWaypointPathPanel();
     DrawTerrainSculptPanel();
+    DrawTerrainPaintPanel();
     DrawWorldValidationPanel();
     DrawLightEditorPanel();
     DrawRealtimePreviewPanel();
@@ -1442,6 +1458,7 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
     if (dir != undoMapDir_)   // an actual map change (not an option-toggle reload) invalidates undo
     {
         terrainRampHasStart_ = false;
+        terrainVertexPaintActive_ = false;
         undo_.Clear();
         undoMapDir_ = dir;
         aiBehaviorEditGuid_ = 0;
@@ -4460,6 +4477,9 @@ void AdtViewerModule::DrawViewportPanel()
         ImGui::TextColored(ImVec4(1.0f, 0.76f, 0.28f, 1.0f),
                            "%s light placement active — right-click terrain; Esc stops.",
                            WorldLightTypeName(lightPlacementType_));
+    if (terrainVertexPaintActive_)
+        ImGui::TextColored(ImVec4(0.95f, 0.69f, 0.34f, 1.0f),
+                           "Vertex color paint active: %.1f yd radius — right-click terrain; Esc stops.", terrainVertexPaintRadius_);
     if (terrainSculptActive_)
     {
         static const char* kSculptNames[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs", "Noise / Terrainify", "Terrain Stamp", "Smooth"};
@@ -4553,6 +4573,11 @@ void AdtViewerModule::DrawViewportPanel()
             terrainSculptActive_ = false;
             terrainRampHasStart_ = false;
             terrainStatus_ = "Terrain sculpt brush cancelled.";
+        }
+        else if (terrainVertexPaintActive_)
+        {
+            terrainVertexPaintActive_ = false;
+            terrainPaintStatus_ = "Vertex-color paint cancelled.";
         }
         else if (waypointPlacementMode_ != WaypointPlacementMode::None)
         {
@@ -5610,6 +5635,7 @@ void AdtViewerModule::DrawTerrainSculptPanel()
         terrainSculptActive_ = !terrainSculptActive_;
         if (terrainSculptActive_)
         {
+            terrainVertexPaintActive_ = false;
             inGameViewMode_ = false;
             editMode_ = true;
         }
@@ -5656,6 +5682,73 @@ void AdtViewerModule::DrawTerrainSculptPanel()
 
     ImGui::Separator();
     ImGui::TextWrapped("Strokes appear immediately through the real-time terrain preview, then patch the selected ADT tile's MCVT height values and rebuild MCNR normals when saved. They remain staged in the project's edited-client overlay, just like doodad/WMO placement edits. Use \"Save ADT edits\" in the World Editor toolbar to write and reload terrain. Pending strokes support Ctrl+Z/Ctrl+Y; after a save, terrain history is intentionally frozen so a stroke cannot be applied twice.");
+    ImGui::End();
+}
+
+void AdtViewerModule::DrawTerrainPaintPanel()
+{
+    if (!ImGui::Begin("Terrain Paint"))
+    {
+        ImGui::End();
+        return;
+    }
+    const bool mapReady = streamerInit_ && !loadedName_.empty() && !streamer_.wmoOnly();
+    const bool canSave = svc_ && svc_->clientData && !svc_->editRoot.empty();
+    if (!mapReady)
+    {
+        ImGui::TextWrapped(streamer_.wmoOnly()
+            ? "Vertex-color painting is unavailable on global-WMO maps."
+            : "Open a terrain map before painting MCCV vertex colors.");
+        ImGui::End();
+        return;
+    }
+    if (!canSave)
+        ImGui::TextColored(ImVec4(1.0f, 0.68f, 0.22f, 1.0f),
+                           "Open a project with an edited-client folder before painting terrain colors.");
+
+    ImGui::SeparatorText("MCCV vertex tint");
+    ImGui::BeginDisabled(!canSave);
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SliderFloat("Brush radius", &terrainVertexPaintRadius_, 1.0f, 100.0f, "%.1f yd", ImGuiSliderFlags_Logarithmic);
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SliderFloat("Opacity", &terrainVertexPaintOpacity_, 0.01f, 1.0f, "%.2f");
+    ImGui::ColorEdit3("Tint", terrainVertexPaintColor_, ImGuiColorEditFlags_Float);
+    if (ImGui::Button(terrainVertexPaintActive_ ? "Stop vertex paint" : "Arm vertex paint"))
+    {
+        terrainVertexPaintActive_ = !terrainVertexPaintActive_;
+        if (terrainVertexPaintActive_)
+        {
+            terrainSculptActive_ = false;
+            terrainRampHasStart_ = false;
+            inGameViewMode_ = false;
+            editMode_ = true;
+        }
+        terrainPaintStatus_ = terrainVertexPaintActive_
+            ? "Vertex paint armed — right-click terrain to stage a MCCV tint stroke."
+            : "Vertex paint stopped.";
+    }
+    ImGui::EndDisabled();
+
+    const int pending = adtEdits_.vertexColorPendingCount();
+    ImGui::TextDisabled("%d pending vertex-color stroke(s)", pending);
+    if (pending > 0)
+    {
+        ImGui::SameLine();
+        if (ImGui::Button("Discard pending color strokes"))
+        {
+            adtEdits_.ClearVertexColorStrokes();
+            ++terrainHistoryGeneration_;
+            terrainPaintStatus_ = "Pending MCCV strokes discarded.";
+        }
+    }
+    if (terrainVertexPaintActive_)
+        ImGui::TextColored(ImVec4(0.92f, 0.67f, 0.32f, 1.0f),
+                           "Right-click terrain in the World Editor to paint a tint. Escape cancels the brush.");
+    if (!terrainPaintStatus_.empty())
+        ImGui::TextDisabled("%s", terrainPaintStatus_.c_str());
+
+    ImGui::Separator();
+    ImGui::TextWrapped("MCCV is the classic ADT per-vertex color payload. Studio creates a missing MCCV chunk safely when the color stroke is saved, preserves the rest of the ADT, repairs MCIN offsets/sizes, and reloads the edited-client overlay. The brush guide is live; the authoritative terrain tint appears after Save ADT edits reloads the tile.");
     ImGui::End();
 }
 
@@ -6505,8 +6598,9 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
                                                     const ImVec2& p0, int w, int h,
                                                     bool viewportHovered)
 {
-    if (!terrainSculptActive_ || !viewportHovered)
+    if ((!terrainSculptActive_ && !terrainVertexPaintActive_) || !viewportHovered)
         return;
+    const bool vertexPaint = terrainVertexPaintActive_ && !terrainSculptActive_;
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const float px = mouse.x - p0.x;
     const float py = mouse.y - p0.y;
@@ -6525,7 +6619,7 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
     // A ramp has a deliberate two-click interaction. Render its start/end guide
     // instead of a circular brush so the grade direction and pending endpoint are
     // obvious before the author commits the staged Flatten sequence.
-    if (terrainSculptMode_ == 3)
+    if (!vertexPaint && terrainSculptMode_ == 3)
     {
         ImDrawList* draw = ImGui::GetWindowDrawList();
         const glm::vec3 worldEnd(center.x + origin.x, center.y + origin.y, center.z);
@@ -6559,8 +6653,9 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
         glm::vec3 rim;
         float rimT = -1.0f;
         int rimTx = 0, rimTy = 0;
-        const glm::vec3 top(center.x + std::cos(angle) * terrainBrushRadius_,
-                            center.y + std::sin(angle) * terrainBrushRadius_, 10000.0f);
+        const float brushRadius = vertexPaint ? terrainVertexPaintRadius_ : terrainBrushRadius_;
+        const glm::vec3 top(center.x + std::cos(angle) * brushRadius,
+                            center.y + std::sin(angle) * brushRadius, 10000.0f);
         ImVec2 projected;
         const bool hit = streamer_.GroundHit(top, glm::vec3(0.0f, 0.0f, -1.0f), rim, rimT, rimTx, rimTy) &&
                          ProjectWorldPoint(glm::vec3(rim.x + origin.x, rim.y + origin.y, rim.z), origin,
@@ -6574,11 +6669,16 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
     if (ProjectWorldPoint(glm::vec3(center.x + origin.x, center.y + origin.y, center.z), origin,
                           view, proj, p0, w, h, centerScreen))
     {
-        draw->AddCircleFilled(centerScreen, 4.0f, IM_COL32(255, 221, 160, 255), 10);
+        const ImU32 tint = vertexPaint
+            ? IM_COL32(std::clamp(static_cast<int>(terrainVertexPaintColor_[0] * 255.0f), 0, 255),
+                       std::clamp(static_cast<int>(terrainVertexPaintColor_[1] * 255.0f), 0, 255),
+                       std::clamp(static_cast<int>(terrainVertexPaintColor_[2] * 255.0f), 0, 255), 255)
+            : IM_COL32(255, 221, 160, 255);
+        draw->AddCircleFilled(centerScreen, 4.0f, tint, 10);
         static const char* kModes[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs", "Noise / Terrainify", "Terrain Stamp", "Smooth"};
         draw->AddText(ImVec2(centerScreen.x + 8.0f, centerScreen.y + 6.0f),
-                      IM_COL32(255, 234, 204, 255),
-                      kModes[std::clamp(terrainSculptMode_, 0, 6)]);
+                      vertexPaint ? tint : IM_COL32(255, 234, 204, 255),
+                      vertexPaint ? "Vertex Tint" : kModes[std::clamp(terrainSculptMode_, 0, 6)]);
     }
 }
 
@@ -7135,24 +7235,30 @@ void AdtViewerModule::SavePendingAdtEdits()
     }
 
     const int terrainPending = adtEdits_.terrainPendingCount();
+    const int vertexColorPending = adtEdits_.vertexColorPendingCount();
     std::string status;
     const bool saved = adtEdits_.Flush(*svc_->clientData, svc_->editRoot, status);
     saveStatus_ = status;
-    if (terrainPending > 0)
+    if (terrainPending > 0 || vertexColorPending > 0)
     {
         // Flush writes tiles one at a time. Even a later I/O failure can leave an earlier
-        // terrain tile safely persisted, so freeze old terrain undo closures on every save
+        // terrain tile safely persisted, so freeze old terrain/paint undo closures on every save
         // attempt rather than risk replaying an additive stroke twice on retry.
         ++terrainHistoryGeneration_;
         if (saved)
         {
             // Terrain GPU meshes are immutable uploads. Reopen the current map so the
-            // streamer rereads the just-written MCVT/MCNR overlay data.
+            // streamer rereads MCVT/MCNR/MCCV overlay data and the baked tint is visible.
             terrainStatus_ = "Terrain edits saved; reloading streamed tiles from the project overlay.";
+            terrainPaintStatus_ = vertexColorPending > 0 ? "Vertex-color paint saved; reloading MCCV from the project overlay." : terrainPaintStatus_;
             OpenMapDir(selectedMapDir_, false);
         }
         else
+        {
             terrainStatus_ = "Terrain save did not finish; inspect the status and retry pending edits if needed.";
+            if (vertexColorPending > 0)
+                terrainPaintStatus_ = "Vertex-color save did not finish; pending strokes remain available to retry.";
+        }
     }
     if (svc_->setStatus)
         svc_->setStatus(status);
@@ -7915,6 +8021,53 @@ void AdtViewerModule::PushTerrainStrokeUndo(const std::vector<AdtEditStore::Terr
         }, label));
 }
 
+void AdtViewerModule::QueueVertexColorStrokeAcrossTiles(
+    const adt::TerrainVertexColorStroke& stroke, int centerTileX, int centerTileY,
+    std::vector<AdtEditStore::VertexColorStrokeRef>& outRefs)
+{
+    if (!std::isfinite(stroke.worldX) || !std::isfinite(stroke.worldY) ||
+        !std::isfinite(stroke.radius) || stroke.radius <= 0.01f)
+        return;
+    const float halfTile = adt::kTileSize * 0.5f;
+    for (int ty = std::max(0, centerTileY - 1); ty <= std::min(63, centerTileY + 1); ++ty)
+        for (int tx = std::max(0, centerTileX - 1); tx <= std::min(63, centerTileX + 1); ++tx)
+        {
+            bool exists = false;
+            for (const auto& tile : streamer_.world().tiles)
+                if (tile.first == tx && tile.second == ty) { exists = true; break; }
+            if (!exists)
+                continue;
+            const glm::vec2 tileCenter((31.5f - ty) * adt::kTileSize,
+                                       (31.5f - tx) * adt::kTileSize);
+            const float edgeX = std::max(std::fabs(stroke.worldX - tileCenter.x) - halfTile, 0.0f);
+            const float edgeY = std::max(std::fabs(stroke.worldY - tileCenter.y) - halfTile, 0.0f);
+            if (edgeX * edgeX + edgeY * edgeY > stroke.radius * stroke.radius)
+                continue;
+            const AdtEditStore::VertexColorStrokeRef ref = adtEdits_.RecordVertexColorStroke(tx, ty, stroke);
+            if (ref.id != 0)
+                outRefs.push_back(ref);
+        }
+}
+
+void AdtViewerModule::PushVertexColorUndo(const std::vector<AdtEditStore::VertexColorStrokeRef>& refs,
+                                          const char* label)
+{
+    if (refs.empty())
+        return;
+    const uint64_t generation = terrainHistoryGeneration_;
+    undo_.Push(MakeCommand(
+        [this, generation, refs]() {
+            if (generation == terrainHistoryGeneration_)
+                for (const auto& ref : refs)
+                    adtEdits_.RemoveVertexColorStroke(ref.id);
+        },
+        [this, generation, refs]() {
+            if (generation == terrainHistoryGeneration_)
+                for (const auto& ref : refs)
+                    adtEdits_.RestoreVertexColorStroke(ref);
+        }, label));
+}
+
 void AdtViewerModule::QueueTerrainRamp(const glm::vec3& start, const glm::vec3& requestedEnd)
 {
     const glm::vec2 horizontal(requestedEnd.x - start.x, requestedEnd.y - start.y);
@@ -8286,6 +8439,30 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
         }
         PushTerrainStrokeUndo(refs, "Sculpt terrain");
         terrainStatus_ = "Queued terrain stroke across " + std::to_string(refs.size()) + " tile(s) — save ADT edits to apply it.";
+        return;
+    }
+
+    if (terrainVertexPaintActive_)
+    {
+        const glm::vec3 world(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z);
+        adt::TerrainVertexColorStroke stroke;
+        stroke.worldX = world.x;
+        stroke.worldY = world.y;
+        stroke.radius = terrainVertexPaintRadius_;
+        stroke.color[0] = terrainVertexPaintColor_[0];
+        stroke.color[1] = terrainVertexPaintColor_[1];
+        stroke.color[2] = terrainVertexPaintColor_[2];
+        stroke.opacity = terrainVertexPaintOpacity_;
+        std::vector<AdtEditStore::VertexColorStrokeRef> refs;
+        QueueVertexColorStrokeAcrossTiles(stroke, gtx, gty, refs);
+        if (refs.empty())
+        {
+            terrainPaintStatus_ = "Could not queue a vertex-color stroke for this tile.";
+            return;
+        }
+        PushVertexColorUndo(refs, "Paint terrain vertex colors");
+        terrainPaintStatus_ = "Queued MCCV tint stroke across " + std::to_string(refs.size()) +
+                              " tile(s) — save ADT edits to bake/reload it.";
         return;
     }
 

@@ -100,7 +100,10 @@ void ReEmit(std::vector<RawChunk>& chunks, std::vector<uint8_t>& out)
             if (!chunks[i].Is("MCNK"))
                 continue;
             const uint32_t off = static_cast<uint32_t>(offAt[i]);
-            std::memcpy(mcin->data.data() + n * sizeof(AdtMcinEntry), &off, 4);
+            const uint32_t size = static_cast<uint32_t>(8 + chunks[i].data.size());
+            const size_t entry = static_cast<size_t>(n) * sizeof(AdtMcinEntry);
+            std::memcpy(mcin->data.data() + entry, &off, sizeof(off));
+            std::memcpy(mcin->data.data() + entry + sizeof(off), &size, sizeof(size));
             ++n;
         }
     }
@@ -150,6 +153,65 @@ void AddFaceNormal(std::array<glm::vec3, 145>& normals, const std::array<glm::ve
     normals[b] += n;
     normals[c] += n;
 }
+
+
+// Ensure every drawable MCNK has a fixed 145xBGRA MCCV payload. Existing MCCV
+// chunks stay in place; missing ones are appended to that MCNK and ReEmit repairs
+// the outer MCIN offsets/sizes. This avoids unsafe in-place file growth.
+bool EnsureMccv(std::vector<uint8_t>& bytes)
+{
+    std::vector<RawChunk> chunks = ParseChunks(bytes);
+    if (chunks.empty())
+        return false;
+    bool changed = false;
+    for (RawChunk& chunk : chunks)
+    {
+        if (!chunk.Is("MCNK") || chunk.data.size() < sizeof(AdtMcnkHeader))
+            continue;
+        AdtMcnkHeader header{};
+        std::memcpy(&header, chunk.data.data(), sizeof(header));
+        bool validExisting = false;
+        if (header.ofsMCCV >= 8)
+        {
+            const size_t offset = static_cast<size_t>(header.ofsMCCV) - 8;
+            validExisting = InBytes(chunk.data, offset, 8 + 145 * sizeof(uint32_t)) &&
+                            chunk.data[offset + 0] == 'V' && chunk.data[offset + 1] == 'C' &&
+                            chunk.data[offset + 2] == 'C' && chunk.data[offset + 3] == 'M';
+        }
+        if (validExisting)
+            continue;
+
+        const uint32_t payloadSize = 145 * sizeof(uint32_t);
+        header.ofsMCCV = static_cast<uint32_t>(8 + chunk.data.size());
+        header.flags |= kAdtMcnkHasMccv;
+        std::memcpy(chunk.data.data(), &header, sizeof(header));
+        chunk.data.push_back('V'); chunk.data.push_back('C'); chunk.data.push_back('C'); chunk.data.push_back('M');
+        const uint8_t* sizeBytes = reinterpret_cast<const uint8_t*>(&payloadSize);
+        chunk.data.insert(chunk.data.end(), sizeBytes, sizeBytes + sizeof(payloadSize));
+        const uint32_t neutral = 0x007F7F7Fu; // BGRA; 0x7F == neutral 1.0 in classic MCCV
+        for (int i = 0; i < 145; ++i)
+        {
+            const uint8_t* colorBytes = reinterpret_cast<const uint8_t*>(&neutral);
+            chunk.data.insert(chunk.data.end(), colorBytes, colorBytes + sizeof(neutral));
+        }
+        changed = true;
+    }
+    if (changed)
+        ReEmit(chunks, bytes);
+    return true;
+}
+
+inline uint32_t PackMccv(float r, float g, float b, uint8_t alpha)
+{
+    const auto channel = [](float value) {
+        return static_cast<uint8_t>(std::round(Clamp(value, 0.0f, 1.0f) * 127.0f));
+    };
+    return static_cast<uint32_t>(channel(b)) |
+           (static_cast<uint32_t>(channel(g)) << 8u) |
+           (static_cast<uint32_t>(channel(r)) << 16u) |
+           (static_cast<uint32_t>(alpha) << 24u);
+}
+
 } // namespace
 
 bool SculptTerrain(std::vector<uint8_t>& bytes, const TerrainBrushStroke& stroke,
@@ -310,6 +372,97 @@ bool SculptTerrain(std::vector<uint8_t>& bytes, const TerrainBrushStroke& stroke
     if (result)
         *result = local;
     return local.touchedVertices != 0;
+}
+
+bool PaintTerrainVertexColor(std::vector<uint8_t>& bytes, const TerrainVertexColorStroke& stroke,
+                             TerrainVertexColorResult* result)
+{
+    if (result)
+        *result = TerrainVertexColorResult{};
+    if (!std::isfinite(stroke.worldX) || !std::isfinite(stroke.worldY) ||
+        !std::isfinite(stroke.radius) || stroke.radius <= 0.01f ||
+        !std::isfinite(stroke.opacity))
+        return false;
+    for (float channel : stroke.color)
+        if (!std::isfinite(channel))
+            return false;
+
+    std::vector<uint8_t> working = bytes;
+    if (!EnsureMccv(working))
+        return false;
+
+    ByteReader reader(working);
+    ChunkIter it(reader);
+    Chunk chunk;
+    TerrainVertexColorResult local;
+    while (it.Next(chunk))
+    {
+        if (!chunk.Is("MCNK") || chunk.size < sizeof(AdtMcnkHeader) || chunk.offset < 8)
+            continue;
+        AdtMcnkHeader header{};
+        std::memcpy(&header, working.data() + chunk.offset, sizeof(header));
+        if (header.ofsMCCV < 8)
+            continue;
+        const size_t mcnkBase = chunk.offset - 8;
+        const size_t colorChunk = mcnkBase + header.ofsMCCV;
+        if (!InBytes(working, colorChunk, 8 + 145 * sizeof(uint32_t)) ||
+            working[colorChunk + 0] != 'V' || working[colorChunk + 1] != 'C' ||
+            working[colorChunk + 2] != 'C' || working[colorChunk + 3] != 'M')
+            continue;
+        uint32_t colorSize = 0;
+        std::memcpy(&colorSize, working.data() + colorChunk + 4, sizeof(colorSize));
+        if (colorSize < 145 * sizeof(uint32_t))
+            continue;
+        const size_t colorData = colorChunk + 8;
+        std::array<uint32_t, 145> colors{};
+        std::memcpy(colors.data(), working.data() + colorData, colors.size() * sizeof(uint32_t));
+        bool changed = false;
+        auto paint = [&](int index, float x, float y) {
+            const float dx = x - stroke.worldX;
+            const float dy = y - stroke.worldY;
+            const float distance = std::sqrt(dx * dx + dy * dy);
+            if (distance > stroke.radius)
+                return;
+            const float amount = Clamp(stroke.opacity, 0.0f, 1.0f) *
+                                 SmoothFalloff(1.0f - distance / stroke.radius);
+            if (amount <= 1e-5f)
+                return;
+            const uint32_t packed = colors[index];
+            const float b = (packed & 0xFFu) / 127.0f;
+            const float g = ((packed >> 8u) & 0xFFu) / 127.0f;
+            const float r = ((packed >> 16u) & 0xFFu) / 127.0f;
+            const uint8_t alpha = static_cast<uint8_t>((packed >> 24u) & 0xFFu);
+            const float outR = r + (Clamp(stroke.color[0], 0.0f, 1.0f) - r) * amount;
+            const float outG = g + (Clamp(stroke.color[1], 0.0f, 1.0f) - g) * amount;
+            const float outB = b + (Clamp(stroke.color[2], 0.0f, 1.0f) - b) * amount;
+            const uint32_t updated = PackMccv(outR, outG, outB, alpha);
+            if (updated == packed)
+                return;
+            colors[index] = updated;
+            changed = true;
+            ++local.touchedVertices;
+        };
+        for (int row = 0; row <= 8; ++row)
+        {
+            for (int col = 0; col <= 8; ++col)
+                paint(OuterIdx(row, col), header.position[0] - row * kUnitSize,
+                      header.position[1] - col * kUnitSize);
+            if (row < 8)
+                for (int col = 0; col < 8; ++col)
+                    paint(InnerIdx(row, col), header.position[0] - (row + 0.5f) * kUnitSize,
+                          header.position[1] - (col + 0.5f) * kUnitSize);
+        }
+        if (!changed)
+            continue;
+        std::memcpy(working.data() + colorData, colors.data(), colors.size() * sizeof(uint32_t));
+        ++local.touchedChunks;
+    }
+    if (result)
+        *result = local;
+    if (local.touchedVertices == 0)
+        return false;
+    bytes = std::move(working);
+    return true;
 }
 
 RawPlacement PlacementToRaw(const glm::mat4& m, const glm::vec3& origin)

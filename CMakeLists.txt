@@ -83,6 +83,21 @@ if(BUILD_TESTING AND WOWEDIT_BUILD_TESTS)
         target_compile_options(SqlImportConverterTests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
     add_test(NAME SqlImportConverterTests COMMAND SqlImportConverterTests)
+
+    add_executable(AdtVertexColorTests
+        tests/unit_tests/adt_vertex_color_tests.cpp
+        RenderEngine/adt/AdtWriter.cpp)
+    target_include_directories(AdtVertexColorTests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/DataEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/RenderEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/glm")
+    target_compile_features(AdtVertexColorTests PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(AdtVertexColorTests PRIVATE /W4 /WX /permissive-)
+    else()
+        target_compile_options(AdtVertexColorTests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME AdtVertexColorTests COMMAND AdtVertexColorTests)
 endif()
 
 if(WOWEDIT_BUILD_BENCHMARKS)

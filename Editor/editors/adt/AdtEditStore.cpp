@@ -27,6 +27,8 @@ void AdtEditStore::SetMap(const std::string& mapDir)
         edits_.clear();
         terrain_.clear();
         nextTerrainStrokeId_ = 1;
+        vertexColors_.clear();
+        nextVertexColorStrokeId_ = 1;
     }
 }
 
@@ -146,17 +148,90 @@ float AdtEditStore::PreviewTerrainZ(float baseZ, float worldX, float worldY) con
     return z;
 }
 
+AdtEditStore::VertexColorStrokeRef AdtEditStore::RecordVertexColorStroke(
+    int tileX, int tileY, const adt::TerrainVertexColorStroke& stroke)
+{
+    VertexColorStrokeRef ref;
+    if (tileX < 0 || tileX >= 64 || tileY < 0 || tileY >= 64)
+        return ref;
+    ref.id = nextVertexColorStrokeId_++;
+    ref.tileX = tileX;
+    ref.tileY = tileY;
+    ref.stroke = stroke;
+    vertexColors_[TileKey(tileX, tileY)].push_back(ref);
+    return ref;
+}
+
+bool AdtEditStore::RemoveVertexColorStroke(uint64_t id)
+{
+    if (id == 0)
+        return false;
+    for (auto it = vertexColors_.begin(); it != vertexColors_.end(); ++it)
+    {
+        std::vector<VertexColorStrokeRef>& strokes = it->second;
+        const auto found = std::find_if(strokes.begin(), strokes.end(), [id](const VertexColorStrokeRef& ref) {
+            return ref.id == id;
+        });
+        if (found == strokes.end())
+            continue;
+        strokes.erase(found);
+        if (strokes.empty())
+            vertexColors_.erase(it);
+        return true;
+    }
+    return false;
+}
+
+bool AdtEditStore::RestoreVertexColorStroke(const VertexColorStrokeRef& stroke)
+{
+    if (stroke.id == 0 || stroke.tileX < 0 || stroke.tileX >= 64 || stroke.tileY < 0 || stroke.tileY >= 64)
+        return false;
+    std::vector<VertexColorStrokeRef>& strokes = vertexColors_[TileKey(stroke.tileX, stroke.tileY)];
+    if (std::find_if(strokes.begin(), strokes.end(), [&](const VertexColorStrokeRef& ref) { return ref.id == stroke.id; }) !=
+        strokes.end())
+        return true;
+    const auto position = std::lower_bound(strokes.begin(), strokes.end(), stroke.id,
+                                           [](const VertexColorStrokeRef& ref, uint64_t id) { return ref.id < id; });
+    strokes.insert(position, stroke);
+    nextVertexColorStrokeId_ = std::max(nextVertexColorStrokeId_, stroke.id + 1);
+    return true;
+}
+
+void AdtEditStore::ClearVertexColorStrokes()
+{
+    vertexColors_.clear();
+}
+
+int AdtEditStore::vertexColorPendingCount() const
+{
+    int count = 0;
+    for (const auto& pair : vertexColors_)
+        count += static_cast<int>(pair.second.size());
+    return count;
+}
+
+void AdtEditStore::SnapshotVertexColorStrokes(std::vector<VertexColorStrokeRef>& out) const
+{
+    out.clear();
+    out.reserve(static_cast<size_t>(vertexColorPendingCount()));
+    for (const auto& pair : vertexColors_)
+        out.insert(out.end(), pair.second.begin(), pair.second.end());
+    std::sort(out.begin(), out.end(), [](const VertexColorStrokeRef& a, const VertexColorStrokeRef& b) {
+        return a.id < b.id;
+    });
+}
+
 int AdtEditStore::pendingCount() const
 {
     int n = 0;
     for (const auto& kv : edits_)
         n += static_cast<int>(kv.second.size());
-    return n + terrainPendingCount();
+    return n + terrainPendingCount() + vertexColorPendingCount();
 }
 
 bool AdtEditStore::Flush(ClientData& cd, const std::string& editRoot, std::string& status)
 {
-    if (mapDir_.empty() || (edits_.empty() && terrain_.empty()))
+    if (mapDir_.empty() || (edits_.empty() && terrain_.empty() && vertexColors_.empty()))
     {
         status = "No ADT edits to save.";
         return true;
@@ -173,10 +248,12 @@ bool AdtEditStore::Flush(ClientData& cd, const std::string& editRoot, std::strin
     std::unordered_set<uint32_t> keys;
     for (const auto& kv : edits_) keys.insert(kv.first);
     for (const auto& kv : terrain_) keys.insert(kv.first);
+    for (const auto& kv : vertexColors_) keys.insert(kv.first);
 
     int tilesWritten = 0;
     int editsWritten = 0;
     int terrainVertices = 0;
+    int colorVertices = 0;
     for (uint32_t key : keys)
     {
         const int x = TileX(key);
@@ -225,6 +302,19 @@ bool AdtEditStore::Flush(ClientData& cd, const std::string& editRoot, std::strin
                 terrainVertices += sculpt.touchedVertices;
             }
 
+        if (const auto cit = vertexColors_.find(key); cit != vertexColors_.end())
+            for (const VertexColorStrokeRef& stroke : cit->second)
+            {
+                adt::TerrainVertexColorResult paint;
+                if (!adt::PaintTerrainVertexColor(bytes, stroke.stroke, &paint))
+                {
+                    status = "Vertex-color paint missed or could not patch tile " + path;
+                    return false;
+                }
+                ++editsWritten;
+                colorVertices += paint.touchedVertices;
+            }
+
         std::string err;
         if (!WriteLooseFile(editRoot, path, bytes, err))
         {
@@ -235,13 +325,16 @@ bool AdtEditStore::Flush(ClientData& cd, const std::string& editRoot, std::strin
         // also avoids repeating the same expensive tile rebuild on retry.
         edits_.erase(key);
         terrain_.erase(key);
+        vertexColors_.erase(key);
         ++tilesWritten;
     }
 
     status = "Saved " + std::to_string(editsWritten) + " ADT edit(s) across " +
              std::to_string(tilesWritten) + " tile(s)" +
-             (terrainVertices ? " (" + std::to_string(terrainVertices) + " terrain vertices sculpted)."
-                              : ".");
+             ((terrainVertices || colorVertices)
+                 ? " (" + std::to_string(terrainVertices) + " terrain vertices sculpted, " +
+                       std::to_string(colorVertices) + " vertex colors painted)."
+                 : ".");
     return true;
 }
 

@@ -70,9 +70,11 @@ turn on **Edit**:
    the live **Ramp / Stairs** composer, **Noise / Terrainify**, or **Terrain Stamp**. Smooth samples
    a local Laplacian-style field before emitting its staged Flatten sequence, with iteration, blend,
    and sharp-edge preservation controls. Ramps clamp grades; Terrainify expands seeded fractal
-   noise; stamps provide Hill, Valley, Crater, and yaw-rotated Ridge presets. All preview
-   immediately, rebuild MCVT/MCNR data across intersected ADT tiles on **Save ADT edits**, support
-   Ctrl+Z/Ctrl+Y, and reload from the project overlay after save.
+   noise; stamps provide Hill, Valley, Crater, and yaw-rotated Ridge presets. Use **Terrain Paint**
+   for MCCV per-vertex tint strokes with radius, tint, and opacity controls. Height tools preview
+   immediately; MCCV strokes are staged, undoable, create missing MCCV safely, and appear after
+   **Save ADT edits** reloads the project overlay. All tools preserve/rebuild the appropriate ADT
+   payloads and support Ctrl+Z/Ctrl+Y.
 6. **Light the scene:** open **Light Editor** for a WoWEdit-style point/spot-light list. Add a
    point or spot at the camera, or arm terrain placement and right-click the world. Select its
    colored marker to edit position, range, falloff, HDR color/intensity, and spot cone/direction.
