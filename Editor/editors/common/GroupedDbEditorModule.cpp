@@ -193,9 +193,10 @@ void GroupedDbEditorModule::DrawBrowser()
         ImGui::End();
         return;
     }
+    StudioPanelHeader("DATABASE", "Table collection", "Choose a related table, search rows, and edit the selected record.");
     if (!svc_ || !svc_->connected || !svc_->activeDb)
     {
-        ImGui::TextWrapped("Connect a project database to browse these world-DB tables.");
+        StudioEmptyState("DB", "Database connection required", "Connect a project database to browse these world tables.");
         ImGui::End();
         return;
     }
@@ -241,8 +242,10 @@ void GroupedDbEditorModule::DrawEditor()
         ImGui::End();
         return;
     }
+    StudioPanelHeader("INSPECTOR", recordLoaded_ ? ActiveSchema().table : "No row selected",
+                      "Review fields and save explicitly when ready.", recordLoaded_ && record_.dirty ? "UNSAVED" : nullptr);
     if (!recordLoaded_)
-        ImGui::TextWrapped("Select a row in the browser, or File > New row.");
+        StudioEmptyState("+", "No row selected", "Select a row in the browser, or use File > New row.");
     else
         DrawEditorBody();
     ImGui::End();

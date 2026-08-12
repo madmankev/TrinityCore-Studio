@@ -6,6 +6,8 @@
 
 #include "imgui.h"
 
+#include "ui/Widgets.h"
+
 namespace we
 {
 namespace
@@ -33,14 +35,15 @@ void ValidationPanel::Draw(const char* windowTitle,
         return;
     }
 
+    StudioPanelHeader("QUALITY", "Validation", "Review issues before committing a world-data change.");
     if (!hasRecord)
     {
-        ImGui::TextDisabled("No record loaded.");
+        StudioEmptyState("✓", "No record loaded", "Select or create a record to run validation.");
         ImGui::End();
         return;
     }
 
-    if (ImGui::Button("Re-check") && onRevalidate)
+    if (StudioButton("Re-check", StudioButtonTone::Secondary) && onRevalidate)
         onRevalidate();
     ImGui::SameLine();
 
@@ -54,7 +57,7 @@ void ValidationPanel::Draw(const char* windowTitle,
 
     if (issues.empty())
     {
-        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "No issues found.");
+        StudioEmptyState("✓", "Ready to save", "No validation issues were found for the current record.");
     }
     else
     {

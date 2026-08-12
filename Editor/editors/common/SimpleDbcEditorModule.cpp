@@ -8,6 +8,7 @@
 #include "imgui.h"
 
 #include "app/EditorServices.h"
+#include "ui/Widgets.h"
 #include "clientdata/ClientData.h"
 
 namespace we
@@ -196,12 +197,12 @@ void SimpleDbcEditorModule::DrawBrowserPanel()
         ImGui::End();
         return;
     }
+    StudioPanelHeader("CLIENT DATA", NounPlural(), "Browse rows from the active WoW client data source.");
     if (!doc_.IsLoaded())
     {
-        ImGui::TextWrapped("%s", loadError_.empty()
-                                     ? "Load WoW client data (open a project) to edit."
-                                     : loadError_.c_str());
-        ImGui::TextDisabled("File > New starts one from scratch.");
+        StudioEmptyState("DBC", "Client data required", loadError_.empty()
+                        ? "Open a project with WoW client data to edit this table. File > New starts one from scratch."
+                        : loadError_.c_str());
         ImGui::End();
         return;
     }
@@ -238,9 +239,11 @@ void SimpleDbcEditorModule::DrawEditorPanel()
         ImGui::End();
         return;
     }
+    StudioPanelHeader("INSPECTOR", NounSingular(), "Inspect client-data fields and save to the project overlay.",
+                      AnyDirty() ? "UNSAVED" : nullptr);
     if (selectedRow_ < 0 || static_cast<uint32_t>(selectedRow_) >= doc_.RecordCount())
     {
-        ImGui::TextWrapped("Select a %s in the browser, or File > New.", NounSingular());
+        StudioEmptyState("+", "Nothing selected", "Choose a row from the browser, or use File > New to create one.");
         ImGui::End();
         return;
     }

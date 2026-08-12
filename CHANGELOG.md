@@ -4,6 +4,9 @@
 
 ### Added
 
+- Full Studio UI design overhaul: obsidian/Blizzard visual tokens, redesigned workspace/status bars,
+  product identity, action/state pills, card-based navigation/project launcher, command center,
+  shared panel headers, intentional empty states, action hierarchy, and stronger field-table surfaces.
 - World Editor top-level Terrain, Objects, Creatures, Quest, Spells, Tools, and Window menus
   wired to live dock panels, terrain/gizmo tools, real Quest/Spell modules, and shared ADT save logic.
 - World Editor Spell Effect Previewer with `Spell.dbc` field resolution, searchable spell selection,

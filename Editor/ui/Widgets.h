@@ -96,4 +96,25 @@ bool IdNamePickerSigned(const char* label, int32_t& value, LookupCache& cache);
 bool BeginFieldTable(const char* id, float labelWidth = 190.0f);
 void FieldRow(const char* label, const char* tooltip = nullptr);
 void EndFieldTable();
+
+// ---------------------------------------------------------------------------
+// Studio workbench primitives. These deliberately use only ImDrawList + ImGui
+// state so every module can share a polished visual hierarchy without becoming
+// coupled to a particular editor/document implementation.
+enum class StudioButtonTone { Primary, Secondary, Quiet, Danger };
+
+// Buttons with consistent hierarchy for primary/destructive/quiet actions.
+bool StudioButton(const char* label, StudioButtonTone tone = StudioButtonTone::Secondary,
+                  const ImVec2& size = ImVec2(0, 0));
+
+// A compact status badge that participates in normal ImGui layout.
+void StudioPill(const char* label, const ImVec4& background, const ImVec4& foreground);
+
+// A card-like section header for browsers, inspectors, and document panels.
+void StudioPanelHeader(const char* eyebrow, const char* title, const char* description = nullptr,
+                       const char* badge = nullptr, const ImVec4* badgeColor = nullptr);
+
+// A non-interactive empty state with a readable next action. Use this instead
+// of leaving a blank dock surface when no record/client data is available.
+void StudioEmptyState(const char* glyph, const char* title, const char* description);
 } // namespace we

@@ -400,7 +400,8 @@ bool IdNamePickerSigned(const char* label, int32_t& value, LookupCache& cache)
 bool BeginFieldTable(const char* id, float labelWidth)
 {
     if (!ImGui::BeginTable(id, 2,
-                           ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX))
+                           ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX |
+                               ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg))
         return false;
     ImGui::TableSetupColumn("field", ImGuiTableColumnFlags_WidthFixed, labelWidth);
     ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
@@ -410,6 +411,7 @@ bool BeginFieldTable(const char* id, float labelWidth)
 void FieldRow(const char* label, const char* tooltip)
 {
     ImGui::TableNextRow();
+    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(255, 255, 255, 7));
     ImGui::TableSetColumnIndex(0);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label);
@@ -422,5 +424,123 @@ void FieldRow(const char* label, const char* tooltip)
 void EndFieldTable()
 {
     ImGui::EndTable();
+}
+
+namespace
+{
+ImVec4 ButtonColor(StudioButtonTone tone)
+{
+    switch (tone)
+    {
+    case StudioButtonTone::Primary:   return ImVec4(0.78f, 0.48f, 0.15f, 1.0f);
+    case StudioButtonTone::Quiet:     return ImVec4(0.18f, 0.21f, 0.28f, 0.78f);
+    case StudioButtonTone::Danger:    return ImVec4(0.56f, 0.20f, 0.18f, 1.0f);
+    default:                          return ImVec4(0.24f, 0.28f, 0.37f, 1.0f);
+    }
+}
+
+ImVec4 HoverColor(StudioButtonTone tone)
+{
+    switch (tone)
+    {
+    case StudioButtonTone::Primary:   return ImVec4(0.92f, 0.63f, 0.22f, 1.0f);
+    case StudioButtonTone::Quiet:     return ImVec4(0.26f, 0.31f, 0.42f, 1.0f);
+    case StudioButtonTone::Danger:    return ImVec4(0.76f, 0.29f, 0.24f, 1.0f);
+    default:                          return ImVec4(0.32f, 0.38f, 0.50f, 1.0f);
+    }
+}
+} // namespace
+
+bool StudioButton(const char* label, StudioButtonTone tone, const ImVec2& size)
+{
+    ImGui::PushStyleColor(ImGuiCol_Button, ButtonColor(tone));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, HoverColor(tone));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, HoverColor(tone));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+    const bool pressed = ImGui::Button(label, size);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(3);
+    return pressed;
+}
+
+void StudioPill(const char* label, const ImVec4& background, const ImVec4& foreground)
+{
+    if (!label || !*label)
+        return;
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    const ImVec2 text = ImGui::CalcTextSize(label);
+    const ImVec2 padding(8.0f, 3.0f);
+    const ImVec2 end(start.x + text.x + padding.x * 2.0f, start.y + text.y + padding.y * 2.0f);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(start, end, ImGui::GetColorU32(background), 6.0f);
+    draw->AddText(ImVec2(start.x + padding.x, start.y + padding.y), ImGui::GetColorU32(foreground), label);
+    ImGui::Dummy(ImVec2(end.x - start.x, end.y - start.y));
+}
+
+void StudioPanelHeader(const char* eyebrow, const char* title, const char* description,
+                       const char* badge, const ImVec4* badgeColor)
+{
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    if (width <= 1.0f)
+        return;
+    const float height = description && *description ? 70.0f : 50.0f;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 end(start.x + width, start.y + height);
+    draw->AddRectFilledMultiColor(start, end,
+                                  IM_COL32(38, 48, 70, 230), IM_COL32(27, 33, 49, 230),
+                                  IM_COL32(24, 30, 44, 230), IM_COL32(32, 41, 60, 230));
+    draw->AddRect(start, end, IM_COL32(118, 145, 196, 88), 8.0f);
+    const ImU32 accent = IM_COL32(224, 170, 66, 255);
+    draw->AddRectFilled(ImVec2(start.x, start.y), ImVec2(start.x + 4.0f, end.y), accent, 8.0f, ImDrawFlags_RoundCornersLeft);
+    if (eyebrow && *eyebrow)
+        draw->AddText(ImVec2(start.x + 16.0f, start.y + 10.0f), IM_COL32(150, 171, 213, 235), eyebrow);
+    if (title && *title)
+        draw->AddText(ImVec2(start.x + 16.0f, start.y + (eyebrow && *eyebrow ? 27.0f : 16.0f)),
+                      ImGui::GetColorU32(ImGuiCol_Text), title);
+    if (description && *description)
+        draw->AddText(ImVec2(start.x + 16.0f, start.y + 49.0f), ImGui::GetColorU32(ImGuiCol_TextDisabled), description);
+    if (badge && *badge)
+    {
+        const ImVec2 text = ImGui::CalcTextSize(badge);
+        const ImVec2 pad(8.0f, 3.0f);
+        const ImVec2 badgeEnd(end.x - 12.0f, start.y + 12.0f);
+        const ImVec2 badgeStart(badgeEnd.x - text.x - pad.x * 2.0f, badgeEnd.y);
+        draw->AddRectFilled(badgeStart, ImVec2(badgeEnd.x, badgeEnd.y + text.y + pad.y * 2.0f),
+                            ImGui::GetColorU32(badgeColor ? *badgeColor : ImVec4(0.26f, 0.33f, 0.48f, 1.0f)), 6.0f);
+        draw->AddText(ImVec2(badgeStart.x + pad.x, badgeStart.y + pad.y), IM_COL32(242, 246, 255, 255), badge);
+    }
+    ImGui::Dummy(ImVec2(width, height + 8.0f));
+}
+
+void StudioEmptyState(const char* glyph, const char* title, const char* description)
+{
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float height = 132.0f;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 end(start.x + width, start.y + height);
+    draw->AddRectFilled(start, end, IM_COL32(27, 34, 49, 210), 9.0f);
+    draw->AddRect(start, end, IM_COL32(108, 128, 169, 80), 9.0f);
+    const float iconSize = 40.0f;
+    const ImVec2 icon(start.x + 18.0f, start.y + 18.0f);
+    draw->AddRectFilled(icon, ImVec2(icon.x + iconSize, icon.y + iconSize), IM_COL32(218, 165, 58, 235), 8.0f);
+    if (glyph && *glyph)
+    {
+        const ImVec2 glyphSize = ImGui::CalcTextSize(glyph);
+        draw->AddText(ImVec2(icon.x + (iconSize - glyphSize.x) * 0.5f, icon.y + (iconSize - glyphSize.y) * 0.5f),
+                      IM_COL32(26, 30, 39, 255), glyph);
+    }
+    if (title && *title)
+        draw->AddText(ImVec2(start.x + 72.0f, start.y + 22.0f), ImGui::GetColorU32(ImGuiCol_Text), title);
+    if (description && *description)
+    {
+        ImGui::PushTextWrapPos(end.x - 18.0f);
+        ImGui::SetCursorScreenPos(ImVec2(start.x + 72.0f, start.y + 48.0f));
+        ImGui::TextDisabled("%s", description);
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(start.x, end.y));
+    ImGui::Dummy(ImVec2(width, 4.0f));
 }
 } // namespace we

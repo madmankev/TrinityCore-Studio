@@ -88,14 +88,14 @@ void ApplyTheme(float dpiScale, ThemeKind kind)
     // --- metrics ---
     // A denser, clearer workbench rhythm: cards/panels breathe, while editable controls stay
     // compact enough for data-heavy Trinity/Azeroth tables.
-    s.WindowPadding     = ImVec2(14, 12);
-    s.FramePadding      = ImVec2(10, 6);
-    s.CellPadding       = ImVec2(9, 6);
-    s.ItemSpacing       = ImVec2(10, 8);
-    s.ItemInnerSpacing  = ImVec2(8, 6);
-    s.IndentSpacing     = 22.0f;
-    s.ScrollbarSize     = 14.0f;
-    s.GrabMinSize       = 12.0f;
+    s.WindowPadding     = ImVec2(16, 14);
+    s.FramePadding      = ImVec2(10, 7);
+    s.CellPadding       = ImVec2(10, 7);
+    s.ItemSpacing       = ImVec2(10, 9);
+    s.ItemInnerSpacing  = ImVec2(8, 7);
+    s.IndentSpacing     = 24.0f;
+    s.ScrollbarSize     = 15.0f;
+    s.GrabMinSize       = 13.0f;
 
     s.WindowBorderSize  = 1.0f;
     s.ChildBorderSize   = 1.0f;
@@ -103,10 +103,10 @@ void ApplyTheme(float dpiScale, ThemeKind kind)
     s.FrameBorderSize   = 1.0f;
     s.TabBorderSize     = 0.0f;
 
-    s.WindowRounding    = 10.0f;
-    s.ChildRounding     = 8.0f;
-    s.FrameRounding     = 7.0f;
-    s.PopupRounding     = 9.0f;
+    s.WindowRounding    = 12.0f;
+    s.ChildRounding     = 10.0f;
+    s.FrameRounding     = 8.0f;
+    s.PopupRounding     = 11.0f;
     s.ScrollbarRounding = 10.0f;
     s.GrabRounding      = 7.0f;
     s.TabRounding       = 7.0f;
@@ -126,27 +126,30 @@ void ApplyTheme(float dpiScale, ThemeKind kind)
     const float mbgA = bliz ? 0.92f : 1.00f;   // menu bar bg alpha
 
     const ImVec4 bg        = bliz ? ImVec4(0.118f, 0.106f, 0.088f, wbgA)
-                                  : ImVec4(0.107f, 0.109f, 0.122f, wbgA);
+                                  : ImVec4(0.072f, 0.086f, 0.122f, wbgA);
     const ImVec4 bgDark    = bliz ? ImVec4(0.086f, 0.077f, 0.063f, 1.00f)
-                                  : ImVec4(0.074f, 0.076f, 0.086f, 1.00f);
+                                  : ImVec4(0.045f, 0.056f, 0.083f, 1.00f);
     const ImVec4 child     = bliz ? ImVec4(0.146f, 0.131f, 0.108f, 1.00f)
-                                  : ImVec4(0.135f, 0.138f, 0.152f, 1.00f);
+                                  : ImVec4(0.104f, 0.123f, 0.170f, 1.00f);
     const ImVec4 frame     = bliz ? ImVec4(0.183f, 0.164f, 0.132f, 1.00f)
-                                  : ImVec4(0.170f, 0.174f, 0.192f, 1.00f);
+                                  : ImVec4(0.138f, 0.162f, 0.220f, 1.00f);
     const ImVec4 frameHov  = bliz ? ImVec4(0.230f, 0.203f, 0.156f, 1.00f)
-                                  : ImVec4(0.215f, 0.220f, 0.242f, 1.00f);
+                                  : ImVec4(0.190f, 0.230f, 0.315f, 1.00f);
     const ImVec4 frameAct  = bliz ? ImVec4(0.270f, 0.234f, 0.172f, 1.00f)
-                                  : ImVec4(0.255f, 0.262f, 0.288f, 1.00f);
+                                  : ImVec4(0.240f, 0.305f, 0.420f, 1.00f);
     const ImVec4 text      = bliz ? ImVec4(0.930f, 0.908f, 0.860f, 1.00f)
                                   : ImVec4(0.900f, 0.905f, 0.915f, 1.00f);
     const ImVec4 textDim   = bliz ? ImVec4(0.575f, 0.540f, 0.470f, 1.00f)
                                   : ImVec4(0.540f, 0.548f, 0.570f, 1.00f);
     const ImVec4 border    = bliz ? ImVec4(0.43f, 0.34f, 0.20f, 0.62f)
-                                  : ImVec4(0.30f, 0.34f, 0.43f, 0.62f);
-    const ImVec4 accent    = ImVec4(0.855f, 0.647f, 0.216f, 1.00f); // WoW gold (both)
-    const ImVec4 accentHov = ImVec4(0.945f, 0.745f, 0.315f, 1.00f);
-    const ImVec4 accentDim = ImVec4(0.855f, 0.647f, 0.216f, 0.38f);
-    const ImVec4 accentMut = ImVec4(0.430f, 0.335f, 0.150f, 1.00f); // bronze
+                                  : ImVec4(0.29f, 0.42f, 0.61f, 0.66f);
+    const ImVec4 accent    = bliz ? ImVec4(0.855f, 0.647f, 0.216f, 1.00f)
+                                  : ImVec4(0.315f, 0.650f, 0.980f, 1.00f);
+    const ImVec4 accentHov = bliz ? ImVec4(0.945f, 0.745f, 0.315f, 1.00f)
+                                  : ImVec4(0.480f, 0.755f, 1.000f, 1.00f);
+    const ImVec4 accentDim = ImVec4(accent.x, accent.y, accent.z, 0.38f);
+    const ImVec4 accentMut = bliz ? ImVec4(0.430f, 0.335f, 0.150f, 1.00f)
+                                  : ImVec4(0.205f, 0.385f, 0.620f, 1.00f);
 
     ImVec4* c = s.Colors;
     c[ImGuiCol_Text]                 = text;
@@ -186,7 +189,8 @@ void ApplyTheme(float dpiScale, ThemeKind kind)
     c[ImGuiCol_ResizeGripActive]     = accent;
     c[ImGuiCol_Tab]                  = ImVec4(0.120f, 0.128f, 0.155f, 1.00f);
     c[ImGuiCol_TabHovered]           = accentMut;
-    c[ImGuiCol_TabSelected]          = ImVec4(0.290f, 0.225f, 0.110f, 1.00f);
+    c[ImGuiCol_TabSelected]          = bliz ? ImVec4(0.290f, 0.225f, 0.110f, 1.00f)
+                                                : ImVec4(0.125f, 0.285f, 0.490f, 1.00f);
     c[ImGuiCol_TabDimmed]            = bgDark;
     c[ImGuiCol_TabDimmedSelected]    = ImVec4(0.205f, 0.175f, 0.115f, 1.00f);
     c[ImGuiCol_DockingPreview]       = accentDim;

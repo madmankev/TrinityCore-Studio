@@ -543,6 +543,11 @@ void App::DrawMenuBar()
 
     IEditorModule* m = activeModule();
 
+    ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "TC");
+    ImGui::SameLine(0.0f, 3.0f * dpiScale);
+    ImGui::TextDisabled("STUDIO");
+    ImGui::SameLine(0.0f, 16.0f * dpiScale);
+
     if (ImGui::BeginMenu("File"))
     {
         if (ImGui::MenuItem("Connect...", "Ctrl+K"))
@@ -620,48 +625,71 @@ void App::DrawMenuBar()
 void App::DrawWorkspaceBar()
 {
     ImGuiViewport* vp = ImGui::GetMainViewport();
-    const float h = 38.0f * dpiScale;
+    const float h = 54.0f * dpiScale;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f * dpiScale, 7.0f * dpiScale));
     if (ImGui::BeginViewportSideBar("##workspacebar", vp, ImGuiDir_Up, h,
                                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings))
     {
         IEditorModule* module = activeModule();
-        const std::string project = activeProject.name.empty() ? "No project" : activeProject.name;
+        const std::string project = activeProject.name.empty() ? "Untitled workspace" : activeProject.name;
+        const ImVec2 win = ImGui::GetWindowPos();
+        const ImVec2 size = ImGui::GetWindowSize();
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        draw->AddRectFilledMultiColor(win, ImVec2(win.x + size.x, win.y + size.y),
+                                      IM_COL32(28, 35, 54, 255), IM_COL32(19, 24, 38, 255),
+                                      IM_COL32(17, 22, 34, 255), IM_COL32(25, 31, 48, 255));
+        draw->AddLine(ImVec2(win.x, win.y + size.y - 1.0f), ImVec2(win.x + size.x, win.y + size.y - 1.0f),
+                      IM_COL32(119, 146, 196, 105), 1.0f);
+
+        const float mark = 34.0f * dpiScale;
+        const ImVec2 markMin(win.x + 14.0f * dpiScale, win.y + (h - mark) * 0.5f);
+        draw->AddRectFilled(markMin, ImVec2(markMin.x + mark, markMin.y + mark), IM_COL32(223, 168, 64, 255), 9.0f * dpiScale);
+        const std::string initial = project.empty() ? "T" : std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(project[0]))));
+        const ImVec2 initialSize = ImGui::CalcTextSize(initial.c_str());
+        draw->AddText(ImVec2(markMin.x + (mark - initialSize.x) * 0.5f, markMin.y + (mark - initialSize.y) * 0.5f),
+                      IM_COL32(24, 29, 41, 255), initial.c_str());
+
+        ImGui::SetCursorPos(ImVec2(60.0f * dpiScale, 7.0f * dpiScale));
+        ImGui::TextDisabled("PROJECT WORKSPACE");
+        ImGui::SetCursorPos(ImVec2(60.0f * dpiScale, 25.0f * dpiScale));
         ImGui::TextUnformatted(project.c_str());
         ImGui::SameLine();
-        ImGui::TextDisabled("/  %s", module->DisplayName());
+        ImGui::TextDisabled("/ %s", module->DisplayName());
+        if (module->HasRecord())
+        {
+            ImGui::SameLine();
+            ImGui::TextDisabled("· %s", module->RecordSummary().c_str());
+        }
 
-        const ImVec4 connectionColor = connected ? ImVec4(0.28f, 0.84f, 0.54f, 1.0f)
-                                                   : ImVec4(0.92f, 0.47f, 0.35f, 1.0f);
-        const char* connectionText = connected ? (mode == WriteMode::Live ? "LIVE DB" : "SQL EXPORT")
-                                               : "OFFLINE";
-        const float rightButtons = 306.0f * dpiScale;
-        const float x = ImGui::GetWindowContentRegionMax().x - rightButtons;
-        if (x > ImGui::GetCursorPosX())
-            ImGui::SetCursorPosX(x);
-        ImGui::PushStyleColor(ImGuiCol_Button, connectionColor);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(connectionColor.x + 0.06f,
-                                                               connectionColor.y + 0.06f,
-                                                               connectionColor.z + 0.04f, 1.0f));
-        if (ImGui::Button(connectionText, ImVec2(90.0f * dpiScale, 0)))
+        const bool liveMode = connected && mode == WriteMode::Live;
+        const ImVec4 stateBg = liveMode ? ImVec4(0.12f, 0.46f, 0.30f, 1.0f)
+                              : connected ? ImVec4(0.30f, 0.25f, 0.56f, 1.0f)
+                                          : ImVec4(0.42f, 0.20f, 0.19f, 1.0f);
+        const char* state = liveMode ? "● LIVE DATABASE" : connected ? "◆ SQL EXPORT" : "○ OFFLINE";
+        const float rightWidth = 476.0f * dpiScale;
+        ImGui::SetCursorPos(ImVec2(std::max(60.0f * dpiScale, ImGui::GetWindowContentRegionMax().x - rightWidth),
+                                   13.0f * dpiScale));
+        StudioPill(state, stateBg, ImVec4(0.94f, 0.97f, 1.0f, 1.0f));
+        ImGui::SameLine(0.0f, 8.0f * dpiScale);
+        if (StudioButton("Command palette", StudioButtonTone::Primary, ImVec2(122.0f * dpiScale, 0)))
+        {
+            showCommandPalette = true;
+            commandQuery.clear();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Search commands and modules (Ctrl+P)");
+        ImGui::SameLine(0.0f, 6.0f * dpiScale);
+        if (StudioButton("Settings", StudioButtonTone::Quiet, ImVec2(86.0f * dpiScale, 0)))
+            showPrefs = true;
+        ImGui::SameLine(0.0f, 6.0f * dpiScale);
+        if (StudioButton(connected ? "Disconnect" : "Connect", connected ? StudioButtonTone::Quiet : StudioButtonTone::Secondary,
+                         ImVec2(88.0f * dpiScale, 0)))
         {
             if (connected)
                 Disconnect();
             else
                 showConnectModal = true;
         }
-        ImGui::PopStyleColor(2);
-        ImGui::SameLine();
-        if (ImGui::Button("Command", ImVec2(94.0f * dpiScale, 0)))
-        {
-            showCommandPalette = true;
-            commandQuery.clear();
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Command palette (Ctrl+P)");
-        ImGui::SameLine();
-        if (ImGui::Button("Preferences", ImVec2(106.0f * dpiScale, 0)))
-            showPrefs = true;
     }
     ImGui::End();
     ImGui::PopStyleVar();
@@ -694,9 +722,9 @@ void App::DrawEditorRail()
         }
         else
         {
-            ImGui::TextDisabled("WORKSPACE");
-            ImGui::SameLine();
+            StudioPanelHeader("NAVIGATION", "Studio tools", "Content, logic, world and data", "CTRL+P");
             ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - ImGui::GetFrameHeight());
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetFrameHeight() - 4.0f * dpiScale);
             if (ImGui::SmallButton("<<"))
             {
                 railCollapsed = true;
@@ -706,7 +734,7 @@ void App::DrawEditorRail()
                 ImGui::SetTooltip("Collapse workspace navigation");
             ImGui::SetNextItemWidth(-FLT_MIN);
             InputTextString("Search modules##rail", railSearch);
-            ImGui::Separator();
+            ImGui::Spacing();
         }
 
         auto groupFor = [](const char* id) -> int {
@@ -760,25 +788,38 @@ void App::DrawEditorRail()
                     railSearch.clear();
                 }
                 const ImVec2 min = ImGui::GetItemRectMin();
+                const ImVec2 max = ImGui::GetItemRectMax();
+                const bool hovered = ImGui::IsItemHovered();
                 ImDrawList* draw = ImGui::GetWindowDrawList();
-                const ImU32 glyphBg = active ? IM_COL32(211, 156, 57, 255) : IM_COL32(60, 68, 88, 230);
+                if (active || hovered)
+                {
+                    draw->AddRectFilled(min, max, active ? IM_COL32(48, 61, 91, 235) : IM_COL32(37, 46, 67, 220),
+                                        8.0f * dpiScale);
+                    if (active)
+                        draw->AddRectFilled(min, ImVec2(min.x + 3.0f * dpiScale, max.y), IM_COL32(226, 170, 62, 255),
+                                            8.0f * dpiScale, ImDrawFlags_RoundCornersLeft);
+                }
+                const ImU32 glyphBg = active ? IM_COL32(226, 170, 62, 255) : IM_COL32(69, 82, 113, 235);
                 const float glyphSize = h - 10.0f * dpiScale;
-                const ImVec2 glyphMin(min.x + 5.0f * dpiScale, min.y + 5.0f * dpiScale);
+                const ImVec2 glyphMin(min.x + 7.0f * dpiScale, min.y + 5.0f * dpiScale);
                 const ImVec2 glyphMax(glyphMin.x + glyphSize, glyphMin.y + glyphSize);
-                draw->AddRectFilled(glyphMin, glyphMax, glyphBg, 6.0f * dpiScale);
+                draw->AddRectFilled(glyphMin, glyphMax, glyphBg, 7.0f * dpiScale);
                 const ImVec2 textSize = ImGui::CalcTextSize(module->RailGlyph());
                 draw->AddText(ImVec2(glyphMin.x + (glyphSize - textSize.x) * 0.5f,
                                      glyphMin.y + (glyphSize - textSize.y) * 0.5f),
-                              IM_COL32(18, 20, 26, 255), module->RailGlyph());
+                              IM_COL32(19, 24, 35, 255), module->RailGlyph());
                 if (!railCollapsed)
                 {
-                    draw->AddText(ImVec2(glyphMax.x + 9.0f * dpiScale,
-                                         min.y + (h - ImGui::GetTextLineHeight()) * 0.5f),
+                    draw->AddText(ImVec2(glyphMax.x + 10.0f * dpiScale,
+                                         min.y + 7.0f * dpiScale),
                                   ImGui::GetColorU32(active ? ImGuiCol_Text : ImGuiCol_TextDisabled),
                                   module->DisplayName());
+                    draw->AddText(ImVec2(glyphMax.x + 10.0f * dpiScale,
+                                         min.y + 23.0f * dpiScale),
+                                  IM_COL32(139, 153, 183, 220), module->Id());
                 }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s", module->DisplayName());
+                if (hovered)
+                    ImGui::SetTooltip("Open %s", module->DisplayName());
                 ImGui::PopID();
             }
         }
@@ -799,47 +840,45 @@ void App::DrawEditorRail()
 void App::DrawStatusBar()
 {
     ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f * dpiScale, 4.0f * dpiScale));
-    const float h = ImGui::GetFrameHeight() + 8.0f * dpiScale;
+    const float h = ImGui::GetFrameHeight() + 12.0f * dpiScale;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f * dpiScale, 5.0f * dpiScale));
     if (ImGui::BeginViewportSideBar("##statusbar", vp, ImGuiDir_Down, h,
                                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings))
     {
         IEditorModule* module = activeModule();
-        const ImVec4 online = ImVec4(0.28f, 0.84f, 0.54f, 1.0f);
-        const ImVec4 offline = ImVec4(0.92f, 0.47f, 0.35f, 1.0f);
-        ImGui::TextColored(connected ? online : offline, "●");
-        ImGui::SameLine(0.0f, 5.0f * dpiScale);
-        ImGui::TextDisabled("%s", connected ? (mode == WriteMode::Live ? "Live database" : "SQL export")
-                                              : "Offline workspace");
-        ImGui::SameLine();
-        ImGui::TextDisabled("·");
-        ImGui::SameLine();
-        ImGui::TextUnformatted(module->DisplayName());
+        const ImVec2 win = ImGui::GetWindowPos();
+        const ImVec2 size = ImGui::GetWindowSize();
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        draw->AddRectFilled(win, ImVec2(win.x + size.x, win.y + size.y), IM_COL32(18, 23, 34, 255));
+        draw->AddLine(win, ImVec2(win.x + size.x, win.y), IM_COL32(105, 132, 180, 88), 1.0f);
+
+        const bool liveMode = connected && mode == WriteMode::Live;
+        const ImVec4 stateBg = liveMode ? ImVec4(0.10f, 0.39f, 0.26f, 1.0f)
+                              : connected ? ImVec4(0.29f, 0.23f, 0.52f, 1.0f)
+                                          : ImVec4(0.37f, 0.20f, 0.20f, 1.0f);
+        StudioPill(liveMode ? "LIVE" : connected ? "EXPORT" : "OFFLINE", stateBg, ImVec4(0.95f, 0.97f, 1.0f, 1.0f));
+        ImGui::SameLine(0.0f, 8.0f * dpiScale);
+        ImGui::TextDisabled("%s", module->DisplayName());
         if (module->HasRecord())
         {
             ImGui::SameLine();
-            ImGui::TextDisabled("·");
-            ImGui::SameLine();
-            ImGui::TextUnformatted(module->RecordSummary().c_str());
+            ImGui::TextDisabled("/ %s", module->RecordSummary().c_str());
         }
 
         const std::string right = connected
-            ? (std::string(CoreFlavorName(activeCoreFlavor)) + "  •  Ctrl+P command palette")
+            ? (std::string(CoreFlavorName(activeCoreFlavor)) + "  ·  Ctrl+P")
             : std::string("Ctrl+P command palette");
         const float rightW = ImGui::CalcTextSize(right.c_str()).x;
-        const float remaining = ImGui::GetWindowContentRegionMax().x - ImGui::GetCursorPosX();
-        if (!statusLine.empty() && remaining > rightW + 100.0f * dpiScale)
+        const float messageStart = ImGui::GetCursorPosX() + 20.0f * dpiScale;
+        const float messageEnd = ImGui::GetWindowContentRegionMax().x - rightW - 20.0f * dpiScale;
+        if (!statusLine.empty() && messageEnd > messageStart + 80.0f * dpiScale)
         {
-            ImGui::SameLine();
-            ImGui::TextDisabled("·");
-            ImGui::SameLine();
-            ImGui::PushTextWrapPos(ImGui::GetWindowContentRegionMax().x - rightW - 16.0f * dpiScale);
+            ImGui::SetCursorPosX(messageStart);
+            ImGui::PushTextWrapPos(messageEnd);
             ImGui::TextDisabled("%s", statusLine.c_str());
             ImGui::PopTextWrapPos();
         }
-        const float rightX = ImGui::GetWindowContentRegionMax().x - rightW;
-        if (rightX > ImGui::GetCursorPosX())
-            ImGui::SetCursorPosX(rightX);
+        ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - rightW));
         ImGui::TextDisabled("%s", right.c_str());
     }
     ImGui::End();
@@ -912,7 +951,7 @@ void App::DrawCommandPalette()
                                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
         return;
 
-    ImGui::TextDisabled("Navigate modules and common workspace commands");
+    StudioPanelHeader("COMMAND CENTER", "Search everything", "Jump between editors or run common workspace actions.", "CTRL+P");
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::IsWindowAppearing())
         ImGui::SetKeyboardFocusHere();
@@ -1000,7 +1039,7 @@ void App::DrawSharedModals()
             soap.password = connPanel.SoapPassword();
 
             ImGui::Separator();
-            if (ImGui::Button("Close", ImVec2(120.0f, 0.0f)))
+            if (StudioButton("Close", StudioButtonTone::Quiet, ImVec2(120.0f, 0.0f)))
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
@@ -1019,7 +1058,7 @@ void App::DrawSharedModals()
         ImGui::SetNextWindowSize(ImVec2(620.0f * dpiScale, 0.0f), ImGuiCond_Appearing);
         if (ImGui::BeginPopupModal("Preferences", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         {
-            ImGui::SeparatorText("Appearance");
+            StudioPanelHeader("PREFERENCES", "Appearance & workspace", "Theme, editor preferences, and client-data status.");
             {
                 // Theme selector. "Auto" uses the Blizzard skin when client data is
                 // loaded, else Dark. Persisted immediately.
@@ -1053,7 +1092,7 @@ void App::DrawSharedModals()
                 ImGui::TextDisabled("No client data loaded.");
 
             ImGui::Separator();
-            if (ImGui::Button("Close", ImVec2(120.0f, 0.0f)))
+            if (StudioButton("Close", StudioButtonTone::Quiet, ImVec2(120.0f, 0.0f)))
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }

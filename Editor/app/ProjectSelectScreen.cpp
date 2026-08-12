@@ -84,7 +84,7 @@ void ProjectSelectScreen::Draw(ProjectStore& store, ProjectSelectCallbacks& cb, 
 
     // A real launchpad rather than a plain list: the hierarchy describes what a project owns,
     // gives the primary action prominence, and leaves the project cards to carry the detail.
-    const float heroH = 116.0f * dpiScale;
+    const float heroH = 150.0f * dpiScale;
     ImGui::BeginChild("##projecthero", ImVec2(0, heroH), false,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     const ImVec2 heroMin = ImGui::GetWindowPos();
@@ -98,11 +98,16 @@ void ProjectSelectScreen::Draw(ProjectStore& store, ProjectSelectCallbacks& cb, 
     ImGui::TextUnformatted("TRINITYCORE STUDIO");
     ImGui::TextColored(ImVec4(0.73f, 0.78f, 0.91f, 1.0f), "World-building workspace");
     ImGui::TextDisabled("Projects keep client assets, a world database connection, and editor settings together.");
-    ImGui::SetCursorPos(ImVec2(20.0f * dpiScale, 82.0f * dpiScale));
+    ImGui::SetCursorPos(ImVec2(20.0f * dpiScale, 88.0f * dpiScale));
     ImGui::TextDisabled("WoW 3.3.5a  •  TrinityCore + AzerothCore  •  Live / SQL export");
-    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowSize().x - 176.0f * dpiScale, 38.0f * dpiScale));
-    if (ImGui::Button("Create project", ImVec2(154.0f * dpiScale, 34.0f * dpiScale)))
+    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowSize().x - 176.0f * dpiScale, 42.0f * dpiScale));
+    if (StudioButton("Create project", StudioButtonTone::Primary, ImVec2(154.0f * dpiScale, 34.0f * dpiScale)))
         BeginCreate();
+    ImGui::SetCursorPos(ImVec2(20.0f * dpiScale, 112.0f * dpiScale));
+    const std::string projects = std::to_string(store.Entries().size()) + " PROJECT" + (store.Entries().size() == 1 ? "" : "S");
+    StudioPill(projects.c_str(), ImVec4(0.21f, 0.30f, 0.48f, 1.0f), ImVec4(0.91f, 0.95f, 1.0f, 1.0f));
+    ImGui::SameLine(0.0f, 8.0f * dpiScale);
+    StudioPill("CLIENT + DB READY", ImVec4(0.15f, 0.39f, 0.29f, 1.0f), ImVec4(0.90f, 1.0f, 0.93f, 1.0f));
     ImGui::EndChild();
 
     ImGui::Spacing();
@@ -207,17 +212,17 @@ void ProjectSelectScreen::DrawList(ProjectStore& store, ProjectSelectCallbacks& 
 
         ImGui::SetCursorScreenPos(ImVec2(max.x - buttonsW, min.y + (cardH - ImGui::GetFrameHeight()) * 0.5f));
         if (!e.valid) ImGui::BeginDisabled();
-        if (ImGui::Button("Open", ImVec2(actionW, 0)))
+        if (StudioButton("Open", StudioButtonTone::Primary, ImVec2(actionW, 0)))
         {
             selectedLocation = e.config.location;
             TryLoad(e.config, cb);
         }
         if (!e.valid) ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Edit", ImVec2(actionW, 0)))
+        if (StudioButton("Edit", StudioButtonTone::Quiet, ImVec2(actionW, 0)))
             BeginSettings(e.config);
         ImGui::SameLine();
-        if (ImGui::Button("Remove", ImVec2(actionW, 0)))
+        if (StudioButton("Remove", StudioButtonTone::Danger, ImVec2(actionW, 0)))
         {
             deleteName = e.config.name;
             deleteLocation = e.config.location;
@@ -231,15 +236,11 @@ void ProjectSelectScreen::DrawList(ProjectStore& store, ProjectSelectCallbacks& 
 
     if (!anyShown)
     {
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float w = ImGui::GetContentRegionAvail().x;
-        ImDrawList* draw = ImGui::GetWindowDrawList();
-        draw->AddRectFilled(p, ImVec2(p.x + w, p.y + 100.0f * dpiScale), IM_COL32(31, 37, 51, 235), 8.0f * dpiScale);
-        ImGui::SetCursorScreenPos(ImVec2(p.x + 20.0f * dpiScale, p.y + 20.0f * dpiScale));
-        ImGui::TextUnformatted(store.Entries().empty() ? "Start with a project" : "No matching projects");
-        ImGui::TextDisabled(store.Entries().empty()
-                                ? "Create a project to connect client data and your world database."
-                                : "Try a different project name or folder search.");
+        StudioEmptyState(store.Entries().empty() ? "+" : "?",
+                         store.Entries().empty() ? "Start with a project" : "No matching projects",
+                         store.Entries().empty()
+                             ? "Create a project to connect client data and your world database."
+                             : "Try a different project name or folder search.");
     }
 
     ImGui::EndChild();

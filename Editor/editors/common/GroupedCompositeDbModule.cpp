@@ -201,9 +201,10 @@ void GroupedCompositeDbModule::DrawBrowser()
         ImGui::End();
         return;
     }
+    StudioPanelHeader("DATABASE", "Composite data", "Browse related composite-key tables and edit rows safely.");
     if (!svc_ || !svc_->connected || !svc_->activeDb)
     {
-        ImGui::TextWrapped("Connect a project database to browse these world-DB tables.");
+        StudioEmptyState("DB", "Database connection required", "Connect a project database to browse these world tables.");
         ImGui::End();
         return;
     }
@@ -251,8 +252,10 @@ void GroupedCompositeDbModule::DrawEditor()
         ImGui::End();
         return;
     }
+    StudioPanelHeader("INSPECTOR", recordLoaded_ ? ActiveSchema().table : "No row selected",
+                      "Review composite keys and fields before saving.", recordLoaded_ && record_.dirty ? "UNSAVED" : nullptr);
     if (!recordLoaded_)
-        ImGui::TextWrapped("Select a row in the browser, or File > New row.");
+        StudioEmptyState("+", "No row selected", "Select a row in the browser, or use File > New row.");
     else
         DrawEditorBody();
     ImGui::End();

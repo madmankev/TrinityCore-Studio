@@ -23,6 +23,10 @@ void ConnectionPanel::DrawBody(ConnectionStore& store, bool connected, const std
 {
     std::vector<ConnectionProfile>& profiles = store.Profiles();
 
+    StudioPanelHeader("CONNECTION", connected ? "Connected workspace" : "Connect world database",
+                      "Profiles, write mode, and optional in-game reload are controlled here.",
+                      connected ? "ONLINE" : "OFFLINE");
+
     // Seed the form from the first profile once, if any exist.
     if (!formInit)
     {
@@ -85,7 +89,7 @@ void ConnectionPanel::DrawBody(ConnectionStore& store, bool connected, const std
     ImGui::Checkbox("Save password in profile", &savePassword);
 
     // --- Profile persistence -------------------------------------------------
-    if (ImGui::Button("Save Profile"))
+    if (StudioButton("Save Profile", StudioButtonTone::Secondary))
     {
         ConnectionProfile p;
         p.name = profileName;
@@ -117,7 +121,7 @@ void ConnectionPanel::DrawBody(ConnectionStore& store, bool connected, const std
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(selectedProfile < 0 || selectedProfile >= (int)profiles.size());
-    if (ImGui::Button("Delete Profile"))
+    if (StudioButton("Delete Profile", StudioButtonTone::Danger))
     {
         LogInfo("Deleted connection profile '" + profiles[selectedProfile].name + "'");
         profiles.erase(profiles.begin() + selectedProfile);
@@ -175,7 +179,7 @@ void ConnectionPanel::DrawBody(ConnectionStore& store, bool connected, const std
 
     // --- Connect / Disconnect / Test ----------------------------------------
     ImGui::BeginDisabled(connected);
-    if (ImGui::Button("Connect"))
+    if (StudioButton("Connect", StudioButtonTone::Primary))
     {
         if (cb.onConnect)
             cb.onConnect(config, mode, exportPath);
@@ -183,14 +187,14 @@ void ConnectionPanel::DrawBody(ConnectionStore& store, bool connected, const std
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!connected);
-    if (ImGui::Button("Disconnect"))
+    if (StudioButton("Disconnect", StudioButtonTone::Quiet))
     {
         if (cb.onDisconnect)
             cb.onDisconnect();
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Test"))
+    if (StudioButton("Test", StudioButtonTone::Secondary))
     {
         if (cb.onTest)
             cb.onTest(config);

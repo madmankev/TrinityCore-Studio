@@ -179,10 +179,11 @@ void GroupedDbcModule::DrawBrowser()
         ImGui::End();
         return;
     }
+    StudioPanelHeader("CLIENT DATA", "Table collection", "Browse related DBC tables from the active client-data source.");
     if (docs_.empty() || !ActiveDoc().IsLoaded())
     {
-        ImGui::TextWrapped("%s", loadError_.empty() ? "Load WoW client data to edit these tables."
-                                                    : loadError_.c_str());
+        StudioEmptyState("DBC", "Client data required", loadError_.empty() ? "Open a project with WoW client data to edit these tables."
+                                                                            : loadError_.c_str());
         ImGui::End();
         return;
     }
@@ -228,9 +229,11 @@ void GroupedDbcModule::DrawEditor()
         ImGui::End();
         return;
     }
+    StudioPanelHeader("INSPECTOR", (docs_.empty() || selectedRow_ < 0) ? "No row selected" : Tables()[static_cast<size_t>(active_)].name,
+                      "Inspect client-data fields and save to the project overlay.", (!docs_.empty() && ActiveDoc().Dirty()) ? "UNSAVED" : nullptr);
     if (docs_.empty() || selectedRow_ < 0 ||
         static_cast<uint32_t>(selectedRow_) >= ActiveDoc().RecordCount())
-        ImGui::TextWrapped("Select a row in the browser, or File > New row.");
+        StudioEmptyState("+", "No row selected", "Select a row in the browser, or use File > New row.");
     else
         DrawEditorBody();
     ImGui::End();

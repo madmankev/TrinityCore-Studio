@@ -4,6 +4,8 @@
 
 #include "imgui.h"
 
+#include "ui/Widgets.h"
+
 #include "util/Log.h"
 
 namespace we
@@ -16,7 +18,9 @@ void LogPanel::Draw()
         return;
     }
 
-    if (ImGui::Button("Clear"))
+    StudioPanelHeader("ACTIVITY", "Studio log", "Connection, validation, import, and save activity.",
+                      Log::Buffer().empty() ? "CLEAR" : "LIVE");
+    if (StudioButton("Clear", StudioButtonTone::Quiet))
         Log::Clear();
     ImGui::SameLine();
     ImGui::TextDisabled("%zu lines", Log::Buffer().size());

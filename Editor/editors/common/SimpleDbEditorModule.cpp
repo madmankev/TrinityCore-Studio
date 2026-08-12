@@ -7,6 +7,7 @@
 #include "imgui.h"
 
 #include "app/EditorServices.h"
+#include "ui/Widgets.h"
 
 namespace we
 {
@@ -178,9 +179,10 @@ void SimpleDbEditorModule::DrawBrowserPanel()
         ImGui::End();
         return;
     }
+    StudioPanelHeader("BROWSER", NounPlural(), "Search and open world database records.");
     if (!svc_ || !svc_->connected || !svc_->activeDb)
     {
-        ImGui::TextWrapped("Connect a project database to browse %s (world DB).", NounPlural());
+        StudioEmptyState("DB", "Database connection required", "Connect a project database to browse and edit world records.");
         ImGui::End();
         return;
     }
@@ -210,9 +212,11 @@ void SimpleDbEditorModule::DrawEditorPanel()
         ImGui::End();
         return;
     }
+    StudioPanelHeader("INSPECTOR", NounSingular(), recordLoaded_ ? "Edit values in focused tabs; save explicitly when ready." : "Select a record or create a new one.",
+                      recordLoaded_ && record_.dirty ? "UNSAVED" : nullptr);
     if (!recordLoaded_)
     {
-        ImGui::TextWrapped("Select a %s in the browser, or File > New.", NounSingular());
+        StudioEmptyState("+", "Nothing selected", "Choose a row from the browser, or use File > New to create a record.");
         ImGui::End();
         return;
     }

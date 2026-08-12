@@ -141,10 +141,12 @@ turn on **Edit**:
   pending ADT writes, display IDs, invalid coordinates/scales/quaternions, waypoint bindings,
   overlapping spawn cells, formations, trigger targets/hooks, and point/spot-light data. Findings
   are severity-filtered, selectable to frame a referenced world object, and exportable as Markdown.
-- **Refreshed workspace UI**: a project-aware command bar, grouped/searchable editor navigation,
-  Ctrl+P command palette, responsive project cards, and a three-column navigation/canvas/inspector
-  default layout. The World Editor automatically places catalogs left, live map center, inspectors
-  right, and route/terrain tools below; use **View → Reset Layout** at any time.
+- **Overhauled Studio design system**: a product-branded workspace bar, live/export/offline state
+  badges, grouped card-based navigation, command-center palette, redesigned project launchpad,
+  consistent browser/inspector headers, intentional empty states, action hierarchy, and clearer
+  validation/log surfaces. The three-column navigation/canvas/inspector layout remains familiar;
+  the World Editor places catalogs left, live map center, inspectors right, and route/terrain tools
+  below. See [the design system](docs/DESIGN_SYSTEM.md); use **View → Reset Layout** at any time.
 - Browse & search by ID or name, with type/quality/rank filters, server-side sort,
   and paging.
 - Create (blank or from an **archetype template**), **Clone**, **Delete**, **Revert**,

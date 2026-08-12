@@ -464,9 +464,10 @@ void DbEditorModule::DrawBrowser()
         ImGui::End();
         return;
     }
+    StudioPanelHeader("DATABASE", "Schema explorer", "Browse live tables, inspect rows, and import reviewed SQL conversions.");
     if (!svc_ || !svc_->connected || !svc_->activeDb)
     {
-        ImGui::TextWrapped("Connect a project database to browse and edit any world-DB table.");
+        StudioEmptyState("DB", "Database connection required", "Connect a project database to browse live schemas or import converted SQL.");
         ImGui::End();
         return;
     }
@@ -541,10 +542,13 @@ void DbEditorModule::DrawEditor()
         ImGui::End();
         return;
     }
+    StudioPanelHeader("INSPECTOR", mode_ == Mode::None ? "No table selected" : activeTable_.c_str(),
+                      mode_ == Mode::None ? "Choose a table from the schema explorer." : "Review fields and save deliberately.",
+                      dirty_ ? "UNSAVED" : nullptr);
     if (mode_ == Mode::None)
-        ImGui::TextWrapped("Pick a table in the browser to edit it.");
+        StudioEmptyState("+", "Choose a table", "Select a table from the schema explorer to inspect live columns and rows.");
     else if (!recordLoaded_)
-        ImGui::TextWrapped("Select a row, or File > New row.");
+        StudioEmptyState("+", "No row selected", "Select a row from the browser, or use File > New row.");
     else
         DrawEditorBody();
     ImGui::End();
