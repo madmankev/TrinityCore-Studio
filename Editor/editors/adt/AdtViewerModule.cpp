@@ -757,6 +757,9 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
     worldSimulationSpeed_ = 1.0f;
     inGameViewMode_ = false;
     liveTerrainPreview_ = true;
+    worldRenderScale_ = 0.85f;
+    worldRenderWidth_ = 0;
+    worldRenderHeight_ = 0;
     spellPreview_ = SpellPreviewState{};
 
     auto finite = [](float value, float fallback) {
@@ -802,6 +805,8 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
                                                 0.05f, 8.0f);
             inGameViewMode_ = preview.value("inGameView", false);
             liveTerrainPreview_ = preview.value("liveTerrainPreview", true);
+            worldRenderScale_ = std::round(std::clamp(finite(preview.value("renderScale", 0.85f), 0.85f),
+                                                       0.50f, 1.0f) * 20.0f) / 20.0f;
         }
         if (editorNode.contains("terrainTools") && editorNode["terrainTools"].is_object())
         {
@@ -1090,7 +1095,8 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
     editorNode["worldPreview"] = {{"simulationPaused", worldSimulationPaused_},
                                    {"simulationSpeed", worldSimulationSpeed_},
                                    {"inGameView", inGameViewMode_},
-                                   {"liveTerrainPreview", liveTerrainPreview_}};
+                                   {"liveTerrainPreview", liveTerrainPreview_},
+                                   {"renderScale", worldRenderScale_}};
 
     editorNode["terrainTools"] = {{"brushRadius", terrainBrushRadius_},
                                   {"brushStrength", terrainBrushStrength_},
@@ -4512,6 +4518,12 @@ void AdtViewerModule::DrawViewportPanel()
     ImGuiIO& io = ImGui::GetIO();
     UpdateRealtimePreview(io.DeltaTime);
     const float aspect = (float)w / (float)h;
+    // Offscreen target changes destroy/recreate attachments, so quantize the artist-facing slider
+    // to 5% steps. This gives predictable quality tiers and avoids a resize/device-sync on every
+    // fractional slider tick while the ImGui image still fills the complete viewport.
+    const float effectiveRenderScale = std::round(std::clamp(worldRenderScale_, 0.50f, 1.0f) * 20.0f) / 20.0f;
+    worldRenderWidth_ = std::max(16, static_cast<int>(std::lround(w * effectiveRenderScale)));
+    worldRenderHeight_ = std::max(16, static_cast<int>(std::lround(h * effectiveRenderScale)));
 
     // Single camera matrices for this frame, from the camera's CURRENT state (the end of last frame's
     // update). The gizmo, picking, and the 3D render ALL use this same view/proj, so the gizmo stays
@@ -4665,7 +4677,8 @@ void AdtViewerModule::DrawViewportPanel()
     ImTextureID tex = svc_->renderer->RenderWorld(frameTerrains_.data(), (int)frameTerrains_.size(),
                                                   frameGroups_.data(), (int)frameGroups_.size(),
                                                   frameScene_.data(), (int)frameScene_.size(),
-                                                  &view[0][0], &proj[0][0], w, h);
+                                                  &view[0][0], &proj[0][0],
+                                                  worldRenderWidth_, worldRenderHeight_);
     if (tex)
         ImGui::GetWindowDrawList()->AddImage(tex, p0, ImVec2(p0.x + w, p0.y + h));
 
@@ -5863,6 +5876,42 @@ void AdtViewerModule::DrawRealtimePreviewPanel()
     }
     if (lightingChanged)
         MarkLightingDirty("Updated the real-time day/night preview. Save lighting to persist it.");
+
+    ImGui::SeparatorText("Viewport performance");
+    float renderPercent = worldRenderScale_ * 100.0f;
+    ImGui::SetNextItemWidth(240.0f);
+    if (ImGui::SliderFloat("Render resolution", &renderPercent, 50.0f, 100.0f, "%.0f%%"))
+    {
+        worldRenderScale_ = std::round(std::clamp(renderPercent * 0.01f, 0.50f, 1.0f) * 20.0f) / 20.0f;
+        if (svc_ && svc_->requestSaveSettings)
+            svc_->requestSaveSettings();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Performance"))
+    {
+        worldRenderScale_ = 0.65f;
+        if (svc_ && svc_->requestSaveSettings)
+            svc_->requestSaveSettings();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Balanced"))
+    {
+        worldRenderScale_ = 0.85f;
+        if (svc_ && svc_->requestSaveSettings)
+            svc_->requestSaveSettings();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Native"))
+    {
+        worldRenderScale_ = 1.0f;
+        if (svc_ && svc_->requestSaveSettings)
+            svc_->requestSaveSettings();
+    }
+    const RenderStats& perfStats = svc_->renderer->renderStats();
+    ImGui::TextDisabled("Last world pass: %.2f ms GPU, %.2f ms CPU build; %d visible / %d culled terrain chunks.",
+                        perfStats.gpuMs, cpuBuildMs_, perfStats.terrainChunks,
+                        perfStats.terrainChunksCulled);
+    ImGui::TextDisabled("Balanced is the default. The image is upscaled only for display; picking and gizmos retain full viewport precision.");
 
     ImGui::SeparatorText("Presentation");
     if (ImGui::Checkbox("In-game view", &inGameViewMode_))
@@ -8797,13 +8846,15 @@ void AdtViewerModule::DrawStatsOverlay(const ImVec2& p0, const ImGuiIO& io)
 {
     const RenderStats& rs = svc_->renderer->renderStats();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(ImVec2(p0.x + 6, p0.y + 6), ImVec2(p0.x + 250, p0.y + 126),
+    dl->AddRectFilled(ImVec2(p0.x + 6, p0.y + 6), ImVec2(p0.x + 285, p0.y + 165),
                       IM_COL32(0, 0, 0, 150), 4.0f);
     ImGui::SetCursorScreenPos(ImVec2(p0.x + 12, p0.y + 10));
     ImGui::BeginGroup();
     ImGui::Text("%.0f FPS  (%.2f ms)", io.Framerate, io.Framerate > 0 ? 1000.0f / io.Framerate : 0.0f);
     ImGui::Text("GPU %.2f ms   BuildFrame %.2f ms", rs.gpuMs, cpuBuildMs_);
-    ImGui::Text("draws %d   tiles %d", rs.drawCalls, rs.terrainTiles);
+    ImGui::Text("render %dx%d  %.0f%%", worldRenderWidth_, worldRenderHeight_, worldRenderScale_ * 100.0f);
+    ImGui::Text("draws %d   terrain %d tile / %d chunk", rs.drawCalls, rs.terrainTiles, rs.terrainChunks);
+    ImGui::Text("terrain cull %d chunks", rs.terrainChunksCulled);
     ImGui::Text("groups %d  inst %d  other %d", rs.instancedGroups, rs.instances, rs.nonInstanced);
     ImGui::Text("objects %d  models %d  loaded %d", streamer_.objectCount(), streamer_.modelCount(),
                 streamer_.loadedTiles());

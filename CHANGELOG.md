@@ -20,6 +20,10 @@
   select through the WMO root, and never leak into ADT save output as invalid standalone doodads.
   Root-only MODD resolution avoids reparsing WMO group geometry per placement and has a Vulkan-free
   transform/identity regression test.
+- World Editor performance pass: per-MCNK frustum culling compacted into one indirect multi-draw per
+  terrain tile, preallocated indirect command storage, batched terrain VBO/IBO/parameter and ground
+  texture uploads, a lower 7×7 default stream neighbourhood, persisted 50–100% viewport resolution
+  presets, and live GPU/CPU/terrain-cull diagnostics.
 - Live World Editor Ramp / Stairs terrain composer: two-click terrain endpoints, width/slope/stair
   controls, contiguous staged Flatten strokes, real-time terrain preview, one-step undo/redo, and
   authoritative MCVT/MCNR overlay save/reload.

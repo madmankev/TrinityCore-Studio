@@ -77,6 +77,10 @@ struct TerrainSubmeshGpu   // one MCNK map-chunk
     int      layerTex[4] = {-1, -1, -1, -1};   // into TerrainUpload::textures (-1 => white)
     int      layerCount = 0;
     int      alphaMap = -1;                     // into TerrainUpload::alphaMaps
+    // Conservative local-frame sphere used by ModelPipeline's per-MCNK frustum cull. Keeping it
+    // alongside the upload avoids turning the renderer into an ADT-format parser.
+    float    boundsCenter[3] = {0, 0, 0};
+    float    boundsRadius = 0.0f;
 };
 
 struct TerrainUpload
@@ -220,7 +224,9 @@ struct WorldLightingGpu
 struct RenderStats
 {
     int   drawCalls = 0;         // total indexed/non-indexed draws issued this frame
-    int   terrainTiles = 0;      // terrain tiles drawn
+    int   terrainTiles = 0;      // terrain tiles with at least one visible MCNK
+    int   terrainChunks = 0;     // visible MCNK draw ranges emitted through indirect draws
+    int   terrainChunksCulled = 0; // loaded/frustum-tested MCNKs rejected before GPU work
     int   instancedGroups = 0;   // InstancedGroup count
     int   instances = 0;         // total instances across all groups
     int   nonInstanced = 0;      // non-instanced scene entries (liquid + near effects)

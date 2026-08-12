@@ -75,12 +75,19 @@ private:
         VkDescriptorSet whiteDesc = VK_NULL_HANDLE;  // fallback (untextured submeshes)
         std::vector<ModelSubmeshGpu> submeshes;
     };
-    // An uploaded ADT terrain tile, drawn in ONE indexed draw: a per-tile alpha 2D-array (one 64x64
-    // layer per chunk), a per-chunk-params SSBO (layer indices into the global bindless ground array
-    // + alpha slice), and one descriptor set (set 1). Ground textures live in the shared bindless
-    // array (set 0), so a whole tile is one bind + one draw instead of ~256.
+    // An uploaded ADT terrain tile. The texture/alpha state remains one descriptor set per tile,
+    // while a host-filled indirect-command buffer issues only MCNK ranges that intersect the
+    // current camera frustum. That preserves the old one-bind-per-tile design without spending GPU
+    // vertex work on every chunk behind the artist.
     struct GpuTerrain
     {
+        struct Chunk
+        {
+            uint32_t indexStart = 0;
+            uint32_t indexCount = 0;
+            float boundsCenter[3] = {0, 0, 0};
+            float boundsRadius = 0.0f;
+        };
         VkBuffer vbo = VK_NULL_HANDLE;
         VmaAllocation vboAlloc = VK_NULL_HANDLE;
         VkBuffer ibo = VK_NULL_HANDLE;
@@ -89,7 +96,8 @@ private:
         VkBuffer      paramSsbo = VK_NULL_HANDLE;    // ChunkParams[] indexed by chunk id
         VmaAllocation paramAlloc = VK_NULL_HANDLE;
         VkDescriptorSet tileSet = VK_NULL_HANDLE;    // set 1 (alpha array + params)
-        uint32_t      totalIndexCount = 0;           // whole-tile single draw
+        std::vector<Chunk> chunks;                   // MCNK indexed ranges + conservative cull spheres
+        uint32_t      totalIndexCount = 0;           // diagnostic/legacy aggregate index count
     };
     struct ChunkParams { int32_t layer[4]; int32_t alphaSlice; int32_t layerCount; int32_t pad0, pad1; };
 
@@ -97,20 +105,32 @@ private:
     template <class Fn> void OneTimeSubmit(Fn&& record);
     bool CreateGpuBuffer(VkDeviceSize size, VkBufferUsageFlags usage, const void* data,
                          VkBuffer& outBuf, VmaAllocation& outAlloc);
+    struct GpuBufferUpload
+    {
+        VkDeviceSize size = 0;
+        VkBufferUsageFlags usage = 0;
+        const void* data = nullptr;
+        VkBuffer* outBuffer = nullptr;
+        VmaAllocation* outAllocation = nullptr;
+    };
+    // Upload several device-local buffers through one staging submission. Terrain tile creation
+    // uses this for VBO/IBO/chunk params, replacing three queue-idle stalls with one.
+    bool CreateGpuBuffersBatched(const GpuBufferUpload* uploads, size_t count);
     Tex CreateTexture(const uint8_t* rgba, int w, int h);
     // Upload many RGBA textures (each with its own mip chain) in ONE command submit — the streamed
     // world creates hundreds of terrain/alpha textures per tile, so per-texture wait-idle would
     // hitch the render thread. Returns a Tex per item (white_ for empty/invalid entries).
     std::vector<Tex> CreateTexturesBatched(const ModelTextureGpu* items, size_t count);
+    std::vector<Tex> CreateTexturesBatched(const std::vector<const ModelTextureGpu*>& items);
     static uint32_t MipCount(int w, int h);
     Tex CreateImageAndView(int w, int h, uint32_t mipLevels);            // no data
     void RecordImageUpload(VkCommandBuffer cmd, VkImage image, VkBuffer staging, int w, int h,
                            uint32_t mipLevels);                          // records copy + mip blits
     void DestroyTexture(Tex& t);
     VkDescriptorSet AllocDescriptor(VkImageView texView);   // binds shared sceneUbo_ + sceneBoneSsbo_
-    // Resolve a ground-texture path to its slot in the bindless ground array, creating + registering
-    // the texture (and writing groundSet_) on first use. Returns 0 (reserved white) on failure.
-    uint32_t GroundLayer(const std::string& path, const ModelTextureGpu* data);
+    // Resolve every ground-texture path for one incoming terrain tile in a single batched image
+    // upload, then register all new slots in the bindless ground array. Slot 0 remains white.
+    void ResolveGroundLayers(const TerrainUpload& upload, std::vector<uint32_t>& outLayers);
     // Create a 2D-array texture (arrayLayers = count, no mips) and upload each item into a layer.
     Tex CreateArrayTexture(const ModelTextureGpu* items, size_t count, int w, int h);
     bool EnsureTarget(int w, int h);
@@ -151,6 +171,18 @@ private:
     void* instMatMapped_ = nullptr;
     uint32_t instMatCapacity_ = 0;   // matrices
     void EnsureInstanceBuffer(uint32_t matrices);
+
+    // Per-frame host-mapped vkCmdDrawIndexedIndirect payload. It is intentionally pre-sized for
+    // the maximum streamed window so turning the camera never reallocates/stalls the device.
+    VkBuffer terrainIndirectBuf_ = VK_NULL_HANDLE;
+    VmaAllocation terrainIndirectAlloc_ = VK_NULL_HANDLE;
+    void* terrainIndirectMapped_ = nullptr;
+    uint32_t terrainIndirectCapacity_ = 0;  // VkDrawIndexedIndirectCommand entries per frame
+    VkDeviceSize terrainIndirectStride_ = 0;
+    VkDeviceSize curTerrainIndirectOff_ = 0;
+    // Reused CPU-side list; avoid a heap allocation every camera frame while culling dense maps.
+    std::vector<VkDrawIndexedIndirectCommand> terrainCommandScratch_;
+    bool EnsureTerrainIndirectBuffer(uint32_t commands);
 
     // ADT terrain: two descriptor sets. set 0 (global) = scene UBO (dynamic) + a bindless, deduped
     // ground-texture array (updated after bind as tiles stream in). set 1 (per-tile) = the tile's

@@ -127,6 +127,21 @@ if(BUILD_TESTING AND WOWEDIT_BUILD_TESTS)
         target_compile_options(WmoDoodadPlacementTests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
     add_test(NAME WmoDoodadPlacementTests COMMAND WmoDoodadPlacementTests)
+
+    # Terrain chunk visibility is a pure camera/frustum contract; keep the critical cull behavior
+    # covered without requiring a Vulkan device or a licensed client-data install.
+    add_executable(TerrainFrustumTests tests/unit_tests/terrain_frustum_tests.cpp)
+    target_include_directories(TerrainFrustumTests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/RenderEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/glm")
+    target_compile_definitions(TerrainFrustumTests PRIVATE GLM_FORCE_DEPTH_ZERO_TO_ONE)
+    target_compile_features(TerrainFrustumTests PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(TerrainFrustumTests PRIVATE /W4 /WX /permissive-)
+    else()
+        target_compile_options(TerrainFrustumTests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME TerrainFrustumTests COMMAND TerrainFrustumTests)
 endif()
 
 if(WOWEDIT_BUILD_BENCHMARKS)

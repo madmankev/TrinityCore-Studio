@@ -90,35 +90,40 @@ turn on **Edit**:
    day/night sun/fog cycle. Its **In-game view** hides editor helpers for a clean game-like render.
    Staged terrain strokes now deform the streamed terrain immediately; save ADT edits when you are
    ready to bake the exact MCVT/MCNR result into the edited-client overlay.
-8. **Configure AI behavior:** select an NPC and open **AI Behavior**. Define Loop, Ping-pong, or
+8. **Keep dense maps responsive:** the renderer automatically culls individual ADT MCNK terrain
+   chunks before GPU submission and batches incoming terrain buffers/textures to avoid repeated
+   upload stalls. Open **Realtime Preview → Viewport performance** to choose 50–100% render
+   resolution; **Balanced** defaults to 85% and scales the final image only, so picking and gizmos
+   remain exact. The viewport HUD reports GPU/CPU timing and visible versus culled terrain chunks.
+9. **Configure AI behavior:** select an NPC and open **AI Behavior**. Define Loop, Ping-pong, or
    One-shot patrol interpretation; create/edit its route in **Waypoint Path**; then set aggro and
    leash distances. Place the magenta AI target in the 3D world to preview acquisition, chase,
    leash return, and patrol resume in real time. Recognized schema fields such as
    `detection_range` and `leash_distance` can be saved to the server; unavailable core fields stay
    explicitly map-scoped Studio preview data rather than producing unsafe SQL guesses.
-9. **Author script events:** use **Script Triggers** to add a circle/box area entry/exit trigger,
+10. **Author script events:** use **Script Triggers** to add a circle/box area entry/exit trigger,
    click-on-NPC/GameObject interaction trigger, proximity trigger, or delayed/repeating timer. Place
    the cyan script player in the 3D world and use Click-to-interact to preview events in the live log.
    Every trigger records a custom hook, event id, and optional SmartAI action-list reference, plus
    an ordered delayed action sequence for hooks, SmartAI lists, spell casts, text, or GameObject
    state previews. Copy a trigger manifest JSON for a custom server hook; Studio saves this map-scoped
    metadata safely when a stock 3.3.5 schema has no native arbitrary-volume table.
-10. **Edit an NPC route:** select an NPC and open **Waypoint Path**. The panel identifies whether
+11. **Edit an NPC route:** select an NPC and open **Waypoint Path**. The panel identifies whether
    its route comes from the creature template (shared) or its `creature_addon` row (local). Use
    **Make local copy** before changing a shared route when the change is map/spawn-specific;
    creating that local addon carries over the template's visual addon settings so mounted/
    aura-equipped NPCs keep their appearance.
-11. **Author paths in 3D:** click blue numbered route markers to select a point. Add a point at
+12. **Author paths in 3D:** click blue numbered route markers to select a point. Add a point at
    the NPC home, arm **Place on terrain** and right-click ground to insert a point, or arm
    **Move selected on terrain** to reposition one. The route overlay, loop line, delays,
    orientation, walk/run mode, events, actions, chances, and `wpguid` all preview and edit in
    place. Route-table changes have local Ctrl+Z/Ctrl+Y before Save.
-12. **Save deliberately:** route edits are an unsaved live preview until **Save route**. Existing
+13. **Save deliberately:** route edits are an unsaved live preview until **Save route**. Existing
    `waypoint_data` rows are updated transactionally rather than replaced, so project-specific
    columns survive point moves/reordering. A spawn addon row takes precedence over template addon
    data in TrinityCore; clearing its `path_id` keeps its other addon fields and intentionally
    leaves that spawn without a route.
-13. **Verify server appearance:** select an NPC and inspect **NPC Instance → World appearance**.
+14. **Verify server appearance:** select an NPC and inspect **NPC Instance → World appearance**.
    The renderer resolves the server's `CreatureDisplayInfo` id in this order: persistent spawn
    `displayid`/`modelid`, modern AzerothCore `creature_template_model.CreatureDisplayID`, then
    legacy TrinityCore `creature_template.modelid1..4`. It applies the selected

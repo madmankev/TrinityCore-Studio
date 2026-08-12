@@ -2131,9 +2131,10 @@ int AdtRegion(const std::string& clientRoot, const std::string& mapDir, int cx, 
     const we::RenderStats& rstats = renderer->renderStats();
     std::printf("ADTREGION OK -> %s (%dx%d, %zu terrains, %zu instances)\n", outBmp.c_str(), rw, rh,
                 terrains.size(), scene.size());
-    std::printf("stats: drawCalls=%d gpuMs=%.2f (terrainTiles=%d groups=%d instances=%d nonInst=%d)\n",
-                rstats.drawCalls, rstats.gpuMs, rstats.terrainTiles, rstats.instancedGroups,
-                rstats.instances, rstats.nonInstanced);
+    std::printf("stats: drawCalls=%d gpuMs=%.2f (terrainTiles=%d terrainChunks=%d culledChunks=%d groups=%d instances=%d nonInst=%d)\n",
+                rstats.drawCalls, rstats.gpuMs, rstats.terrainTiles, rstats.terrainChunks,
+                rstats.terrainChunksCulled, rstats.instancedGroups, rstats.instances,
+                rstats.nonInstanced);
     std::printf("wdl low-detail tiles loaded=%d\n", streamer.lowTileCount());
     streamer.Shutdown();
     renderer->Shutdown();

@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "gfx/UiTexturePool.h"
+#include "viewer/Frustum.h"
 
 #include "gfx/shaders/model.vert.spv.h"
 #include "gfx/shaders/model.frag.spv.h"
@@ -1067,6 +1068,11 @@ bool ModelPipeline::Init(VkPhysicalDevice phys, VkDevice device, VmaAllocator vm
         w[1].descriptorCount = 1; w[1].pImageInfo = &wi;
         vkUpdateDescriptorSets(device_, 2, w, 0, nullptr);
     }
+
+    // Avoid a device-wide allocation stall when the first dense map rotates into view. 65,536
+    // commands covers the current 13x13 streamed maximum with every tile's 256 MCNKs visible.
+    if (!EnsureTerrainIndirectBuffer(65536))
+        LogWarn("[model] terrain indirect buffer unavailable; falling back to direct visible-chunk draws");
     return ok;
 }
 
@@ -1228,6 +1234,47 @@ void ModelPipeline::EnsureInstanceBuffer(uint32_t matrices)
     instMatCapacity_ = cap;
 }
 
+
+bool ModelPipeline::EnsureTerrainIndirectBuffer(uint32_t commands)
+{
+    if (commands <= terrainIndirectCapacity_ && terrainIndirectBuf_ && terrainIndirectMapped_)
+        return true;
+    // Normal World Editor use is preallocated in Init. This is only a defensive escape hatch for
+    // a future larger stream window, where a one-off resize is preferable to rendering corrupt
+    // indirect data. The device is synchronized before freeing a buffer referenced by prior frames.
+    vkDeviceWaitIdle(device_);
+    if (terrainIndirectBuf_)
+        vmaDestroyBuffer(vma_, terrainIndirectBuf_, terrainIndirectAlloc_);
+    terrainIndirectBuf_ = VK_NULL_HANDLE;
+    terrainIndirectAlloc_ = VK_NULL_HANDLE;
+    terrainIndirectMapped_ = nullptr;
+    terrainIndirectCapacity_ = 0;
+
+    uint32_t cap = 65536;   // > 13x13 streamed tiles x 256 MCNKs, the current UI maximum
+    while (cap < commands)
+        cap *= 2;
+    terrainIndirectStride_ = VkDeviceSize(cap) * sizeof(VkDrawIndexedIndirectCommand);
+    VkBufferCreateInfo bci = {};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = terrainIndirectStride_ * kFramesInFlight;
+    bci.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    VmaAllocationCreateInfo aci = {};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VmaAllocationInfo info = {};
+    if (vmaCreateBuffer(vma_, &bci, &aci, &terrainIndirectBuf_, &terrainIndirectAlloc_, &info) != VK_SUCCESS)
+    {
+        terrainIndirectBuf_ = VK_NULL_HANDLE;
+        terrainIndirectAlloc_ = VK_NULL_HANDLE;
+        terrainIndirectStride_ = 0;
+        return false;
+    }
+    terrainIndirectMapped_ = info.pMappedData;
+    terrainIndirectCapacity_ = cap;
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 bool ModelPipeline::CreateGpuBuffer(VkDeviceSize size, VkBufferUsageFlags usage, const void* data,
                                     VkBuffer& outBuf, VmaAllocation& outAlloc)
@@ -1252,8 +1299,16 @@ bool ModelPipeline::CreateGpuBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
     VkBuffer staging = VK_NULL_HANDLE;
     VmaAllocation stagingAlloc = VK_NULL_HANDLE;
     VmaAllocationInfo si = {};
-    if (vmaCreateBuffer(vma_, &sbci, &saci, &staging, &stagingAlloc, &si) != VK_SUCCESS)
+    if (vmaCreateBuffer(vma_, &sbci, &saci, &staging, &stagingAlloc, &si) != VK_SUCCESS ||
+        !staging || !si.pMappedData)
+    {
+        if (staging)
+            vmaDestroyBuffer(vma_, staging, stagingAlloc);
+        vmaDestroyBuffer(vma_, outBuf, outAlloc);
+        outBuf = VK_NULL_HANDLE;
+        outAlloc = VK_NULL_HANDLE;
         return false;
+    }
     std::memcpy(si.pMappedData, data, static_cast<size_t>(size));
 
     OneTimeSubmit([&](VkCommandBuffer cmd) {
@@ -1262,6 +1317,100 @@ bool ModelPipeline::CreateGpuBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
         vkCmdCopyBuffer(cmd, staging, outBuf, 1, &c);
     });
     vmaDestroyBuffer(vma_, staging, stagingAlloc);
+    return true;
+}
+
+
+bool ModelPipeline::CreateGpuBuffersBatched(const GpuBufferUpload* uploads, size_t count)
+{
+    if (!uploads || count == 0)
+        return true;
+
+    struct Staging
+    {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        VkBuffer destination = VK_NULL_HANDLE;
+        VkDeviceSize size = 0;
+    };
+    std::vector<Staging> staging;
+    staging.reserve(count);
+    auto cleanup = [&]() {
+        for (Staging& item : staging)
+            if (item.buffer)
+                vmaDestroyBuffer(vma_, item.buffer, item.allocation);
+        for (size_t i = 0; i < count; ++i)
+        {
+            const GpuBufferUpload& upload = uploads[i];
+            if (upload.outBuffer && *upload.outBuffer)
+            {
+                VmaAllocation allocation = upload.outAllocation ? *upload.outAllocation : VK_NULL_HANDLE;
+                vmaDestroyBuffer(vma_, *upload.outBuffer, allocation);
+                *upload.outBuffer = VK_NULL_HANDLE;
+                if (upload.outAllocation)
+                    *upload.outAllocation = VK_NULL_HANDLE;
+            }
+        }
+    };
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        const GpuBufferUpload& upload = uploads[i];
+        if (!upload.outBuffer || !upload.outAllocation || !upload.data || upload.size == 0)
+        {
+            cleanup();
+            return false;
+        }
+        *upload.outBuffer = VK_NULL_HANDLE;
+        *upload.outAllocation = VK_NULL_HANDLE;
+
+        VkBufferCreateInfo destinationInfo = {};
+        destinationInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        destinationInfo.size = upload.size;
+        destinationInfo.usage = upload.usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VmaAllocationCreateInfo destinationAllocation = {};
+        destinationAllocation.usage = VMA_MEMORY_USAGE_AUTO;
+        if (vmaCreateBuffer(vma_, &destinationInfo, &destinationAllocation, upload.outBuffer,
+                            upload.outAllocation, nullptr) != VK_SUCCESS)
+        {
+            cleanup();
+            return false;
+        }
+
+        VkBufferCreateInfo stagingInfo = {};
+        stagingInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        stagingInfo.size = upload.size;
+        stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        VmaAllocationCreateInfo stagingAllocation = {};
+        stagingAllocation.usage = VMA_MEMORY_USAGE_AUTO;
+        stagingAllocation.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                  VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VmaAllocationInfo allocationInfo = {};
+        Staging item;
+        item.destination = *upload.outBuffer;
+        item.size = upload.size;
+        if (vmaCreateBuffer(vma_, &stagingInfo, &stagingAllocation, &item.buffer, &item.allocation,
+                            &allocationInfo) != VK_SUCCESS)
+        {
+            if (item.buffer)
+                vmaDestroyBuffer(vma_, item.buffer, item.allocation);
+            cleanup();
+            return false;
+        }
+        std::memcpy(allocationInfo.pMappedData, upload.data, static_cast<size_t>(upload.size));
+        staging.push_back(item);
+    }
+
+    OneTimeSubmit([&](VkCommandBuffer cmd) {
+        for (const Staging& item : staging)
+        {
+            VkBufferCopy copy = {};
+            copy.size = item.size;
+            vkCmdCopyBuffer(cmd, item.buffer, item.destination, 1, &copy);
+        }
+    });
+    for (Staging& item : staging)
+        vmaDestroyBuffer(vma_, item.buffer, item.allocation);
     return true;
 }
 
@@ -1363,14 +1512,29 @@ void ModelPipeline::RecordImageUpload(VkCommandBuffer cmd, VkImage image, VkBuff
 std::vector<ModelPipeline::Tex> ModelPipeline::CreateTexturesBatched(const ModelTextureGpu* items,
                                                                      size_t count)
 {
-    std::vector<Tex> out(count);
+    std::vector<const ModelTextureGpu*> pointers;
+    pointers.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+        pointers.push_back(&items[i]);
+    return CreateTexturesBatched(pointers);
+}
+
+std::vector<ModelPipeline::Tex> ModelPipeline::CreateTexturesBatched(
+    const std::vector<const ModelTextureGpu*>& items)
+{
+    std::vector<Tex> out(items.size());
     struct Job { size_t idx; int w, h; uint32_t mips; VkBuffer staging; VmaAllocation alloc; };
     std::vector<Job> jobs;
-    jobs.reserve(count);
-    for (size_t i = 0; i < count; ++i)
+    jobs.reserve(items.size());
+    for (size_t i = 0; i < items.size(); ++i)
     {
-        const ModelTextureGpu& t = items[i];
-        if (!(t.w > 0 && t.h > 0 && !t.rgba.empty())) { out[i] = white_; continue; }
+        const ModelTextureGpu* source = items[i];
+        if (!source || !(source->w > 0 && source->h > 0 && !source->rgba.empty()))
+        {
+            out[i] = white_;
+            continue;
+        }
+        const ModelTextureGpu& t = *source;
         const uint32_t mips = MipCount(t.w, t.h);
         Tex tex = CreateImageAndView(t.w, t.h, mips);
         if (!tex.image) { out[i] = white_; continue; }
@@ -1385,7 +1549,15 @@ std::vector<ModelPipeline::Tex> ModelPipeline::CreateTexturesBatched(const Model
         VkBuffer staging = VK_NULL_HANDLE;
         VmaAllocation salloc = VK_NULL_HANDLE;
         VmaAllocationInfo si = {};
-        vmaCreateBuffer(vma_, &sbci, &saci, &staging, &salloc, &si);
+        if (vmaCreateBuffer(vma_, &sbci, &saci, &staging, &salloc, &si) != VK_SUCCESS ||
+            !staging || !si.pMappedData)
+        {
+            if (staging)
+                vmaDestroyBuffer(vma_, staging, salloc);
+            DestroyTexture(tex);
+            out[i] = white_;
+            continue;
+        }
         std::memcpy(si.pMappedData, t.rgba.data(), static_cast<size_t>(size));
         out[i] = tex;
         jobs.push_back({i, t.w, t.h, mips, staging, salloc});
@@ -1513,27 +1685,93 @@ void ModelPipeline::SetSubmeshVisibility(ModelHandle handle, const uint8_t* visi
 }
 
 // ---------------------------------------------------------------------------
-uint32_t ModelPipeline::GroundLayer(const std::string& path, const ModelTextureGpu* data)
+void ModelPipeline::ResolveGroundLayers(const TerrainUpload& upload, std::vector<uint32_t>& outLayers)
 {
-    if (path.empty()) return 0;   // slot 0 = white
-    auto it = terrainTexIndex_.find(path);
-    if (it != terrainTexIndex_.end()) return it->second;
-    if (!data || data->rgba.empty() || nextGroundIndex_ >= kMaxGroundTex) return 0;
-    Tex tex = CreateTexturesBatched(data, 1)[0];
-    if (!tex.image || tex.image == white_.image) return 0;
-    const uint32_t idx = nextGroundIndex_++;
-    terrainTexCache_[path] = tex;       // owns the Tex (freed on ClearTerrainTextureCache)
-    terrainTexIndex_[path] = idx;
-    // Register the new texture in the bindless array slot (update-after-bind; the slot is not yet
-    // referenced by any in-flight frame, so this is safe while rendering).
-    VkDescriptorImageInfo ii = {sampler_, tex.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet w = {};
-    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.dstSet = groundSet_; w.dstBinding = 0; w.dstArrayElement = idx;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    w.descriptorCount = 1; w.pImageInfo = &ii;
-    vkUpdateDescriptorSets(device_, 1, &w, 0, nullptr);
-    return idx;
+    outLayers.assign(upload.texturePaths.size(), 0);   // slot 0 = white / unavailable
+    struct Pending
+    {
+        std::string path;
+        const ModelTextureGpu* source = nullptr;
+        std::vector<size_t> destinations;
+    };
+    std::vector<Pending> pending;
+    std::unordered_map<std::string, size_t> pendingByPath;
+
+    for (size_t i = 0; i < upload.texturePaths.size(); ++i)
+    {
+        const std::string& path = upload.texturePaths[i];
+        if (path.empty())
+            continue;
+        const auto resident = terrainTexIndex_.find(path);
+        if (resident != terrainTexIndex_.end())
+        {
+            outLayers[i] = resident->second;
+            continue;
+        }
+        const ModelTextureGpu* source =
+            (i < upload.textures.size() && !upload.textures[i].rgba.empty()) ? &upload.textures[i] : nullptr;
+        if (!source)
+            continue;   // worker intentionally omitted an already-cached texture; retry on a later tile if needed
+        const auto local = pendingByPath.find(path);
+        if (local != pendingByPath.end())
+        {
+            pending[local->second].destinations.push_back(i);
+            continue;
+        }
+        // Do not decode/upload images that cannot obtain a bindless slot this session.
+        if (nextGroundIndex_ + pending.size() >= kMaxGroundTex)
+            continue;
+        Pending item;
+        item.path = path;
+        item.source = source;
+        item.destinations.push_back(i);
+        pendingByPath.emplace(path, pending.size());
+        pending.push_back(std::move(item));
+    }
+    if (pending.empty())
+        return;
+
+    std::vector<const ModelTextureGpu*> sources;
+    sources.reserve(pending.size());
+    for (const Pending& item : pending)
+        sources.push_back(item.source);
+    const std::vector<Tex> uploaded = CreateTexturesBatched(sources);
+
+    std::vector<VkDescriptorImageInfo> imageInfos;
+    std::vector<VkWriteDescriptorSet> writes;
+    imageInfos.reserve(pending.size());
+    writes.reserve(pending.size());
+    for (size_t i = 0; i < pending.size(); ++i)
+    {
+        const Tex& texture = uploaded[i];
+        if (!texture.image || texture.image == white_.image || nextGroundIndex_ >= kMaxGroundTex)
+        {
+            if (texture.image && texture.image != white_.image)
+            {
+                Tex discarded = texture;
+                DestroyTexture(discarded);
+            }
+            continue;
+        }
+        const uint32_t layer = nextGroundIndex_++;
+        terrainTexCache_[pending[i].path] = texture;   // map owns the GPU image from this point
+        terrainTexIndex_[pending[i].path] = layer;
+        for (size_t destination : pending[i].destinations)
+            outLayers[destination] = layer;
+
+        imageInfos.push_back({sampler_, texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+        VkWriteDescriptorSet write = {};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = groundSet_;
+        write.dstBinding = 0;
+        write.dstArrayElement = layer;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo = &imageInfos.back();
+        writes.push_back(write);
+    }
+    if (!writes.empty())
+        vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 // Create a 2D-array texture (one layer per item, no mips) — used for a tile's per-chunk alpha maps.
@@ -1574,7 +1812,14 @@ ModelPipeline::Tex ModelPipeline::CreateArrayTexture(const ModelTextureGpu* item
     VkBuffer staging = VK_NULL_HANDLE;
     VmaAllocation stagingAlloc = VK_NULL_HANDLE;
     VmaAllocationInfo si = {};
-    vmaCreateBuffer(vma_, &bci, &sci, &staging, &stagingAlloc, &si);
+    if (vmaCreateBuffer(vma_, &bci, &sci, &staging, &stagingAlloc, &si) != VK_SUCCESS ||
+        !staging || !si.pMappedData)
+    {
+        if (staging)
+            vmaDestroyBuffer(vma_, staging, stagingAlloc);
+        DestroyTexture(t);
+        return Tex{};
+    }
     char* dst = static_cast<char*>(si.pMappedData);
     for (size_t i = 0; i < count; ++i)
     {
@@ -1622,30 +1867,29 @@ TerrainHandle ModelPipeline::CreateTerrain(const TerrainUpload& up)
     if (up.vertices.empty() || up.indices.empty() || up.submeshes.empty())
         return 0;
     GpuTerrain t;
-    if (!CreateGpuBuffer(up.vertices.size() * sizeof(ModelVertexGpu), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                         up.vertices.data(), t.vbo, t.vboAlloc))
-        return 0;
-    if (!CreateGpuBuffer(up.indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                         up.indices.data(), t.ibo, t.iboAlloc))
-        return 0;
 
-    // Resolve each ground-texture path to its bindless array slot (deduped across all tiles).
+    // Resolve all newly seen ground textures in one submission, rather than stalling the graphics
+    // queue once per BLP while a tile streams into view.
     const size_t nTex = up.texturePaths.size();
-    std::vector<uint32_t> pathLayer(nTex, 0);
-    for (size_t i = 0; i < nTex; ++i)
-    {
-        const ModelTextureGpu* data =
-            (i < up.textures.size() && !up.textures[i].rgba.empty()) ? &up.textures[i] : nullptr;
-        pathLayer[i] = GroundLayer(up.texturePaths[i], data);
-    }
+    std::vector<uint32_t> pathLayer;
+    ResolveGroundLayers(up, pathLayer);
 
     // Per-chunk params + one alpha-array layer per submesh (chunk).
     const size_t nChunks = up.submeshes.size();
     std::vector<ChunkParams> params(nChunks);
     std::vector<ModelTextureGpu> alphaLayers(nChunks);
+    t.chunks.reserve(nChunks);
     for (size_t c = 0; c < nChunks; ++c)
     {
         const TerrainSubmeshGpu& s = up.submeshes[c];
+        GpuTerrain::Chunk chunk;
+        chunk.indexStart = s.indexStart;
+        chunk.indexCount = s.indexCount;
+        chunk.boundsCenter[0] = s.boundsCenter[0];
+        chunk.boundsCenter[1] = s.boundsCenter[1];
+        chunk.boundsCenter[2] = s.boundsCenter[2];
+        chunk.boundsRadius = std::max(s.boundsRadius, 0.01f);
+        t.chunks.push_back(chunk);
         for (int k = 0; k < 4; ++k)
         {
             int ti = s.layerTex[k];
@@ -1657,9 +1901,19 @@ TerrainHandle ModelPipeline::CreateTerrain(const TerrainUpload& up)
             alphaLayers[c] = up.alphaMaps[s.alphaMap];   // copy; empty -> zero layer in CreateArrayTexture
     }
 
+    // VBO, IBO, and parameter SSBO are independent copies. Batch them into one staging submit so
+    // the main thread does not wait for the queue three times per incoming ADT.
+    const GpuBufferUpload buffers[] = {
+        {up.vertices.size() * sizeof(ModelVertexGpu), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+         up.vertices.data(), &t.vbo, &t.vboAlloc},
+        {up.indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+         up.indices.data(), &t.ibo, &t.iboAlloc},
+        {params.size() * sizeof(ChunkParams), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+         params.data(), &t.paramSsbo, &t.paramAlloc},
+    };
+    if (!CreateGpuBuffersBatched(buffers, sizeof(buffers) / sizeof(buffers[0])))
+        return 0;
     t.alphaArray = CreateArrayTexture(alphaLayers.data(), alphaLayers.size(), 64, 64);
-    CreateGpuBuffer(params.size() * sizeof(ChunkParams), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                    params.data(), t.paramSsbo, t.paramAlloc);
     t.totalIndexCount = (uint32_t)up.indices.size();
 
     // set 1: this tile's alpha array + params SSBO.
@@ -1840,6 +2094,7 @@ VkCommandBuffer ModelPipeline::BeginOffscreenFrame()
     curDynOff_[1] = (uint32_t)(frameIndex_ * sceneBoneStride_);
     curInstOff_ = frameIndex_ * instMatStride_;
     curEffOff_ = frameIndex_ * effectStride_;
+    curTerrainIndirectOff_ = frameIndex_ * terrainIndirectStride_;
     vkResetCommandBuffer(f.cmd, 0);
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -2236,15 +2491,64 @@ TextureId ModelPipeline::RenderWorld(const TerrainHandle* terrains, int terrainC
         if (tit != terrains_.end()) gts.push_back(&tit->second);
     }
 
-    // Size the shared buffers, then acquire this frame (wait fence + select its buffer regions).
-    uint32_t totalEffectVerts = 0;
-    for (int i = 0; i < count; ++i)
-        if (instances[i].effectVerts) totalEffectVerts += (uint32_t)instances[i].effectVertCount;
-    if (totalEffectVerts) EnsureEffectBuffer(totalEffectVerts);
-    uint32_t totalInstMats = 0;
-    for (int g = 0; g < groupCount; ++g) totalInstMats += (uint32_t)groups[g].instanceCount;
-    if (totalInstMats) EnsureInstanceBuffer(totalInstMats);
+    // Cull individual MCNKs, not just their coarse ADT tile. With the old whole-tile draw an
+    // artist looking across a map still transformed every chunk behind the camera: at the default
+    // 9x9 streamed window that can mean millions of needless textured terrain vertices each frame.
+    // A compact indirect list retains one descriptor bind/multi-draw call per tile while issuing
+    // only the chunks whose conservative bounds overlap the current frustum.
+    struct TerrainBatch
+    {
+        GpuTerrain* terrain = nullptr;
+        uint32_t commandOffset = 0;
+        uint32_t commandCount = 0;
+    };
+    glm::mat4 viewMatrix(1.0f), projectionMatrix(1.0f);
+    std::memcpy(&viewMatrix[0][0], view, sizeof(float) * 16);
+    std::memcpy(&projectionMatrix[0][0], proj, sizeof(float) * 16);
+    const Frustum terrainFrustum(projectionMatrix * viewMatrix);
+    std::vector<VkDrawIndexedIndirectCommand>& terrainCommands = terrainCommandScratch_;
+    terrainCommands.clear();
+    size_t terrainCommandReserve = 0;
+    for (GpuTerrain* terrain : gts)
+        terrainCommandReserve += terrain->chunks.size();
+    if (terrainCommands.capacity() < terrainCommandReserve)
+        terrainCommands.reserve(terrainCommandReserve);
+    std::vector<TerrainBatch> terrainBatches;
+    terrainBatches.reserve(gts.size());
+    int terrainCulledChunks = 0;
+    for (GpuTerrain* terrain : gts)
+    {
+        TerrainBatch batch;
+        batch.terrain = terrain;
+        batch.commandOffset = static_cast<uint32_t>(terrainCommands.size());
+        for (const GpuTerrain::Chunk& chunk : terrain->chunks)
+        {
+            if (chunk.indexCount == 0)
+                continue;
+            const glm::vec3 center(chunk.boundsCenter[0], chunk.boundsCenter[1], chunk.boundsCenter[2]);
+            // Keep a generous margin for the live, not-yet-baked terrain sculpt preview: the
+            // vertex shader can temporarily lift/flatten a chunk beyond its uploaded MCVT bounds.
+            if (!SphereInFrustum(terrainFrustum, center, std::max(chunk.boundsRadius, 0.01f), 64.0f))
+            {
+                ++terrainCulledChunks;
+                continue;
+            }
+            VkDrawIndexedIndirectCommand command = {};
+            command.indexCount = chunk.indexCount;
+            command.instanceCount = 1;
+            command.firstIndex = chunk.indexStart;
+            command.vertexOffset = 0;
+            command.firstInstance = 0;
+            terrainCommands.push_back(command);
+        }
+        batch.commandCount = static_cast<uint32_t>(terrainCommands.size()) - batch.commandOffset;
+        if (batch.commandCount > 0)
+            terrainBatches.push_back(batch);
+    }
+    const bool terrainIndirectReady = terrainCommands.empty() ||
+                                      EnsureTerrainIndirectBuffer(static_cast<uint32_t>(terrainCommands.size()));
 
+    // Size the shared buffers, then acquire this frame (wait fence + select its buffer regions).
     VkCommandBuffer cmd = BeginOffscreenFrame();
 
     SceneUbo ubo = {};
@@ -2252,6 +2556,9 @@ TextureId ModelPipeline::RenderWorld(const TerrainHandle* terrains, int terrainC
     std::memcpy(ubo.proj, proj, sizeof(ubo.proj));
     ubo.lighting = worldLighting_;
     std::memcpy(static_cast<char*>(sceneUboMapped_) + curDynOff_[0], &ubo, sizeof(ubo));
+    if (terrainIndirectReady && !terrainCommands.empty() && terrainIndirectMapped_)
+        std::memcpy(static_cast<char*>(terrainIndirectMapped_) + curTerrainIndirectOff_,
+                    terrainCommands.data(), terrainCommands.size() * sizeof(VkDrawIndexedIndirectCommand));
 
     struct RInst {
         GpuModel* m; uint32_t boneBase;
@@ -2342,15 +2649,22 @@ TextureId ModelPipeline::RenderWorld(const TerrainHandle* terrains, int terrainC
                                       sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && ts[1] > ts[0])
                 stats_.gpuMs = (float)((double)(ts[1] - ts[0]) * (double)gpuTimestampPeriod_ * 1e-6);
         }
-        stats_.terrainTiles = (int)gts.size();
+        stats_.terrainTiles = (int)terrainBatches.size();
+        stats_.terrainChunks = (int)terrainCommands.size();
+        stats_.terrainChunksCulled = terrainCulledChunks;
         stats_.instancedGroups = (int)rgroups.size();
         for (const RGroup& rg : rgroups) stats_.instances += rg.instCount;
         stats_.nonInstanced = (int)insts.size();
-        // Draw calls: one per terrain tile + one per group submesh + one per non-instanced submesh +
-        // effects, + the composite. Each submesh draws exactly once across the 3 subpasses.
+        // Draw calls: one indirect multi-draw per terrain tile + one per group submesh + one per
+        // non-instanced submesh + effects, + the composite. Each model submesh draws exactly once
+        // across the 3 subpasses.
         int draws = 1;   // OIT composite fullscreen draw
-        for (GpuTerrain* gt : gts)
-            if (gt->tileSet && gt->totalIndexCount) ++draws;
+        for (const TerrainBatch& batch : terrainBatches)
+        {
+            if (!batch.terrain->tileSet || batch.commandCount == 0)
+                continue;
+            draws += terrainIndirectReady ? 1 : static_cast<int>(batch.commandCount);
+        }
         for (const RGroup& rg : rgroups) draws += (int)rg.m->submeshes.size();
         for (const RInst& r : insts) draws += (int)r.m->submeshes.size() + r.effectDrawCount;
         stats_.drawCalls = draws;
@@ -2512,15 +2826,35 @@ TextureId ModelPipeline::RenderWorld(const TerrainHandle* terrains, int terrainC
                                     &terrainSceneSet_, 1, curDynOff_);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, terrainPipeLayout_, 1, 1,
                                     &groundSet_, 0, nullptr);
-            for (GpuTerrain* gt : gts)
+            for (const TerrainBatch& batch : terrainBatches)
             {
-                if (!gt->tileSet || gt->totalIndexCount == 0) continue;
+                GpuTerrain* terrain = batch.terrain;
+                if (!terrain || !terrain->tileSet || batch.commandCount == 0)
+                    continue;
                 VkDeviceSize toff = 0;
-                vkCmdBindVertexBuffers(cmd, 0, 1, &gt->vbo, &toff);
-                vkCmdBindIndexBuffer(cmd, gt->ibo, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdBindVertexBuffers(cmd, 0, 1, &terrain->vbo, &toff);
+                vkCmdBindIndexBuffer(cmd, terrain->ibo, 0, VK_INDEX_TYPE_UINT32);
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, terrainPipeLayout_, 2, 1,
-                                        &gt->tileSet, 0, nullptr);
-                vkCmdDrawIndexed(cmd, gt->totalIndexCount, 1, 0, 0, 0);   // whole tile, one draw
+                                        &terrain->tileSet, 0, nullptr);
+                if (terrainIndirectReady && terrainIndirectBuf_)
+                {
+                    const VkDeviceSize commandOffset = curTerrainIndirectOff_ +
+                        VkDeviceSize(batch.commandOffset) * sizeof(VkDrawIndexedIndirectCommand);
+                    vkCmdDrawIndexedIndirect(cmd, terrainIndirectBuf_, commandOffset, batch.commandCount,
+                                             sizeof(VkDrawIndexedIndirectCommand));
+                }
+                else
+                {
+                    // Allocation failure is extremely rare, but keep terrain visible rather than
+                    // dropping a map. The normal path remains one multi-draw command per tile.
+                    for (uint32_t i = 0; i < batch.commandCount; ++i)
+                    {
+                        const VkDrawIndexedIndirectCommand& command =
+                            terrainCommands[batch.commandOffset + i];
+                        vkCmdDrawIndexed(cmd, command.indexCount, command.instanceCount,
+                                         command.firstIndex, command.vertexOffset, command.firstInstance);
+                    }
+                }
             }
         }
         drawGroups(false, [](int m) { return m <= 1; });
@@ -2678,6 +3012,11 @@ void ModelPipeline::Shutdown()
     if (oitInputSetLayout_) { vkDestroyDescriptorSetLayout(device_, oitInputSetLayout_, nullptr); oitInputSetLayout_ = VK_NULL_HANDLE; }
     if (effectVbo_) { vmaDestroyBuffer(vma_, effectVbo_, effectVboAlloc_); effectVbo_ = VK_NULL_HANDLE; }
     if (instMatBuf_) { vmaDestroyBuffer(vma_, instMatBuf_, instMatAlloc_); instMatBuf_ = VK_NULL_HANDLE; }
+    if (terrainIndirectBuf_)
+    {
+        vmaDestroyBuffer(vma_, terrainIndirectBuf_, terrainIndirectAlloc_);
+        terrainIndirectBuf_ = VK_NULL_HANDLE;
+    }
     if (gridPipeline_) { vkDestroyPipeline(device_, gridPipeline_, nullptr); gridPipeline_ = VK_NULL_HANDLE; }
     if (gridVbo_) { vmaDestroyBuffer(vma_, gridVbo_, gridVboAlloc_); gridVbo_ = VK_NULL_HANDLE; }
     if (terrainPipeline_) { vkDestroyPipeline(device_, terrainPipeline_, nullptr); terrainPipeline_ = VK_NULL_HANDLE; }

@@ -665,7 +665,15 @@ private:
     std::vector<GameEventInfo> gameEvents_;   // game_event list for the Events dropdown
 
     adt::AdtLoadOptions opt_;
-    int  streamRadius_ = 4;   // tiles kept in each direction (user-chosen "large" default)
+    // Radius 3 keeps an ample 7x7 authoring neighbourhood while avoiding the old default 9x9
+    // CPU/VRAM working set. Artists can still deliberately request up to 5 from the viewport.
+    int  streamRadius_ = 3;
+    // Offscreen World Editor resolution is independent from its ImGui display size. The balanced
+    // default cuts fill-rate/attachment bandwidth substantially on dense maps while preserving the
+    // camera's full viewport aspect and exact picking coordinates.
+    float worldRenderScale_ = 0.85f;
+    int   worldRenderWidth_ = 0;
+    int   worldRenderHeight_ = 0;
     ViewportCamera camera_;
     bool showGrid_ = false;   // a world grid at ±17k isn't useful; off by default
     bool showStats_ = true;   // perf HUD overlay

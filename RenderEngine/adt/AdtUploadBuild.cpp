@@ -3,6 +3,7 @@
 #include "adt/AdtUploadBuild.h"
 
 #include <algorithm>
+#include <limits>
 
 #include <glm/glm.hpp>
 
@@ -87,6 +88,32 @@ TerrainUpload BuildTerrainUpload(ClientData& cd, const AdtTile& tile,
         for (int i = 0; i < 4; ++i) m.layerTex[i] = s.layerTex[i];
         m.layerCount = s.layerCount;
         m.alphaMap = s.alphaMap;
+
+        // Carry a conservative chunk sphere into the renderer. The terrain index ranges are
+        // already contiguous per MCNK, so this one worker-side pass avoids every frame having to
+        // touch vertex data just to cull terrain behind the camera.
+        glm::vec3 lo(std::numeric_limits<float>::max());
+        glm::vec3 hi(-std::numeric_limits<float>::max());
+        const size_t first = std::min<size_t>(m.indexStart, up.indices.size());
+        const size_t end = std::min<size_t>(first + m.indexCount, up.indices.size());
+        for (size_t indexOffset = first; indexOffset < end; ++indexOffset)
+        {
+            const uint32_t vertexIndex = up.indices[indexOffset];
+            if (vertexIndex >= up.vertices.size())
+                continue;
+            const ModelVertexGpu& vertex = up.vertices[vertexIndex];
+            const glm::vec3 position(vertex.pos[0], vertex.pos[1], vertex.pos[2]);
+            lo = glm::min(lo, position);
+            hi = glm::max(hi, position);
+        }
+        if (lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z)
+        {
+            const glm::vec3 center = (lo + hi) * 0.5f;
+            m.boundsCenter[0] = center.x;
+            m.boundsCenter[1] = center.y;
+            m.boundsCenter[2] = center.z;
+            m.boundsRadius = std::max(glm::length(hi - center), 0.01f);
+        }
         up.submeshes.push_back(m);
     }
 

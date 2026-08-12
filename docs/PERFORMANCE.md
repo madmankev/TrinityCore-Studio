@@ -40,5 +40,25 @@ not rebuild the entire spatial index for each new item.
 | Undo latency | <50 ms | <10 ms | command profiler |
 | Brush feedback | <16 ms | <16 ms | tool + upload profiler |
 
-If a target misses, capture the render-plan batch count, draw calls, texture-memory
-use, streamed tile count, and command-history size before changing algorithms.
+## World Editor render controls
+
+The live World Editor now avoids treating every loaded ADT as one always-visible mesh:
+
+- Each MCNK carries a conservative local bounding sphere.
+- The Vulkan world pass frustum-culls MCNK ranges and submits only visible ranges through one
+  `vkCmdDrawIndexedIndirect` multi-draw per terrain tile.
+- Ground textures discovered while a tile streams in are uploaded in one batch, and terrain VBO,
+  IBO, and chunk-parameter buffers share one staging submission. This reduces queue-idle hitches
+  while crossing into new terrain.
+- **Realtime Preview → Viewport performance** exposes a persisted 50–100% render-resolution
+  control. **Balanced** defaults to 85%; the scene is upscaled only for the ImGui image, while
+  camera matrices, picking, and gizmo coordinates remain full viewport precision.
+
+The viewport HUD reports GPU time, CPU `BuildFrame` time, render resolution, visible terrain
+chunks, and culled terrain chunks. Use those numbers before lowering content ranges: if GPU time is
+high and cull count is low, reduce render resolution or stream radius; if CPU build time is high,
+reduce NPC/GameObject caps or inspect active overlay/simulation tools.
+
+If a target misses, capture the render-plan batch count, draw calls, visible/culled terrain chunks,
+texture-memory use, streamed tile count, render-resolution scale, and command-history size before
+changing algorithms.

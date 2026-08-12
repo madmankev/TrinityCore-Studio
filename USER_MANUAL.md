@@ -33,6 +33,22 @@ world database for live data-aware editing.
 6. Add creature spawners and patrol routes; then save an atomic `.wowedit` file
    or intentionally save the live-core/SQL changes from Studio.
 
+### Responsive world viewing
+
+The live World Editor culls individual ADT MCNK terrain chunks before the Vulkan
+world pass, while keeping each tile's texture/alpha state batched. This means a
+camera turn no longer submits all terrain behind the camera just because it is
+loaded for editing. The Stats HUD shows the GPU time plus visible and culled
+terrain chunks.
+
+For dense cities, wide map overviews, or integrated GPUs, open **Realtime Preview
+→ Viewport performance**. **Balanced** renders at 85% of viewport resolution by
+default; **Performance** uses 65%, and **Native** restores 100%. The rendered image
+is scaled only for presentation—selection rays, terrain hits, gizmos, and world
+coordinates stay at the full viewport resolution. Lower the stream Radius, NPC/GO
+caps, or render resolution before disabling content when profiling identifies a
+real bottleneck.
+
 ## 3. Terrain sculpting
 
 ### Raise / Lower
