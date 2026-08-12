@@ -26,8 +26,10 @@ panel + log across the bottom.
 - **Creatures** - `creature_template` and its child tables (addon, movement,
   resistances, spells, equipment, locales) **plus** the systems keyed by the
   creature: **vendor** inventory, **trainer** spells, **loot** tables, and **world
-  spawns** (edited in place). Faction resolves to a name via a FactionTemplate.dbc
-  lookup.
+  spawns** (edited in place). The General tab shows live, display-ID-correct M2 cards for
+  each `modelid1..4`, resolving CreatureDisplayInfo → CreatureModelData with the selected skins,
+  display scale, and character dressing where client data is available. Faction resolves to a name
+  via a FactionTemplate.dbc lookup.
 - **GameObjects** - `gameobject_template` with a **type-aware Data tab**: the 24
   generic `Data0..23` columns are labeled per the selected type (a Door's `Data1` is
   a Lock id; a Chest's `Data1` is a loot id) with id-name pickers where a field

@@ -9,6 +9,10 @@
   shared panel headers, intentional empty states, action hierarchy, and stronger field-table surfaces.
 - World Editor top-level Terrain, Objects, Creatures, Quest, Spells, Tools, and Window menus
   wired to live dock panels, terrain/gizmo tools, real Quest/Spell modules, and shared ADT save logic.
+- Creature General live display cards: each `modelid1..4` now resolves through
+  `CreatureDisplayInfo` → `CreatureModelData`, previews the actual M2/skin/display scale before
+  save, batches all four cards into one renderer scene, and transparently labels direct-model
+  custom-schema fallback. Character display extras drive compact body/hair/armour dressing.
 - World Editor Spell Effect Previewer with `Spell.dbc` field resolution, searchable spell selection,
   target/time/weather controls, play/pause/stop/loop/scrub timeline, procedural in-world cast/projectile/
   impact visualization, manifest copy, persisted preferences, and Script Trigger CastSpell dispatch.

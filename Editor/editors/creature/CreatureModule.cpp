@@ -148,6 +148,16 @@ void CreatureModule::OnDisconnected()
     validationDirty = true;
 }
 
+void CreatureModule::OnClientDataLoaded()
+{
+    displayPreviewer.OnClientDataLoaded();
+}
+
+void CreatureModule::OnShutdown()
+{
+    displayPreviewer.Clear();
+}
+
 void CreatureModule::LoadSettings(const nlohmann::json& node)
 {
     if (node.contains("customIdStart"))
@@ -177,6 +187,7 @@ void CreatureModule::DrawPanels()
         CreatureEditorContext ctx;
         ctx.creature = hasCreature ? &currentCreature : nullptr;
         ctx.lookups = &lookups;
+        ctx.displayPreviewer = &displayPreviewer;
         ctx.changed = false;
 
         CreatureEditorCallbacks ecb;
@@ -793,6 +804,7 @@ void CreatureModule::DrawTabForCapture(int tab)
     CreatureEditorContext ctx;
     ctx.creature = &currentCreature;
     ctx.lookups = svc_->lookups;
+    ctx.displayPreviewer = &displayPreviewer;
     switch (tab)
     {
         case 0: DrawCreatureGeneralTab(ctx); break;
@@ -818,6 +830,7 @@ void CreatureModule::DrawAllTabsForSelftest()
     CreatureEditorContext ctx;
     ctx.creature = &currentCreature;
     ctx.lookups = svc_->lookups;
+    ctx.displayPreviewer = &displayPreviewer;
     DrawCreatureGeneralTab(ctx);
     DrawCreatureStatsTab(ctx);
     DrawCreatureCombatTab(ctx);

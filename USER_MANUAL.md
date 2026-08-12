@@ -157,6 +157,21 @@ Place a creature spawner, choose a template/display, and set count, respawn,
 variance, radius, faction, NPC flags, equipment overrides, time window, and
 condition hook.
 
+### Template display-ID cards
+
+In **Creature Editor → General**, every legacy `modelid1..4` field has a live card
+below the model fields. Enter a `CreatureDisplayInfo.dbc` ID and Studio resolves it
+through `CreatureModelData`, loads the M2, applies that display row's monster skin and
+client display scale, and refreshes the card before you save the template. Character
+NPC display rows also use available `CreatureDisplayInfoExtra` body/hair/armour data
+for the compact preview. A zero ID remains intentionally empty, and a custom database
+that supplies a direct CreatureModelData ID is labelled as a fallback rather than being
+misrepresented as a standard display row.
+
+A full legal WoW 3.3.5 client `Data` folder is required. This is a client-side visual
+check of the data that a server sends; it does not replace server model-selection rules
+or write a display change until you deliberately save the template.
+
 Open **Waypoint Editor**:
 
 1. Ctrl-click to append a waypoint or click an existing sphere to drag it.

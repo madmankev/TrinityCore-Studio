@@ -14,6 +14,7 @@
 #include "editors/creature/CreatureValidator.h"
 #include "schema/Creature.h"
 #include "editors/creature/CreatureBrowserPanel.h"
+#include "editors/creature/CreatureDisplayPreviewer.h"
 #include "editors/creature/CreatureEditorPanel.h"
 #include "ui/ValidationPanel.h"
 
@@ -29,7 +30,11 @@ public:
     const char* Id() const override { return "creature"; }
     const char* DisplayName() const override { return "Creature"; }
     const char* RailGlyph() const override { return "N"; }
-    void Init(EditorServices* services) override { svc_ = services; }
+    void Init(EditorServices* services) override
+    {
+        svc_ = services;
+        displayPreviewer.Init(services);
+    }
 
     std::vector<PanelDesc> Panels() const override;
     void DrawPanels() override;
@@ -45,6 +50,8 @@ public:
     void HandleShortcuts() override;
     void OnConnected() override;
     void OnDisconnected() override;
+    void OnClientDataLoaded() override;
+    void OnShutdown() override;
     std::vector<std::string> ReloadCommands() const override;
     void LoadSettings(const nlohmann::json& node) override;
     void SaveSettings(nlohmann::json& node) const override;
@@ -78,6 +85,7 @@ private:
 
     CreatureRepository repo;
     CreatureBrowserPanel browserPanel;
+    CreatureDisplayPreviewer displayPreviewer;
     CreatureEditorPanel editorPanel;
     ValidationPanel validationPanel;
     std::vector<CreatureListEntry> browserEntries;

@@ -2,6 +2,7 @@
 
 #include "editors/creature/Tabs.h"
 #include "editors/creature/CreatureEditorContext.h"
+#include "editors/creature/CreatureDisplayPreviewer.h"
 #include "ui/Widgets.h"
 
 #include "imgui.h"
@@ -57,6 +58,8 @@ void DrawCreatureGeneralTab(CreatureEditorContext& ctx)
         }
         EndFieldTable();
     }
-    ImGui::TextDisabled("A random non-zero modelid is chosen at spawn.");
+    ImGui::TextDisabled("A random non-zero modelid is chosen at spawn. Each value is a CreatureDisplayInfo.dbc ID, not a direct M2/CreatureModelData ID.");
+    if (ctx.displayPreviewer)
+        ctx.displayPreviewer->Draw(t.modelId.data(), t.scale);
 }
 } // namespace we
