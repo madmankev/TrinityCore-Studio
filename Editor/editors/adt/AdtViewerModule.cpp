@@ -1481,7 +1481,7 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
         scriptPreviewTimeSeconds_ = 0.0f;
         scriptTriggerStatus_.clear();
     }
-    if (!streamer_.OpenMap(dir))
+    if (!streamer_.OpenMap(dir, opt_))
     {
         error_ = "WDT missing for " + dir;
         loadedName_.clear();
@@ -4332,6 +4332,10 @@ void AdtViewerModule::DrawViewportPanel()
     if (ImGui::Checkbox("Doodads", &opt_.doodads)) OpenMapDir(selectedMapDir_, false);
     ImGui::SameLine();
     if (ImGui::Checkbox("WMOs", &opt_.wmos)) OpenMapDir(selectedMapDir_, false);
+    ImGui::SameLine();
+    if (ImGui::Checkbox("WMO props", &opt_.wmoDoodads)) OpenMapDir(selectedMapDir_, false);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Render each placed WMO's embedded MODD M2 props. Props stream, animate, and follow their WMO root; selecting one selects the root.");
     ImGui::SameLine();
     if (ImGui::Checkbox("Liquid", &opt_.liquid)) OpenMapDir(selectedMapDir_, false);
     ImGui::SameLine();
@@ -8793,7 +8797,7 @@ void AdtViewerModule::DrawStatsOverlay(const ImVec2& p0, const ImGuiIO& io)
 {
     const RenderStats& rs = svc_->renderer->renderStats();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(ImVec2(p0.x + 6, p0.y + 6), ImVec2(p0.x + 250, p0.y + 108),
+    dl->AddRectFilled(ImVec2(p0.x + 6, p0.y + 6), ImVec2(p0.x + 250, p0.y + 126),
                       IM_COL32(0, 0, 0, 150), 4.0f);
     ImGui::SetCursorScreenPos(ImVec2(p0.x + 12, p0.y + 10));
     ImGui::BeginGroup();
@@ -8803,6 +8807,7 @@ void AdtViewerModule::DrawStatsOverlay(const ImVec2& p0, const ImGuiIO& io)
     ImGui::Text("groups %d  inst %d  other %d", rs.instancedGroups, rs.instances, rs.nonInstanced);
     ImGui::Text("objects %d  models %d  loaded %d", streamer_.objectCount(), streamer_.modelCount(),
                 streamer_.loadedTiles());
+    ImGui::Text("WMO props %d", streamer_.wmoDoodadCount());
     ImGui::EndGroup();
 }
 } // namespace we

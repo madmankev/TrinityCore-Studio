@@ -25,9 +25,12 @@ public:
     // Change the read-through source at runtime (e.g. after connecting).
     void SetReadSource(IDatabase* readSource);
 
-    // Destination .sql file for Commit() to write. Required before a Commit
-    // that should hit disk; if empty, Commit still returns the buffered text
-    // via PreviewBuffer() but writes nothing to disk (and reports an error).
+    // Destination .sql file for Commit() to write. Setting a path starts a fresh export session:
+    // the first successful Commit replaces any prior file, and later successful Commit calls append
+    // their own START TRANSACTION/COMMIT block in order. This preserves every Save in a Studio
+    // SQL-export session rather than silently keeping only the latest editor action. If empty,
+    // Commit retains the buffered text via PreviewBuffer() but writes nothing to disk (and reports
+    // an error).
     void SetOutputPath(std::string path);
 
     // The buffered, not-yet-flushed SQL (for live preview in the UI).
@@ -49,7 +52,10 @@ public:
 private:
     IDatabase* readSource = nullptr; // not owned
     std::string outputPath;
-    std::string buffer;              // ordered, terminated statements
+    std::string buffer;              // current ordered, terminated transaction block
     bool inTransaction = false;
+    // Reset only by SetOutputPath. Never set until a complete on-disk write succeeds, so a retry
+    // after a failed first write still replaces a stale export instead of appending to it.
+    bool hasWrittenOutput = false;
 };
 } // namespace we

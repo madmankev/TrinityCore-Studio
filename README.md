@@ -33,7 +33,8 @@ panel + log across the bottom.
   a Lock id; a Chest's `Data1` is a loot id) with id-name pickers where a field
   references another table - plus addon, locales, quest items, loot, and spawns.
 - **World Editor** - streams whole ADT maps from client data, renders terrain, doodads,
-  WMOs, NPCs, GameObjects, transports, phases/events/pools, and provides a map overview,
+  WMOs **including their selected embedded MODD M2 props**, NPCs, GameObjects, transports,
+  phases/events/pools, and provides a map overview,
   coordinate bookmarks, a searchable world outliner, precise transforms, rapid spawn brushes,
   formation links, non-destructive **terrain height sculpting**, a WoWEdit-style **Light Editor**
   (sun/ambient/fog plus point and spot lights), an **AI Behavior** panel (patrol/aggro/leash
@@ -55,8 +56,11 @@ turn on **Edit**:
 2. **Move or place content:** click an NPC/GameObject/doodad to select it, then use the
    Move/Rotate/Scale gizmo, **Transform** panel (staged exact coordinates, yaw, copy/paste,
    nudging), or **Snap to ground**. Right-click terrain to add an NPC, GameObject, M2, or WMO;
-   right-click an existing object for its context menu. DB spawns save transactionally on gizmo
-   release; ADT placements are batched into the project's `edited-client` overlay.
+   right-click an existing object for its context menu. **WMO props** controls embedded MODD M2s:
+   they are live animated/tinted child geometry, but clicking one selects its WMO root so a move,
+   delete, undo, or ADT save remains one correct MODF operation rather than an invalid standalone
+   MDDF record. DB spawns save transactionally on gizmo release; ADT placements are batched into
+   the project's `edited-client` overlay.
 3. **Dress a map quickly:** choose an NPC or GameObject template in **Spawn Palette**, arm the
    brush, and right-click terrain repeatedly. The palette retains yaw and has a per-session
    minimum-spacing guard; each placed spawn remains an ordinary undoable database instance. Switch
@@ -233,8 +237,10 @@ builds it. Output: `bin\Debug\TrinityCoreStudio.exe`. You can also open
 In the app: open the **Connection** panel, enter your world DB host/user/password/db,
 pick **Live** or **SQL Export** mode, and Connect. Choose an editor from the rail, use
 the **Browser** to find a record, edit it in the tabbed editor, and **Save** (live) or
-export to `.sql`. On first run you can point it at your client `Data` folder for icons,
-maps, and names.
+export to `.sql`. An SQL Export connection starts a fresh review script on its first successful
+save and appends each later save as its own `START TRANSACTION`/`COMMIT` block, so one session
+cannot silently overwrite an earlier edit. On first run you can point it at your client `Data`
+folder for icons, maps, and names.
 
 ## Notes / status
 

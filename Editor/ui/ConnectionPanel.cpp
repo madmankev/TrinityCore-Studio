@@ -150,6 +150,7 @@ void ConnectionPanel::DrawBody(ConnectionStore& store, bool connected, const std
     {
         ImGui::SetNextItemWidth(360.0f);
         InputTextString("Output .sql", exportPath);
+        ImGui::TextDisabled("First successful save starts a fresh script; later saves append complete transaction blocks.");
     }
 
     ImGui::Separator();

@@ -4,7 +4,9 @@
 // IO + parse + BLP decode (the expensive part), producing fully CPU-decoded uploads; the main
 // thread only creates GPU resources (budgeted per frame) and renders. Objects that span tiles are
 // deduped by their MDDF/MODF `uniqueId` and refcounted by the tiles that reference them, so a large
-// WMO loads and draws exactly once. WMO-only maps (dungeons/raids) load a single global WMO instead.
+// WMO loads and draws exactly once. Its MODD M2 props are represented as transient children of that
+// root: they stream, animate, tint, cull, and follow root transforms without becoming incorrect
+// standalone ADT doodad records. WMO-only maps (dungeons/raids) load a single global WMO instead.
 //
 // Threading: the renderer is single-threaded — only the main thread calls Create*/Destroy*/Render.
 // Workers touch only ClientData (mutex-guarded reads), the pure loaders, and the request/result
@@ -46,8 +48,10 @@ public:
     void Shutdown();   // stop workers + free all GPU resources
 
     // Open a map (parse its WDT). Terrain maps stream tiles; WMO-only maps load a global WMO.
-    // Bumps the generation and clears prior state. Returns false if the WDT is missing.
-    bool OpenMap(const std::string& mapDir);
+    // Bumps the generation and clears prior state. `opt.wmoDoodads` is captured here because a
+    // WMO-only map has no later tile request from which to obtain render options.
+    // Returns false if the WDT is missing.
+    bool OpenMap(const std::string& mapDir, const adt::AdtLoadOptions& opt = {});
     const adt::AdtWorldInfo& world() const { return world_; }
     bool wmoOnly() const { return world_.wmoOnly; }
     glm::vec3 origin() const { return origin_; }
@@ -68,6 +72,9 @@ public:
     int pendingTiles() const { return (int)inFlight_.size(); }
     int objectCount() const { return (int)objects_.size(); }
     int modelCount() const { return (int)models_.size(); }
+    // Internal M2 props resolved from selected WMO MODD sets. These count as scene objects for
+    // streaming/culling only; artists select the owning WMO root, never a synthetic child UID.
+    int wmoDoodadCount() const { return embeddedWmoDoodadCount_; }
 
     // --- object selection / manipulation (ADT viewer) ---
     // Ray-pick the nearest ADT doodad/WMO (ray in the streamer-local frame: world - origin()).
@@ -143,6 +150,18 @@ private:
         glm::mat4  transform{1.0f};
         glm::vec3  origin{0.0f};
     };
+    // A MODD record resolved by the worker. The transform deliberately stays WMO-local until
+    // consumption: if the root was moved in this Studio session while another spanning tile was
+    // loading, composing at consumption time keeps the new child aligned with the edited root.
+    struct EmbeddedDoodadRef
+    {
+        uint64_t  parentUid = 0;
+        uint32_t  instanceIndex = 0;
+        std::string path;
+        glm::mat4  localTransform{1.0f};
+        glm::vec3  localOrigin{0.0f};
+        glm::vec4  tint{1.0f};
+    };
     struct TilePayload
     {
         uint32_t key = 0;
@@ -152,6 +171,7 @@ private:
         ModelUpload   liquid;
         std::vector<adt::AdtSubmesh> liquidSubmeshes;   // frame-anim info, parallel to liquid submeshes
         std::vector<PlacementRef>    placements;
+        std::vector<EmbeddedDoodadRef> embeddedDoodads; // WMO-local MODD M2s, keyed by parent MODF UID
         std::vector<ModelPayload>    models;            // unique new models referenced by this tile
     };
     struct Request { uint32_t key; uint64_t generation; glm::vec3 origin; adt::AdtLoadOptions opt; };
@@ -182,6 +202,16 @@ private:
         float     cullRadius = 1.0f;
         std::unique_ptr<m2::M2EffectSystem> effects;
         std::vector<glm::mat4> palette;
+        // Non-white MODD colors need a per-instance material modulation and therefore take the
+        // scene path instead of the shared hardware-instanced path. White is the fast default.
+        glm::vec4 instanceTint{1.0f};
+        std::vector<SubmeshAnim> tintedSubAnims;
+        // Embedded WMO props stay tied to their root WMO. They cannot be independently selected,
+        // transformed, deleted, or persisted as MDDF rows.
+        bool embeddedWmoDoodad = false;
+        uint64_t parentUid = 0;
+        glm::mat4 localToParent{1.0f};
+        std::vector<uint64_t> embeddedChildren;
         std::unordered_set<uint32_t> refTiles;
     };
     struct LoadedTile
@@ -207,6 +237,13 @@ private:
     void ClearAll();                     // main-thread teardown of all GPU + registries
     void LoadGlobalWmo();                // WMO-only maps
     void LoadWdlTiles();                 // build the low-detail distant-terrain meshes (map open)
+    // Main-thread fall-back used for a WMO prop that was resolved correctly but whose worker model
+    // payload lost a race/failed to upload. Normal streamed props arrive through `models` first.
+    bool EnsureM2ModelLoaded(const std::string& path, ModelEntry*& out);
+    void UpdateObjectBounds(WorldObject& object);
+    void UpdateEmbeddedChildren(WorldObject& parent);
+    bool AttachEmbeddedDoodad(const EmbeddedDoodadRef& ref, uint32_t tileKey, LoadedTile* ownerTile);
+    void ReleaseObject(uint64_t uid, bool detachFromLoadedTiles);
 
     static uint32_t Key(int x, int y) { return (uint32_t)(y * 64 + x); }
     static int KeyX(uint32_t k) { return (int)(k % 64); }
@@ -226,6 +263,8 @@ private:
 
     adt::AdtWorldInfo world_;
     std::string mapDir_;
+    // Captured at OpenMap for global-WMO maps; terrain maps carry the same setting in each request.
+    bool includeWmoDoodads_ = true;
     glm::vec3 origin_{0.0f};
     glm::vec3 startPos_{0.0f};
     float     startRadius_ = 400.0f;
@@ -256,6 +295,7 @@ private:
     bool showWdl_ = true;
     std::unordered_map<std::string, ModelEntry> models_;
     std::unordered_map<uint64_t, WorldObject>   objects_;
+    int embeddedWmoDoodadCount_ = 0;
     float liquidTime_ = 0.0f;
     float animTime_ = 0.0f;
     float minScreenFrac_ = 0.0015f;   // ~0.5px at 700px; cull only the genuinely-invisible doodad tail

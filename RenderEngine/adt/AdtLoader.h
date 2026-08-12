@@ -22,9 +22,12 @@ using LiquidTypeTable = std::unordered_map<uint32_t, DbcStore::LiquidTypeInfo>;
 
 struct AdtLoadOptions
 {
-    bool doodads = true;   // resolve MDDF (M2) placements
-    bool wmos    = true;   // resolve MODF (WMO) placements
-    bool liquid  = true;   // build MH2O / MCLQ liquid surfaces
+    bool doodads = true;      // resolve MDDF (M2) placements
+    bool wmos = true;         // resolve MODF (WMO) placements
+    // Resolve MODD M2 props inside each placed/global WMO as live child instances. They remain
+    // children of their MODF root (not editable ADT MDDF records), so moving a WMO moves its props.
+    bool wmoDoodads = true;
+    bool liquid = true;       // build MH2O / MCLQ liquid surfaces
 };
 
 // Parse `adtPath` (e.g. "World\\Maps\\Azeroth\\Azeroth_31_48.adt") into `out`. `liquidTypes`

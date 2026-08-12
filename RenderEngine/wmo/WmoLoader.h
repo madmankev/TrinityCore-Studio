@@ -33,5 +33,12 @@ struct WmoLoadOptions
 // `error`) on malformed/missing input.
 bool Load(ClientData& cd, const std::string& rootPath, WmoModel& out, const WmoLoadOptions& opt = {},
           const LiquidTypeTable* liquidTypes = nullptr, std::string* error = nullptr);
+
+// Resolve only the root file's MODS/MODN/MODD data for one selected doodad set. This deliberately
+// does not parse any group geometry, textures, or liquid; streamed maps call it for every placed
+// MODF while the WMO shell loader handles geometry once per path. Returns true with an empty `out`
+// when a valid WMO simply has no doodads.
+bool LoadDoodadInstances(ClientData& cd, const std::string& rootPath, int doodadSet,
+                         std::vector<WmoDoodadInstance>& out, std::string* error = nullptr);
 } // namespace wmo
 } // namespace we

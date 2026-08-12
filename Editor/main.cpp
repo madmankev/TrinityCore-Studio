@@ -178,23 +178,20 @@ int EmitAchSql(const std::string& path)
 
     std::vector<we::AchievementCriteriaData> critData = {{1u, 5u, 0u, "example_script"}};
 
-    // Each Save is its own transaction; SqlExportDatabase::Commit truncates the file, so
-    // emit each to a separate file (matches the app: one save = one export write).
+    // Each Save is its own transaction. One export session keeps both blocks in chronological
+    // order, matching a user who saves multiple editor records before reviewing one script.
     we::AchievementRepository repo;
-    we::SqlExportDatabase rdb;
-    rdb.SetOutputPath(path);
-    we::DbError e = repo.SaveReward(rdb, 12345, reward);
-    const std::string critPath = path + ".criteria.sql";
-    we::SqlExportDatabase cdb;
-    cdb.SetOutputPath(critPath);
+    we::SqlExportDatabase db;
+    db.SetOutputPath(path);
+    we::DbError e = repo.SaveReward(db, 12345, reward);
     if (e.ok)
-        e = repo.SaveCriteriaData(cdb, 67890, critData);
+        e = repo.SaveCriteriaData(db, 67890, critData);
     if (!e.ok)
     {
         std::fprintf(stderr, "emit-ach-sql FAILED: %s\n", e.message.c_str());
         return 1;
     }
-    std::printf("EMIT ACH SQL OK -> %s and %s\n", path.c_str(), critPath.c_str());
+    std::printf("EMIT ACH SQL OK -> %s\n", path.c_str());
     return 0;
 }
 // Verify the GENERIC DbTableRepository::Save through SqlExportDatabase (no live DB): builds a

@@ -1132,7 +1132,8 @@ void App::Connect(const ConnectionConfig& config, WriteMode writeMode, const std
         exporter->SetReadSource(live.get());
         exporter->SetOutputPath(exportPath);
         activeDb = exporter.get();
-        LogInfo("Connected (SQL export mode -> " + exportPath + ")");
+        LogInfo("Connected (SQL export mode -> " + exportPath +
+                "; first save starts a fresh script, later saves append transactions)");
     }
     else
     {

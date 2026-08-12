@@ -516,6 +516,55 @@ void ResolveDoodadInstances(const std::vector<uint8_t>& modn, const std::vector<
 }
 } // namespace
 
+
+bool LoadDoodadInstances(ClientData& cd, const std::string& rootPath, int doodadSet,
+                         std::vector<WmoDoodadInstance>& out, std::string* error)
+{
+    out.clear();
+    const std::vector<uint8_t> rootBytes = cd.ReadFile(rootPath);
+    if (rootBytes.empty())
+        return Fail(error, "wmo root file missing or empty");
+
+    ByteReader reader(rootBytes);
+    WmoHeader header{};
+    bool haveHeader = false;
+    std::vector<uint8_t> modn;
+    std::vector<WmoDoodadSet> doodadSets;
+    std::vector<WmoDoodadDef> doodadDefs;
+    ChunkIter it(reader);
+    Chunk chunk;
+    while (it.Next(chunk))
+    {
+        if (chunk.Is("MOHD"))      haveHeader = reader.Get(chunk.offset, header);
+        else if (chunk.Is("MODS")) reader.GetArrayAt<WmoDoodadSet>(chunk.offset,
+                                                                       chunk.size / sizeof(WmoDoodadSet), doodadSets);
+        else if (chunk.Is("MODN")) reader.GetArrayAt<uint8_t>(chunk.offset, chunk.size, modn);
+        else if (chunk.Is("MODD")) reader.GetArrayAt<WmoDoodadDef>(chunk.offset,
+                                                                       chunk.size / sizeof(WmoDoodadDef), doodadDefs);
+    }
+    if (!haveHeader)
+        return Fail(error, "wmo root missing MOHD");
+
+    std::vector<WmoDoodadSetInfo> setInfo;
+    setInfo.reserve(doodadSets.size());
+    for (const WmoDoodadSet& set : doodadSets)
+    {
+        WmoDoodadSetInfo info;
+        info.name.assign(set.name, strnlen(set.name, sizeof(set.name)));
+        info.first = set.firstInstanceIndex;
+        info.count = set.numDoodads;
+        setInfo.push_back(std::move(info));
+    }
+
+    WmoModel resolved;
+    WmoLoadOptions opt;
+    opt.doodads = true;
+    opt.doodadSet = doodadSet;
+    ResolveDoodadInstances(modn, doodadDefs, setInfo, opt, resolved);
+    out = std::move(resolved.doodadInstances);
+    return true;
+}
+
 bool Load(ClientData& cd, const std::string& rootPath, WmoModel& out, const WmoLoadOptions& opt,
           const LiquidTypeTable* liquidTypes, std::string* error)
 {

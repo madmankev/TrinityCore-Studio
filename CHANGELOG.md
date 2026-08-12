@@ -15,6 +15,11 @@
 - Non-destructive World Validation panel with selectable findings and Markdown report export for
   project/client readiness, staged ADT edits, spawn transforms/displays/overlap, routes, formations,
   triggers, and authored lights.
+- Streamed placed/global WMO interior props: selected `MODS`/`MODD` M2 instances now load once per
+  path, inherit their parent `MODF` transform, retain per-instance tint, animate/cull/effect-render,
+  select through the WMO root, and never leak into ADT save output as invalid standalone doodads.
+  Root-only MODD resolution avoids reparsing WMO group geometry per placement and has a Vulkan-free
+  transform/identity regression test.
 - Live World Editor Ramp / Stairs terrain composer: two-click terrain endpoints, width/slope/stair
   controls, contiguous staged Flatten strokes, real-time terrain preview, one-step undo/redo, and
   authoritative MCVT/MCNR overlay save/reload.
@@ -32,6 +37,10 @@
 - Schema-aware SQL conversion import in DB Editor: live target introspection, table/field alias mapping,
   TrinityCore/AzerothCore spawn-layout conversion, legacy creature model row conversion, reviewable
   UPSERT/UPDATE plans, opt-in DELETE handling, transactional Apply, and SQL Export support.
+- SQL Export session safety: the first successful save starts a clean script, later saves append
+  complete ordered transaction blocks through a temporary-file replace, and a failed write leaves
+  the prior review file intact. Regression coverage verifies multi-save ordering, rollback, and
+  deliberate session reset behavior.
 - Portable `WowEdit/` C++17 architecture with MVC-facing panel controllers,
   complete menu command model, `ICommand`/macro history, and EventBus.
 - Heightmap, texture-splat, water, terrain chunk LOD, terrain tools, erosion,

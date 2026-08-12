@@ -121,6 +121,20 @@ axis, plane, screen-space, uniform/non-uniform scale, grid snap (0.1–10m), and
 angle snap (1–90°). Gizmo input is captured before camera input; left-dragging an
 object handle must not orbit the viewport camera.
 
+### Placed WMO interiors
+
+Enable **WMO props** in the live World Editor to resolve the selected `MODS`/`MODN`/
+`MODD` set for every placed WMO. Studio streams each embedded M2 once by path,
+composes its WMO-local transform beneath the owning `MODF`, preserves the authored
+instance tint, and keeps animation/effects/culling live. This is renderer-side
+client-data composition, not a new server database record.
+
+An embedded chair, torch, or fixture is deliberately not independently editable:
+clicking it selects the parent WMO, and moving, deleting, undoing, or saving acts on
+that one real WMO placement. This prevents corrupting an ADT by exporting a WMO-local
+prop as an unrelated `MDDF`. Toggle **WMO props** off to inspect shell geometry or
+reduce scene density; the toggle reloads the streamed map safely.
+
 ## 6. Creatures and patrols
 
 Place a creature spawner, choose a template/display, and set count, respawn,

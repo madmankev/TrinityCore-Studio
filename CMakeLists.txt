@@ -84,6 +84,21 @@ if(BUILD_TESTING AND WOWEDIT_BUILD_TESTS)
     endif()
     add_test(NAME SqlImportConverterTests COMMAND SqlImportConverterTests)
 
+    # Export sessions are part of the server-facing safety surface: successive repository saves
+    # must survive in one reviewable SQL script rather than truncating each other.
+    add_executable(SqlExportDatabaseTests
+        tests/unit_tests/sql_export_database_tests.cpp
+        DataEngine/db/SqlExportDatabase.cpp)
+    target_include_directories(SqlExportDatabaseTests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/DataEngine")
+    target_compile_features(SqlExportDatabaseTests PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(SqlExportDatabaseTests PRIVATE /W4 /WX /permissive-)
+    else()
+        target_compile_options(SqlExportDatabaseTests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME SqlExportDatabaseTests COMMAND SqlExportDatabaseTests)
+
     add_executable(AdtVertexColorTests
         tests/unit_tests/adt_vertex_color_tests.cpp
         RenderEngine/adt/AdtWriter.cpp)
@@ -98,6 +113,20 @@ if(BUILD_TESTING AND WOWEDIT_BUILD_TESTS)
         target_compile_options(AdtVertexColorTests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
     add_test(NAME AdtVertexColorTests COMMAND AdtVertexColorTests)
+
+    # Pure transform/identity coverage for streamed WMO-internal M2 props.  This intentionally
+    # stays Vulkan-free so it runs in the same lightweight test environments as the ADT writer.
+    add_executable(WmoDoodadPlacementTests tests/unit_tests/wmo_doodad_placement_tests.cpp)
+    target_include_directories(WmoDoodadPlacementTests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/RenderEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/glm")
+    target_compile_features(WmoDoodadPlacementTests PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(WmoDoodadPlacementTests PRIVATE /W4 /WX /permissive-)
+    else()
+        target_compile_options(WmoDoodadPlacementTests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME WmoDoodadPlacementTests COMMAND WmoDoodadPlacementTests)
 endif()
 
 if(WOWEDIT_BUILD_BENCHMARKS)
