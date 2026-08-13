@@ -3,8 +3,9 @@
 // CreatureDisplayPreviewer — the live model-card strip embedded in Creature → General.
 // `creature_template.modelid1..4` are CreatureDisplayInfo.dbc IDs, not direct M2 IDs. This
 // component resolves each display through CreatureModelData, applies its exact runtime skin and
-// display scale, uploads/cache-shares the resulting M2, and renders all four slots in ONE scene
-// pass so the editor does not perform four offscreen Vulkan renders every UI frame.
+// display scale, uploads/cache-shares the M2, then snapshots a card texture per display. Snapshot
+// cards deliberately use the known-good RenderModel path, so four UI cards never fight over the
+// renderer's single live offscreen target in the same frame.
 
 #include <array>
 #include <cstdint>
@@ -53,6 +54,7 @@ private:
         float displayScale = 1.0f;
         glm::vec3 boundsCenter{0.0f};
         float boundsRadius = 1.0f;
+        TextureId thumbnail = 0;  // independent UI texture; safe to show alongside other cards
     };
 
     struct SlotState
@@ -60,12 +62,11 @@ private:
         uint32_t displayId = 0;
         PreviewAsset* asset = nullptr;
         std::string status;
-        std::vector<glm::mat4> palette;
-        std::vector<SubmeshAnim> submeshAnims;
     };
 
     void EnsureDisplayMaps();
     PreviewAsset* EnsureAsset(uint32_t displayId);
+    bool EnsureThumbnail(PreviewAsset& asset);
     void DestroyAsset(PreviewAsset& asset);
     void DressCharacterNpc(const std::string& modelPath, const DbcStore::CreatureDisplayExtra& extra,
                            m2::M2Model& model, BlpImage& bodyOut, int& bodySlotOut,
@@ -82,7 +83,5 @@ private:
     std::unordered_map<uint32_t, std::unique_ptr<PreviewAsset>> assets_;
     std::unordered_map<uint32_t, std::string> failedDisplays_;
     std::array<SlotState, 4> slots_;
-    TextureId compositeTexture_ = 0;
-    float previewTimeMs_ = 0.0f;
 };
 } // namespace we

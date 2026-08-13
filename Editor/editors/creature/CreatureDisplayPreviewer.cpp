@@ -19,6 +19,7 @@ namespace
 {
 constexpr uint16_t kAnimStand = 0;
 constexpr int kAssetsPerFrame = 1;  // avoid a hitch if a template opens with four fresh display IDs
+constexpr int kThumbnailSize = 224;
 
 const char* Basename(const std::string& path)
 {
@@ -34,6 +35,10 @@ float SafeScale(float value)
 
 void CreatureDisplayPreviewer::Clear()
 {
+    // UI thumbnail descriptors may have been sampled by an in-flight swapchain frame. Retire all
+    // of them together behind one explicit wait instead of destroying a card texture mid-frame.
+    if (services_ && services_->renderer && !assets_.empty())
+        services_->renderer->WaitIdle();
     for (auto& pair : assets_)
         if (pair.second)
             DestroyAsset(*pair.second);
@@ -44,16 +49,14 @@ void CreatureDisplayPreviewer::Clear()
     modelPaths_.clear();
     dresser_.reset();
     displayMapsLoaded_ = false;
-    compositeTexture_ = 0;
-    previewTimeMs_ = 0.0f;
     for (SlotState& slot : slots_)
         slot = SlotState{};
 }
 
 void CreatureDisplayPreviewer::OnClientDataLoaded()
 {
-    // The renderer and old ClientData source are both still live at this lifecycle point. Do not
-    // let a cached GPU upload continue to point at skins from the previous client install.
+    // The renderer and previous ClientData source are both still live at this lifecycle point. Do
+    // not let a cached model/thumbnail continue to point at skins from another client install.
     Clear();
 }
 
@@ -102,8 +105,8 @@ void CreatureDisplayPreviewer::DressCharacterNpc(const std::string& modelPath,
     std::vector<EquippedItem> equipped;
     for (int i = 0; i < 11; ++i)
     {
-        // Head/shoulder attachment models are intentionally omitted from the compact card preview;
-        // body-composite slots still show the display's race, skin, hair, armour and geosets.
+        // Head/shoulder attachment models are omitted from a compact thumbnail, while body-composite
+        // slots still show the display's race, skin, hair, armour and geosets.
         if (!extra.npcItemDisplay[i] || EquipSlotAttachment(kNpcSlots[i]) != 0)
             continue;
         DbcStore::ItemDisplay item;
@@ -187,7 +190,7 @@ CreatureDisplayPreviewer::PreviewAsset* CreatureDisplayPreviewer::EnsureAsset(ui
         failedDisplays_[displayId] = "model has no drawable geometry";
         return nullptr;
     }
-    // Scene previews fold a transform into the bone palette. Static/custom M2s often carry no
+    // Thumbnail transforms are folded into the bone palette. Static/custom M2s often carry no
     // weights, so synthesize the same root-bone fallback used by the World Editor NPC renderer.
     if (upload.boneCount == 0)
         upload.boneCount = 1;
@@ -238,10 +241,76 @@ CreatureDisplayPreviewer::PreviewAsset* CreatureDisplayPreviewer::EnsureAsset(ui
     return result;
 }
 
+bool CreatureDisplayPreviewer::EnsureThumbnail(PreviewAsset& asset)
+{
+    if (!services_ || !services_->renderer || !asset.handle)
+        return false;
+    // A card is fitted to its own camera, so it need not be torn down whenever the template scale
+    // text changes. The display row's client scale still participates in the rendered pose/camera.
+    if (asset.thumbnail)
+        return true;
+    const float visualScale = asset.displayScale;
+
+    const glm::vec3 center = asset.boundsCenter * visualScale;
+    const float radius = std::max(asset.boundsRadius * visualScale, 0.05f);
+    const glm::vec3 eye = center + glm::normalize(glm::vec3(-1.0f, -1.35f, 0.72f)) * (radius * 2.9f);
+    const glm::mat4 view = glm::lookAt(eye, center, glm::vec3(0.0f, 0.0f, 1.0f));
+    glm::mat4 projection = glm::perspective(glm::radians(42.0f), 1.0f,
+                                             std::max(radius * 0.015f, 0.01f), radius * 12.0f);
+    projection[1][1] *= -1.0f;
+
+    std::vector<glm::mat4> palette;
+    asset.animator.Evaluate(asset.standSequence, 0.0f, view, palette);
+    if (palette.empty())
+        palette.assign(1, glm::mat4(1.0f));
+    const glm::mat4 scaleMatrix = glm::scale(glm::mat4(1.0f), glm::vec3(visualScale));
+    for (glm::mat4& bone : palette)
+        bone = scaleMatrix * bone;
+
+    std::vector<SubmeshAnim> animations(asset.model->batches.size());
+    for (size_t i = 0; i < asset.model->batches.size(); ++i)
+    {
+        const m2::RenderBatch& batch = asset.model->batches[i];
+        const glm::mat4 textureMatrix = asset.animator.TextureMatrix(batch.textureTransformIndex,
+                                                                       asset.standSequence, 0.0f);
+        std::memcpy(animations[i].texMatrix, &textureMatrix[0][0], sizeof(animations[i].texMatrix));
+        const glm::vec4 color = asset.animator.BatchColor(batch.colorIndex, batch.textureWeightIndex,
+                                                            asset.standSequence, 0.0f);
+        animations[i].color[0] = color.r;
+        animations[i].color[1] = color.g;
+        animations[i].color[2] = color.b;
+        animations[i].color[3] = color.a;
+    }
+
+    const float gridCenter[3] = {0, 0, 0};
+    services_->renderer->SetGrid(false, gridCenter, 0.0f, 1.0f);
+    const TextureId target = services_->renderer->RenderModel(
+        asset.handle, &view[0][0], &projection[0][0],
+        palette.empty() ? nullptr : reinterpret_cast<const float*>(palette.data()),
+        static_cast<int>(palette.size()), animations.empty() ? nullptr : animations.data(),
+        static_cast<int>(animations.size()), nullptr, kThumbnailSize, kThumbnailSize);
+    if (!target)
+        return false;
+
+    std::vector<uint8_t> rgba;
+    int width = 0, height = 0;
+    if (!services_->renderer->CaptureModelTarget(rgba, width, height) || rgba.empty() || width <= 0 || height <= 0)
+        return false;
+    asset.thumbnail = services_->renderer->CreateTexture(rgba.data(), width, height);
+    if (!asset.thumbnail)
+        return false;
+    return true;
+}
+
 void CreatureDisplayPreviewer::DestroyAsset(PreviewAsset& asset)
 {
-    if (asset.handle && services_ && services_->renderer)
+    if (!services_ || !services_->renderer)
+        return;
+    if (asset.thumbnail)
+        services_->renderer->DestroyTexture(asset.thumbnail);
+    if (asset.handle)
         services_->renderer->DestroyModel(asset.handle);
+    asset.thumbnail = 0;
     asset.handle = 0;
 }
 
@@ -258,12 +327,9 @@ void CreatureDisplayPreviewer::DrawSlotCard(int slotIndex, float width, float he
         return;
     }
 
-    if (compositeTexture_ && slot.asset)
+    if (slot.asset && slot.asset->thumbnail)
     {
-        const float u0 = static_cast<float>(slotIndex) * 0.25f;
-        const float u1 = u0 + 0.25f;
-        ImGui::Image(static_cast<ImTextureID>(compositeTexture_), ImVec2(width, height),
-                     ImVec2(u0, 0.0f), ImVec2(u1, 1.0f));
+        ImGui::Image(static_cast<ImTextureID>(slot.asset->thumbnail), ImVec2(width, height));
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("CreatureDisplayInfo %u\nCreatureModelData %u\n%s",
                               slot.asset->displayId, slot.asset->modelId,
@@ -277,7 +343,7 @@ void CreatureDisplayPreviewer::DrawSlotCard(int slotIndex, float width, float he
     else
     {
         ImGui::BeginDisabled();
-        ImGui::Button("Preview unavailable", ImVec2(width, height));
+        ImGui::Button("Preview loading", ImVec2(width, height));
         ImGui::EndDisabled();
         ImGui::TextWrapped("Display %u: %s", slot.displayId,
                            slot.status.empty() ? "waiting for client model" : slot.status.c_str());
@@ -292,7 +358,7 @@ void CreatureDisplayPreviewer::Draw(const uint32_t displayIds[4], float template
     EnsureDisplayMaps();
 
     ImGui::SeparatorText("Live display-ID previews");
-    ImGui::TextDisabled("Each card resolves the current CreatureDisplayInfo ID through CreatureModelData and applies that display's skins and scale. Editing a modelid updates its card without a save/reload.");
+    ImGui::TextDisabled("Each card resolves the current CreatureDisplayInfo ID through CreatureModelData and applies that display's skins and scale. Editing a modelid refreshes its card before save.");
     if (!services_ || !services_->renderer || !services_->clientData || !services_->clientData->IsOpen())
     {
         ImGui::TextDisabled("Load a full WoW 3.3.5 client Data folder to preview CreatureDisplayInfo models.");
@@ -308,19 +374,9 @@ void CreatureDisplayPreviewer::Draw(const uint32_t displayIds[4], float template
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float cardSide = std::clamp((available - spacing * 3.0f) * 0.25f,
                                       78.0f * dpiScale, 170.0f * dpiScale);
-    const int renderHeight = std::max(128, static_cast<int>(std::lround(cardSide * 1.20f)));
-    const int renderWidth = renderHeight * 4;
 
-    previewTimeMs_ += std::clamp(ImGui::GetIO().DeltaTime * 1000.0f, 0.0f, 100.0f);
-    constexpr float kCellSpacing = 4.0f;
-    const glm::vec3 eye(0.0f, -17.0f, 5.2f);
-    const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-    glm::mat4 projection = glm::perspective(glm::radians(34.0f), 4.0f, 0.1f, 80.0f);
-    projection[1][1] *= -1.0f;  // Vulkan clip-space presentation convention
-
-    std::vector<SceneInstanceGpu> scene;
-    scene.reserve(4);
-    int loadBudget = kAssetsPerFrame;
+    int assetBudget = kAssetsPerFrame;
+    int thumbnailBudget = 1;
     const float safeTemplateScale = SafeScale(templateScale);
     for (int i = 0; i < 4; ++i)
     {
@@ -337,9 +393,9 @@ void CreatureDisplayPreviewer::Draw(const uint32_t displayIds[4], float template
         const auto cached = assets_.find(slot.displayId);
         if (cached != assets_.end())
             asset = cached->second.get();
-        else if (loadBudget > 0)
+        else if (assetBudget > 0)
         {
-            --loadBudget;
+            --assetBudget;
             asset = EnsureAsset(slot.displayId);
         }
         if (!asset)
@@ -349,64 +405,22 @@ void CreatureDisplayPreviewer::Draw(const uint32_t displayIds[4], float template
             continue;
         }
         slot.asset = asset;
-        const float duration = static_cast<float>(asset->animator.Duration(asset->standSequence));
-        const float animationTime = duration > 0.0f ? std::fmod(previewTimeMs_, duration) : 0.0f;
-        asset->animator.Evaluate(asset->standSequence, animationTime, view, slot.palette);
-        if (slot.palette.empty())
-            slot.palette.assign(1, glm::mat4(1.0f));
-
-        // Keep every card legible while retaining a bounded visual response to CreatureDisplayInfo
-        // and creature_template scales. The exact combined scale is printed below the card.
-        const float combinedScale = safeTemplateScale * asset->displayScale;
-        const float radiusAtScale = asset->boundsRadius * combinedScale;
-        const float fit = std::clamp(1.35f / std::max(radiusAtScale, 0.05f), 0.35f, 2.25f);
-        const float presentationScale = combinedScale * fit;
-        glm::mat4 transform(1.0f);
-        transform = glm::translate(transform, glm::vec3((static_cast<float>(i) - 1.5f) * kCellSpacing, 0.0f, 0.0f));
-        transform = glm::scale(transform, glm::vec3(presentationScale));
-        transform = glm::translate(transform, -asset->boundsCenter);
-        for (glm::mat4& bone : slot.palette)
-            bone = transform * bone;
-
-        slot.submeshAnims.resize(asset->model->batches.size());
-        for (size_t batch = 0; batch < asset->model->batches.size(); ++batch)
+        if (!asset->thumbnail)
         {
-            const m2::RenderBatch& renderBatch = asset->model->batches[batch];
-            const glm::mat4 textureMatrix = asset->animator.TextureMatrix(renderBatch.textureTransformIndex,
-                                                                            asset->standSequence, animationTime);
-            std::memcpy(slot.submeshAnims[batch].texMatrix, &textureMatrix[0][0],
-                        sizeof(slot.submeshAnims[batch].texMatrix));
-            const glm::vec4 color = asset->animator.BatchColor(renderBatch.colorIndex,
-                                                                 renderBatch.textureWeightIndex,
-                                                                 asset->standSequence, animationTime);
-            slot.submeshAnims[batch].color[0] = color.r;
-            slot.submeshAnims[batch].color[1] = color.g;
-            slot.submeshAnims[batch].color[2] = color.b;
-            slot.submeshAnims[batch].color[3] = color.a;
+            if (thumbnailBudget > 0)
+            {
+                --thumbnailBudget;
+                if (!EnsureThumbnail(*asset))
+                    slot.status = "thumbnail render failed";
+            }
+            else
+                slot.status = "queued for thumbnail render";
         }
-
-        SceneInstanceGpu instance{};
-        instance.handle = asset->handle;
-        instance.boneMatrices = reinterpret_cast<const float*>(slot.palette.data());
-        instance.boneCount = static_cast<int>(slot.palette.size());
-        instance.submeshAnims = slot.submeshAnims.empty() ? nullptr : slot.submeshAnims.data();
-        instance.submeshAnimCount = static_cast<int>(slot.submeshAnims.size());
-        instance.worldOrigin[0] = (static_cast<float>(i) - 1.5f) * kCellSpacing;
-        scene.push_back(instance);
         char scaleText[96];
         std::snprintf(scaleText, sizeof(scaleText), "template %.2fx × display %.2fx",
                       safeTemplateScale, asset->displayScale);
-        slot.status = scaleText;
-    }
-
-    compositeTexture_ = 0;
-    if (!scene.empty())
-    {
-        const float gridCenter[3] = {0, 0, 0};
-        services_->renderer->SetGrid(false, gridCenter, 0.0f, 1.0f);
-        compositeTexture_ = services_->renderer->RenderScene(scene.data(), static_cast<int>(scene.size()),
-                                                              &view[0][0], &projection[0][0],
-                                                              renderWidth, renderHeight);
+        if (slot.status.empty())
+            slot.status = scaleText;
     }
 
     if (ImGui::BeginTable("##creaturedisplaypreviews", 4,
