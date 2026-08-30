@@ -114,6 +114,21 @@ if(BUILD_TESTING AND WOWEDIT_BUILD_TESTS)
     endif()
     add_test(NAME AdtVertexColorTests COMMAND AdtVertexColorTests)
 
+    add_executable(AdtTexturePaintTests
+        tests/unit_tests/adt_texture_paint_tests.cpp
+        RenderEngine/adt/AdtWriter.cpp)
+    target_include_directories(AdtTexturePaintTests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/DataEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/RenderEngine"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/glm")
+    target_compile_features(AdtTexturePaintTests PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(AdtTexturePaintTests PRIVATE /W4 /WX /permissive-)
+    else()
+        target_compile_options(AdtTexturePaintTests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME AdtTexturePaintTests COMMAND AdtTexturePaintTests)
+
     # Pure transform/identity coverage for streamed WMO-internal M2 props.  This intentionally
     # stays Vulkan-free so it runs in the same lightweight test environments as the ADT writer.
     add_executable(WmoDoodadPlacementTests tests/unit_tests/wmo_doodad_placement_tests.cpp)

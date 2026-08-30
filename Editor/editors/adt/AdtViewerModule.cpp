@@ -146,8 +146,13 @@ void AdtViewerModule::OnClientDataLoaded()
     brushActive_ = false;
     adtEdits_.SetMap("");
     terrainSculptActive_ = false;
+    terrainTexturePaintActive_ = false;
+    terrainTextureLayerSampleActive_ = false;
+    terrainTexturePaintLayers_.clear();
+    terrainTexturePaintSampleTileX_ = terrainTexturePaintSampleTileY_ = -1;
     terrainVertexPaintActive_ = false;
     terrainRampHasStart_ = false;
+    terrainTexturePaintStatus_.clear();
     terrainPaintStatus_.clear();
     ++terrainHistoryGeneration_;
     terrainStatus_.clear();
@@ -231,6 +236,9 @@ void AdtViewerModule::HandleShortcuts()
         {
             terrainSculptMode_ = 3;
             terrainRampHasStart_ = false;
+            terrainTexturePaintActive_ = false;
+            terrainTextureLayerSampleActive_ = false;
+            terrainVertexPaintActive_ = false;
             terrainSculptActive_ = true;
             inGameViewMode_ = false;
             editMode_ = true;
@@ -243,6 +251,9 @@ void AdtViewerModule::HandleShortcuts()
     {
         terrainSculptMode_ = 4;
         terrainRampHasStart_ = false;
+        terrainTexturePaintActive_ = false;
+        terrainTextureLayerSampleActive_ = false;
+        terrainVertexPaintActive_ = false;
         terrainSculptActive_ = true;
         inGameViewMode_ = false;
         editMode_ = true;
@@ -254,12 +265,28 @@ void AdtViewerModule::HandleShortcuts()
     {
         terrainSculptMode_ = 6;
         terrainRampHasStart_ = false;
+        terrainTexturePaintActive_ = false;
+        terrainTextureLayerSampleActive_ = false;
+        terrainVertexPaintActive_ = false;
         terrainSculptActive_ = true;
         inGameViewMode_ = false;
         editMode_ = true;
         terrainStatus_ = "Terrain smooth armed (S) — right-click terrain to queue a staged Laplacian-style blend.";
         if (svc_ && svc_->focusWindow)
             svc_->focusWindow("Terrain Sculpt");
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_P, false) && streamerInit_ && !loadedName_.empty() && !streamer_.wmoOnly())
+    {
+        terrainTexturePaintActive_ = true;
+        terrainTextureLayerSampleActive_ = false;
+        terrainSculptActive_ = false;
+        terrainRampHasStart_ = false;
+        terrainVertexPaintActive_ = false;
+        inGameViewMode_ = false;
+        editMode_ = true;
+        terrainTexturePaintStatus_ = "Texture paint armed (P) — right-click terrain to stage an MCAL layer stroke.";
+        if (svc_ && svc_->focusWindow)
+            svc_->focusWindow("Terrain Paint");
     }
 }
 
@@ -284,6 +311,8 @@ void AdtViewerModule::DrawMainMenuExtensions()
         terrainSculptMode_ = mode;
         terrainRampHasStart_ = false;
         terrainVertexPaintActive_ = false;
+        terrainTexturePaintActive_ = false;
+        terrainTextureLayerSampleActive_ = false;
         terrainSculptActive_ = true;
         inGameViewMode_ = false;
         editMode_ = true;
@@ -322,6 +351,18 @@ void AdtViewerModule::DrawMainMenuExtensions()
             focus("World Editor###ADT Viewer");
         }
         ImGui::Separator();
+        if (ImGui::MenuItem("Texture Layer Paint", "P"))
+        {
+            terrainTexturePaintActive_ = true;
+            terrainTextureLayerSampleActive_ = false;
+            terrainSculptActive_ = false;
+            terrainRampHasStart_ = false;
+            terrainVertexPaintActive_ = false;
+            inGameViewMode_ = false;
+            editMode_ = true;
+            terrainTexturePaintStatus_ = "Texture paint armed — right-click terrain to stage an MCAL layer stroke.";
+            focus("Terrain Paint");
+        }
         if (ImGui::MenuItem("Vertex Color Paint...")) focus("Terrain Paint");
         if (ImGui::MenuItem("Light Editor...")) focus("Light Editor");
         ImGui::EndMenu();
@@ -826,6 +867,10 @@ void AdtViewerModule::LoadSettings(const nlohmann::json& editorNode)
         terrainSmoothBlend_ = std::clamp(finite(terrain.value("smoothBlend", terrainSmoothBlend_), terrainSmoothBlend_), 0.05f, 1.0f);
         terrainSmoothPreserveEdges_ = terrain.value("smoothPreserveEdges", terrainSmoothPreserveEdges_);
         terrainSmoothEdgeThreshold_ = std::clamp(finite(terrain.value("smoothEdgeThreshold", terrainSmoothEdgeThreshold_), terrainSmoothEdgeThreshold_), 0.01f, 100.0f);
+        terrainTexturePaintLayer_ = std::clamp(terrain.value("texturePaintLayer", terrainTexturePaintLayer_), 0, 3);
+        terrainTexturePaintMode_ = std::clamp(terrain.value("texturePaintMode", terrainTexturePaintMode_), 0, 1);
+        terrainTexturePaintRadius_ = std::clamp(finite(terrain.value("texturePaintRadius", terrainTexturePaintRadius_), terrainTexturePaintRadius_), 1.0f, 100.0f);
+        terrainTexturePaintOpacity_ = std::clamp(finite(terrain.value("texturePaintOpacity", terrainTexturePaintOpacity_), terrainTexturePaintOpacity_), 0.01f, 1.0f);
         terrainVertexPaintRadius_ = std::clamp(finite(terrain.value("vertexPaintRadius", terrainVertexPaintRadius_), terrainVertexPaintRadius_), 1.0f, 100.0f);
         terrainVertexPaintOpacity_ = std::clamp(finite(terrain.value("vertexPaintOpacity", terrainVertexPaintOpacity_), terrainVertexPaintOpacity_), 0.01f, 1.0f);
         terrainVertexPaintColor_[0] = std::clamp(finite(terrain.value("vertexPaintR", terrainVertexPaintColor_[0]), terrainVertexPaintColor_[0]), 0.0f, 4.0f);
@@ -1113,6 +1158,10 @@ void AdtViewerModule::SaveSettings(nlohmann::json& editorNode) const
                                   {"smoothBlend", terrainSmoothBlend_},
                                   {"smoothPreserveEdges", terrainSmoothPreserveEdges_},
                                   {"smoothEdgeThreshold", terrainSmoothEdgeThreshold_},
+                                  {"texturePaintLayer", terrainTexturePaintLayer_},
+                                  {"texturePaintMode", terrainTexturePaintMode_},
+                                  {"texturePaintRadius", terrainTexturePaintRadius_},
+                                  {"texturePaintOpacity", terrainTexturePaintOpacity_},
                                   {"vertexPaintRadius", terrainVertexPaintRadius_},
                                   {"vertexPaintOpacity", terrainVertexPaintOpacity_},
                                   {"vertexPaintR", terrainVertexPaintColor_[0]},
@@ -1464,6 +1513,10 @@ void AdtViewerModule::OpenMapDir(const std::string& dir, bool frameCamera)
     if (dir != undoMapDir_)   // an actual map change (not an option-toggle reload) invalidates undo
     {
         terrainRampHasStart_ = false;
+        terrainTexturePaintActive_ = false;
+        terrainTextureLayerSampleActive_ = false;
+        terrainTexturePaintLayers_.clear();
+        terrainTexturePaintSampleTileX_ = terrainTexturePaintSampleTileY_ = -1;
         terrainVertexPaintActive_ = false;
         undo_.Clear();
         undoMapDir_ = dir;
@@ -4590,6 +4643,16 @@ void AdtViewerModule::DrawViewportPanel()
             terrainRampHasStart_ = false;
             terrainStatus_ = "Terrain sculpt brush cancelled.";
         }
+        else if (terrainTextureLayerSampleActive_)
+        {
+            terrainTextureLayerSampleActive_ = false;
+            terrainTexturePaintStatus_ = "Texture layer sampling cancelled.";
+        }
+        else if (terrainTexturePaintActive_)
+        {
+            terrainTexturePaintActive_ = false;
+            terrainTexturePaintStatus_ = "Texture paint cancelled.";
+        }
         else if (terrainVertexPaintActive_)
         {
             terrainVertexPaintActive_ = false;
@@ -5652,6 +5715,8 @@ void AdtViewerModule::DrawTerrainSculptPanel()
         terrainSculptActive_ = !terrainSculptActive_;
         if (terrainSculptActive_)
         {
+            terrainTexturePaintActive_ = false;
+            terrainTextureLayerSampleActive_ = false;
             terrainVertexPaintActive_ = false;
             inGameViewMode_ = false;
             editMode_ = true;
@@ -5714,44 +5779,171 @@ void AdtViewerModule::DrawTerrainPaintPanel()
     if (!mapReady)
     {
         ImGui::TextWrapped(streamer_.wmoOnly()
-            ? "Vertex-color painting is unavailable on global-WMO maps."
-            : "Open a terrain map before painting MCCV vertex colors.");
+            ? "Terrain texture and vertex-color paint are unavailable on global-WMO maps."
+            : "Open a terrain map before editing MCAL texture weights or MCCV vertex colors.");
         ImGui::End();
         return;
     }
+
+    StudioPanelHeader("WORLD AUTHORING", "Terrain paint",
+                      "Paint existing ADT texture-layer weights or baked vertex tint. Every stroke remains staged until Save ADT edits writes the project overlay.",
+                      canSave ? "STAGED" : "PROJECT REQUIRED");
     if (!canSave)
         ImGui::TextColored(ImVec4(1.0f, 0.68f, 0.22f, 1.0f),
-                           "Open a project with an edited-client folder before painting terrain colors.");
+                           "Open a project with an edited-client folder before painting terrain.");
 
-    ImGui::SeparatorText("MCCV vertex tint");
+    ImGui::SeparatorText("Texture layer paint · MCLY / MCAL");
+    ImGui::BeginDisabled(!canSave);
+    static const char* kLayerSlots[] = {
+        "Base layer — reveal by fading overlays", "Overlay 1", "Overlay 2", "Overlay 3"};
+    terrainTexturePaintLayer_ = std::clamp(terrainTexturePaintLayer_, 0, 3);
+    terrainTexturePaintMode_ = std::clamp(terrainTexturePaintMode_, 0, 1);
+    ImGui::SetNextItemWidth(270.0f);
+    ImGui::Combo("Target layer slot", &terrainTexturePaintLayer_, kLayerSlots, IM_ARRAYSIZE(kLayerSlots));
+    ImGui::SameLine();
+    if (StudioButton(terrainTextureLayerSampleActive_ ? "Click terrain to sample" : "Sample layers",
+                     terrainTextureLayerSampleActive_ ? StudioButtonTone::Primary : StudioButtonTone::Secondary))
+    {
+        terrainTextureLayerSampleActive_ = !terrainTextureLayerSampleActive_;
+        if (terrainTextureLayerSampleActive_)
+        {
+            terrainTexturePaintActive_ = false;
+            terrainSculptActive_ = false;
+            terrainRampHasStart_ = false;
+            terrainVertexPaintActive_ = false;
+            inGameViewMode_ = false;
+            editMode_ = true;
+            terrainTexturePaintStatus_ = "Texture-layer sample armed — right-click terrain to inspect its MCLY/MTEX slots without painting.";
+        }
+        else
+            terrainTexturePaintStatus_ = "Texture-layer sample stopped.";
+    }
+    if (terrainTexturePaintLayer_ == 0)
+    {
+        terrainTexturePaintMode_ = static_cast<int>(adt::TerrainTextureBrushMode::Paint);
+        ImGui::TextDisabled("Base has no alpha map: this safely reveals it by fading existing overlays.");
+    }
+    else
+    {
+        ImGui::RadioButton("Paint overlay", &terrainTexturePaintMode_, static_cast<int>(adt::TerrainTextureBrushMode::Paint));
+        ImGui::SameLine();
+        ImGui::RadioButton("Erase overlay", &terrainTexturePaintMode_, static_cast<int>(adt::TerrainTextureBrushMode::Erase));
+    }
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SliderFloat("Texture brush radius", &terrainTexturePaintRadius_, 1.0f, 100.0f,
+                       "%.1f yd", ImGuiSliderFlags_Logarithmic);
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SliderFloat("Texture opacity", &terrainTexturePaintOpacity_, 0.01f, 1.0f, "%.2f");
+    const char* textureAction = terrainTexturePaintLayer_ == 0 ? "Reveal base texture" :
+        terrainTexturePaintMode_ == static_cast<int>(adt::TerrainTextureBrushMode::Paint)
+            ? "Paint selected overlay" : "Erase selected overlay";
+    if (StudioButton(terrainTexturePaintActive_ ? "Stop texture paint" : textureAction,
+                     terrainTexturePaintActive_ ? StudioButtonTone::Quiet : StudioButtonTone::Primary))
+    {
+        terrainTexturePaintActive_ = !terrainTexturePaintActive_;
+        if (terrainTexturePaintActive_)
+        {
+            terrainTextureLayerSampleActive_ = false;
+            terrainSculptActive_ = false;
+            terrainRampHasStart_ = false;
+            terrainVertexPaintActive_ = false;
+            inGameViewMode_ = false;
+            editMode_ = true;
+        }
+        terrainTexturePaintStatus_ = terrainTexturePaintActive_
+            ? std::string(textureAction) + " armed — right-click terrain to stage an MCAL stroke."
+            : "Texture paint stopped.";
+    }
+    ImGui::EndDisabled();
+
+    const int texturePending = adtEdits_.texturePendingCount();
+    ImGui::TextDisabled("%d pending texture-layer stroke(s)", texturePending);
+    if (texturePending > 0)
+    {
+        ImGui::SameLine();
+        if (StudioButton("Discard texture strokes", StudioButtonTone::Danger))
+        {
+            adtEdits_.ClearTextureStrokes();
+            ++terrainHistoryGeneration_;
+            terrainTexturePaintStatus_ = "Pending MCAL texture strokes discarded.";
+        }
+    }
+    if (terrainTextureLayerSampleActive_)
+        ImGui::TextColored(ImVec4(0.34f, 0.78f, 0.96f, 1.0f),
+                           "Layer sampler is armed — right-click terrain; Escape cancels.");
+    else if (terrainTexturePaintActive_)
+        ImGui::TextColored(ImVec4(0.34f, 0.78f, 0.96f, 1.0f),
+                           "%s is armed — right-click terrain; Escape cancels.", textureAction);
+    if (!terrainTexturePaintStatus_.empty())
+        ImGui::TextDisabled("%s", terrainTexturePaintStatus_.c_str());
+    if (terrainTexturePaintLayers_.empty())
+    {
+        ImGui::TextDisabled("Right-click terrain while texture paint is armed to sample that MCNK's assigned layers.");
+    }
+    else
+    {
+        ImGui::TextDisabled("Sampled MCNK in tile %d, %d — click a row to target that existing slot.",
+                            terrainTexturePaintSampleTileX_, terrainTexturePaintSampleTileY_);
+        if (ImGui::BeginTable("##sampledtexturelayers", 3,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+                                  ImGuiTableFlags_SizingStretchProp))
+        {
+            ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+            ImGui::TableSetupColumn("Assigned MTEX texture", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Alpha", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+            ImGui::TableHeadersRow();
+            for (const adt::TerrainTextureLayerInfo& layer : terrainTexturePaintLayers_)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                const std::string label = layer.layer == 0 ? "Base" : "Overlay " + std::to_string(layer.layer);
+                if (ImGui::Selectable((label + "##texturelayer" + std::to_string(layer.layer)).c_str(),
+                                      terrainTexturePaintLayer_ == layer.layer,
+                                      ImGuiSelectableFlags_SpanAllColumns))
+                    terrainTexturePaintLayer_ = layer.layer;
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(layer.texturePath.empty() ? "<missing MTEX entry>" : layer.texturePath.c_str());
+                ImGui::TableSetColumnIndex(2);
+                ImGui::TextDisabled(layer.layer == 0 ? "base" : layer.hasAlphaMap ? "present" : "not paintable");
+            }
+            ImGui::EndTable();
+        }
+    }
+    ImGui::TextWrapped("Texture paint edits only a texture slot already assigned by that MCNK's MCLY data and carrying MCAL alpha. On save Studio decodes legacy 4-bit/RLE MCAL safely, re-emits canonical 8-bit alpha data, repairs nested offsets and MCIN, then reloads the edited-client tile. A missing/non-alpha layer is skipped and reported; Studio never guesses a new MTEX path or alpha assignment.");
+
+    ImGui::SeparatorText("Vertex tint · MCCV");
     ImGui::BeginDisabled(!canSave);
     ImGui::SetNextItemWidth(220.0f);
-    ImGui::SliderFloat("Brush radius", &terrainVertexPaintRadius_, 1.0f, 100.0f, "%.1f yd", ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Vertex brush radius", &terrainVertexPaintRadius_, 1.0f, 100.0f,
+                       "%.1f yd", ImGuiSliderFlags_Logarithmic);
     ImGui::SetNextItemWidth(220.0f);
-    ImGui::SliderFloat("Opacity", &terrainVertexPaintOpacity_, 0.01f, 1.0f, "%.2f");
-    ImGui::ColorEdit3("Tint", terrainVertexPaintColor_, ImGuiColorEditFlags_Float);
-    if (ImGui::Button(terrainVertexPaintActive_ ? "Stop vertex paint" : "Arm vertex paint"))
+    ImGui::SliderFloat("Vertex opacity", &terrainVertexPaintOpacity_, 0.01f, 1.0f, "%.2f");
+    ImGui::ColorEdit3("Vertex tint", terrainVertexPaintColor_, ImGuiColorEditFlags_Float);
+    if (StudioButton(terrainVertexPaintActive_ ? "Stop vertex paint" : "Arm vertex tint",
+                     terrainVertexPaintActive_ ? StudioButtonTone::Quiet : StudioButtonTone::Secondary))
     {
         terrainVertexPaintActive_ = !terrainVertexPaintActive_;
         if (terrainVertexPaintActive_)
         {
             terrainSculptActive_ = false;
             terrainRampHasStart_ = false;
+            terrainTexturePaintActive_ = false;
+            terrainTextureLayerSampleActive_ = false;
             inGameViewMode_ = false;
             editMode_ = true;
         }
         terrainPaintStatus_ = terrainVertexPaintActive_
-            ? "Vertex paint armed — right-click terrain to stage a MCCV tint stroke."
-            : "Vertex paint stopped.";
+            ? "Vertex tint armed — right-click terrain to stage a MCCV color stroke."
+            : "Vertex tint stopped.";
     }
     ImGui::EndDisabled();
 
-    const int pending = adtEdits_.vertexColorPendingCount();
-    ImGui::TextDisabled("%d pending vertex-color stroke(s)", pending);
-    if (pending > 0)
+    const int vertexPending = adtEdits_.vertexColorPendingCount();
+    ImGui::TextDisabled("%d pending vertex-color stroke(s)", vertexPending);
+    if (vertexPending > 0)
     {
         ImGui::SameLine();
-        if (ImGui::Button("Discard pending color strokes"))
+        if (StudioButton("Discard vertex tint", StudioButtonTone::Danger))
         {
             adtEdits_.ClearVertexColorStrokes();
             ++terrainHistoryGeneration_;
@@ -5760,12 +5952,10 @@ void AdtViewerModule::DrawTerrainPaintPanel()
     }
     if (terrainVertexPaintActive_)
         ImGui::TextColored(ImVec4(0.92f, 0.67f, 0.32f, 1.0f),
-                           "Right-click terrain in the World Editor to paint a tint. Escape cancels the brush.");
+                           "Vertex tint is armed — right-click terrain; Escape cancels.");
     if (!terrainPaintStatus_.empty())
         ImGui::TextDisabled("%s", terrainPaintStatus_.c_str());
-
-    ImGui::Separator();
-    ImGui::TextWrapped("MCCV is the classic ADT per-vertex color payload. Studio creates a missing MCCV chunk safely when the color stroke is saved, preserves the rest of the ADT, repairs MCIN offsets/sizes, and reloads the edited-client overlay. The brush guide is live; the authoritative terrain tint appears after Save ADT edits reloads the tile.");
+    ImGui::TextWrapped("MCCV is the classic per-vertex color payload. Studio creates a missing MCCV chunk safely when saved, preserves the rest of the ADT, repairs MCIN offsets/sizes, and reloads the authoritative project-overlay result.");
     ImGui::End();
 }
 
@@ -6095,9 +6285,15 @@ void AdtViewerModule::RunWorldValidation()
         add(WorldValidationSeverity::Warning, "Project overlay", "No edited-client project folder is configured; terrain and ADT placement saves are disabled.");
     if (adtEdits_.pendingCount() > 0)
         add(WorldValidationSeverity::Warning, "Unsaved ADT edits",
-            std::to_string(adtEdits_.pendingCount()) + " pending ADT edit(s) need Save Pending ADT Edits before they exist in the project overlay.");
+            std::to_string(adtEdits_.pendingCount()) + " pending ADT edit(s) (" +
+            std::to_string(adtEdits_.terrainPendingCount()) + " height, " +
+            std::to_string(adtEdits_.texturePendingCount()) + " texture, " +
+            std::to_string(adtEdits_.vertexColorPendingCount()) +
+            " vertex-tint) need Save Pending ADT Edits before they exist in the project overlay.");
     if (terrainSculptActive_)
         add(WorldValidationSeverity::Info, "Terrain", "Terrain brush is armed; right-clicking the viewport will queue a staged edit.");
+    if (terrainTexturePaintActive_)
+        add(WorldValidationSeverity::Info, "Terrain texture", "MCAL texture paint is armed; the selected existing MCLY layer will be staged on right-click.");
     if (npcLayer_.failedDisplayCount() > 0)
         add(WorldValidationSeverity::Warning, "NPC models",
             std::to_string(npcLayer_.failedDisplayCount()) + " creature display ID(s) failed to resolve to a renderable client model; markers remain selectable.");
@@ -6651,9 +6847,12 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
                                                     const ImVec2& p0, int w, int h,
                                                     bool viewportHovered)
 {
-    if ((!terrainSculptActive_ && !terrainVertexPaintActive_) || !viewportHovered)
+    if ((!terrainSculptActive_ && !terrainTexturePaintActive_ && !terrainTextureLayerSampleActive_ &&
+         !terrainVertexPaintActive_) || !viewportHovered)
         return;
-    const bool vertexPaint = terrainVertexPaintActive_ && !terrainSculptActive_;
+    const bool texturePaint = (terrainTexturePaintActive_ || terrainTextureLayerSampleActive_) &&
+                              !terrainSculptActive_;
+    const bool vertexPaint = terrainVertexPaintActive_ && !terrainSculptActive_ && !texturePaint;
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const float px = mouse.x - p0.x;
     const float py = mouse.y - p0.y;
@@ -6672,7 +6871,7 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
     // A ramp has a deliberate two-click interaction. Render its start/end guide
     // instead of a circular brush so the grade direction and pending endpoint are
     // obvious before the author commits the staged Flatten sequence.
-    if (!vertexPaint && terrainSculptMode_ == 3)
+    if (!vertexPaint && !texturePaint && terrainSculptMode_ == 3)
     {
         ImDrawList* draw = ImGui::GetWindowDrawList();
         const glm::vec3 worldEnd(center.x + origin.x, center.y + origin.y, center.z);
@@ -6706,7 +6905,8 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
         glm::vec3 rim;
         float rimT = -1.0f;
         int rimTx = 0, rimTy = 0;
-        const float brushRadius = vertexPaint ? terrainVertexPaintRadius_ : terrainBrushRadius_;
+        const float brushRadius = vertexPaint ? terrainVertexPaintRadius_ :
+                                  texturePaint ? terrainTexturePaintRadius_ : terrainBrushRadius_;
         const glm::vec3 top(center.x + std::cos(angle) * brushRadius,
                             center.y + std::sin(angle) * brushRadius, 10000.0f);
         ImVec2 projected;
@@ -6714,7 +6914,10 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
                          ProjectWorldPoint(glm::vec3(rim.x + origin.x, rim.y + origin.y, rim.z), origin,
                                            view, proj, p0, w, h, projected);
         if (hit && havePrevious)
-            draw->AddLine(previous, projected, IM_COL32(244, 139, 48, 225), 2.0f);
+            draw->AddLine(previous, projected,
+                          texturePaint ? IM_COL32(82, 193, 244, 235) :
+                          vertexPaint ? IM_COL32(242, 171, 72, 235) : IM_COL32(244, 139, 48, 225),
+                          2.0f);
         previous = projected;
         havePrevious = hit;
     }
@@ -6722,15 +6925,21 @@ void AdtViewerModule::DrawTerrainBrushOverlay(const glm::mat4& view, const glm::
     if (ProjectWorldPoint(glm::vec3(center.x + origin.x, center.y + origin.y, center.z), origin,
                           view, proj, p0, w, h, centerScreen))
     {
-        const ImU32 tint = vertexPaint
-            ? IM_COL32(std::clamp(static_cast<int>(terrainVertexPaintColor_[0] * 255.0f), 0, 255),
-                       std::clamp(static_cast<int>(terrainVertexPaintColor_[1] * 255.0f), 0, 255),
-                       std::clamp(static_cast<int>(terrainVertexPaintColor_[2] * 255.0f), 0, 255), 255)
-            : IM_COL32(255, 221, 160, 255);
+        const ImU32 tint = texturePaint ? IM_COL32(82, 193, 244, 255) :
+            vertexPaint
+                ? IM_COL32(std::clamp(static_cast<int>(terrainVertexPaintColor_[0] * 255.0f), 0, 255),
+                           std::clamp(static_cast<int>(terrainVertexPaintColor_[1] * 255.0f), 0, 255),
+                           std::clamp(static_cast<int>(terrainVertexPaintColor_[2] * 255.0f), 0, 255), 255)
+                : IM_COL32(255, 221, 160, 255);
         draw->AddCircleFilled(centerScreen, 4.0f, tint, 10);
         static const char* kModes[] = {"Raise", "Lower", "Flatten", "Ramp / Stairs", "Noise / Terrainify", "Terrain Stamp", "Smooth"};
-        draw->AddText(ImVec2(centerScreen.x + 8.0f, centerScreen.y + 6.0f),
-                      vertexPaint ? tint : IM_COL32(255, 234, 204, 255),
+        const std::string textureLabel = terrainTextureLayerSampleActive_ ? "Sample Texture Layers" :
+            terrainTexturePaintLayer_ == 0 ? "Reveal Base" :
+            std::string(terrainTexturePaintMode_ == static_cast<int>(adt::TerrainTextureBrushMode::Paint)
+                            ? "Paint Overlay " : "Erase Overlay ") +
+            std::to_string(std::clamp(terrainTexturePaintLayer_, 1, 3));
+        draw->AddText(ImVec2(centerScreen.x + 8.0f, centerScreen.y + 6.0f), tint,
+                      texturePaint ? textureLabel.c_str() :
                       vertexPaint ? "Vertex Tint" : kModes[std::clamp(terrainSculptMode_, 0, 6)]);
     }
 }
@@ -7288,11 +7497,12 @@ void AdtViewerModule::SavePendingAdtEdits()
     }
 
     const int terrainPending = adtEdits_.terrainPendingCount();
+    const int texturePending = adtEdits_.texturePendingCount();
     const int vertexColorPending = adtEdits_.vertexColorPendingCount();
     std::string status;
     const bool saved = adtEdits_.Flush(*svc_->clientData, svc_->editRoot, status);
     saveStatus_ = status;
-    if (terrainPending > 0 || vertexColorPending > 0)
+    if (terrainPending > 0 || texturePending > 0 || vertexColorPending > 0)
     {
         // Flush writes tiles one at a time. Even a later I/O failure can leave an earlier
         // terrain tile safely persisted, so freeze old terrain/paint undo closures on every save
@@ -7301,14 +7511,19 @@ void AdtViewerModule::SavePendingAdtEdits()
         if (saved)
         {
             // Terrain GPU meshes are immutable uploads. Reopen the current map so the
-            // streamer rereads MCVT/MCNR/MCCV overlay data and the baked tint is visible.
+            // streamer rereads MCVT/MCNR/MCLY/MCAL/MCCV overlay data and the baked paint is visible.
             terrainStatus_ = "Terrain edits saved; reloading streamed tiles from the project overlay.";
-            terrainPaintStatus_ = vertexColorPending > 0 ? "Vertex-color paint saved; reloading MCCV from the project overlay." : terrainPaintStatus_;
+            if (texturePending > 0)
+                terrainTexturePaintStatus_ = "Texture-layer paint flushed; reloading MCAL/MCLY from the project overlay (check save status for skipped absent layers).";
+            if (vertexColorPending > 0)
+                terrainPaintStatus_ = "Vertex-color paint saved; reloading MCCV from the project overlay.";
             OpenMapDir(selectedMapDir_, false);
         }
         else
         {
             terrainStatus_ = "Terrain save did not finish; inspect the status and retry pending edits if needed.";
+            if (texturePending > 0)
+                terrainTexturePaintStatus_ = "Texture-layer save did not finish; inspect the status before retrying pending strokes.";
             if (vertexColorPending > 0)
                 terrainPaintStatus_ = "Vertex-color save did not finish; pending strokes remain available to retry.";
         }
@@ -8121,6 +8336,70 @@ void AdtViewerModule::PushVertexColorUndo(const std::vector<AdtEditStore::Vertex
         }, label));
 }
 
+void AdtViewerModule::QueueTextureStrokeAcrossTiles(
+    const adt::TerrainTextureBrushStroke& stroke, int centerTileX, int centerTileY,
+    std::vector<AdtEditStore::TextureStrokeRef>& outRefs)
+{
+    if (!std::isfinite(stroke.worldX) || !std::isfinite(stroke.worldY) ||
+        !std::isfinite(stroke.radius) || stroke.radius <= 0.01f ||
+        !std::isfinite(stroke.opacity) || stroke.layer < 0 || stroke.layer > 3)
+        return;
+    const float halfTile = adt::kTileSize * 0.5f;
+    for (int ty = std::max(0, centerTileY - 1); ty <= std::min(63, centerTileY + 1); ++ty)
+        for (int tx = std::max(0, centerTileX - 1); tx <= std::min(63, centerTileX + 1); ++tx)
+        {
+            bool exists = false;
+            for (const auto& tile : streamer_.world().tiles)
+                if (tile.first == tx && tile.second == ty) { exists = true; break; }
+            if (!exists)
+                continue;
+            const glm::vec2 tileCenter((31.5f - ty) * adt::kTileSize,
+                                       (31.5f - tx) * adt::kTileSize);
+            const float edgeX = std::max(std::fabs(stroke.worldX - tileCenter.x) - halfTile, 0.0f);
+            const float edgeY = std::max(std::fabs(stroke.worldY - tileCenter.y) - halfTile, 0.0f);
+            if (edgeX * edgeX + edgeY * edgeY > stroke.radius * stroke.radius)
+                continue;
+            const AdtEditStore::TextureStrokeRef ref = adtEdits_.RecordTextureStroke(tx, ty, stroke);
+            if (ref.id != 0)
+                outRefs.push_back(ref);
+        }
+}
+
+void AdtViewerModule::PushTextureStrokeUndo(const std::vector<AdtEditStore::TextureStrokeRef>& refs,
+                                            const char* label)
+{
+    if (refs.empty())
+        return;
+    const uint64_t generation = terrainHistoryGeneration_;
+    undo_.Push(MakeCommand(
+        [this, generation, refs]() {
+            if (generation == terrainHistoryGeneration_)
+                for (const auto& ref : refs)
+                    adtEdits_.RemoveTextureStroke(ref.id);
+        },
+        [this, generation, refs]() {
+            if (generation == terrainHistoryGeneration_)
+                for (const auto& ref : refs)
+                    adtEdits_.RestoreTextureStroke(ref);
+        }, label));
+}
+
+bool AdtViewerModule::SampleTexturePaintLayers(int tileX, int tileY, const glm::vec3& world)
+{
+    terrainTexturePaintLayers_.clear();
+    terrainTexturePaintSampleTileX_ = terrainTexturePaintSampleTileY_ = -1;
+    if (!svc_ || !svc_->clientData || selectedMapDir_.empty())
+        return false;
+    const std::string path = adt::TilePath(selectedMapDir_, tileX, tileY);
+    const std::vector<uint8_t> bytes = svc_->clientData->ReadFile(path);
+    if (bytes.empty() || !adt::InspectTerrainTextureLayers(bytes, world.x, world.y,
+                                                            terrainTexturePaintLayers_))
+        return false;
+    terrainTexturePaintSampleTileX_ = tileX;
+    terrainTexturePaintSampleTileY_ = tileY;
+    return true;
+}
+
 void AdtViewerModule::QueueTerrainRamp(const glm::vec3& start, const glm::vec3& requestedEnd)
 {
     const glm::vec2 horizontal(requestedEnd.x - start.x, requestedEnd.y - start.y);
@@ -8492,6 +8771,63 @@ void AdtViewerModule::HandleRightClickAdd(const glm::mat4& view, const glm::mat4
         }
         PushTerrainStrokeUndo(refs, "Sculpt terrain");
         terrainStatus_ = "Queued terrain stroke across " + std::to_string(refs.size()) + " tile(s) — save ADT edits to apply it.";
+        return;
+    }
+
+    if (terrainTextureLayerSampleActive_)
+    {
+        terrainTextureLayerSampleActive_ = false;
+        const glm::vec3 world(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z);
+        terrainTexturePaintStatus_ = SampleTexturePaintLayers(gtx, gty, world)
+            ? "Sampled the clicked MCNK's existing MCLY texture slots. Select one below, then arm paint."
+            : "Could not inspect MCLY/MTEX layers under this terrain click.";
+        return;
+    }
+
+    if (terrainTexturePaintActive_)
+    {
+        const glm::vec3 world(gLocal.x + origin.x, gLocal.y + origin.y, gLocal.z);
+        adt::TerrainTextureBrushStroke stroke;
+        stroke.mode = static_cast<adt::TerrainTextureBrushMode>(
+            std::clamp(terrainTexturePaintMode_, 0, 1));
+        stroke.layer = std::clamp(terrainTexturePaintLayer_, 0, 3);
+        if (stroke.layer == 0)
+            stroke.mode = adt::TerrainTextureBrushMode::Paint;
+        stroke.worldX = world.x;
+        stroke.worldY = world.y;
+        stroke.radius = terrainTexturePaintRadius_;
+        stroke.opacity = terrainTexturePaintOpacity_;
+        if (!SampleTexturePaintLayers(gtx, gty, world))
+        {
+            terrainTexturePaintStatus_ = "Could not inspect MCLY/MTEX layers under this terrain click.";
+            return;
+        }
+        const auto selectedLayer = std::find_if(terrainTexturePaintLayers_.begin(),
+            terrainTexturePaintLayers_.end(), [&](const adt::TerrainTextureLayerInfo& info) {
+                return info.layer == stroke.layer;
+            });
+        const bool overlaysPaintable = terrainTexturePaintLayers_.size() > 1 &&
+            std::all_of(terrainTexturePaintLayers_.begin() + 1, terrainTexturePaintLayers_.end(),
+                        [](const adt::TerrainTextureLayerInfo& info) { return info.hasAlphaMap; });
+        const bool selectedLayerPaintable = selectedLayer != terrainTexturePaintLayers_.end() &&
+            overlaysPaintable && (stroke.layer == 0 || selectedLayer->hasAlphaMap);
+        if (!selectedLayerPaintable)
+        {
+            terrainTexturePaintStatus_ = "This MCNK does not contain a paintable selected layer; choose a sampled overlay with MCAL alpha.";
+            return;
+        }
+        std::vector<AdtEditStore::TextureStrokeRef> refs;
+        QueueTextureStrokeAcrossTiles(stroke, gtx, gty, refs);
+        if (refs.empty())
+        {
+            terrainTexturePaintStatus_ = "Could not queue a texture-layer stroke for this tile.";
+            return;
+        }
+        PushTextureStrokeUndo(refs, stroke.layer == 0 ? "Reveal terrain base texture" :
+                            stroke.mode == adt::TerrainTextureBrushMode::Paint
+                                ? "Paint terrain texture layer" : "Erase terrain texture layer");
+        terrainTexturePaintStatus_ = "Queued texture-layer stroke across " + std::to_string(refs.size()) +
+                                     " tile(s) — save ADT edits to bake/reload it.";
         return;
     }
 

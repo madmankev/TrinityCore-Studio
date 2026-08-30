@@ -41,6 +41,10 @@
   sharp-edge preservation, deterministic staged Flatten expansion, live preview, and one-step undo.
 - Terrain Paint MCCV implementation: radial vertex-tint strokes, safe missing-MCCV creation,
   MCIN offset/size repair, staged undo/redo, edited-client overlay writes, and authoritative reload.
+- Terrain Paint MCLY/MCAL layer authoring: sampled MTEX/MCLY slot inspector, Base reveal plus
+  Overlay 1–3 paint/erase controls, texture-layer brush/shortcut/undo, safe 4-bit/RLE MCAL decode,
+  canonical 8-bit re-emission, nested MCNK and MCIN offset repair, staged overlay save/reload, and
+  explicit missing-layer skips instead of guessed texture assignments.
 - Spawn Palette Array / Grid placement for NPCs and GameObjects: terrain-snapped rows/columns with
   centered anchoring, skipped-cell reporting, persisted settings, and a compound CommandStack undo.
 - Schema-aware SQL conversion import in DB Editor: live target introspection, table/field alias mapping,

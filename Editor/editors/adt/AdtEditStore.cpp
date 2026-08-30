@@ -29,6 +29,8 @@ void AdtEditStore::SetMap(const std::string& mapDir)
         nextTerrainStrokeId_ = 1;
         vertexColors_.clear();
         nextVertexColorStrokeId_ = 1;
+        textures_.clear();
+        nextTextureStrokeId_ = 1;
     }
 }
 
@@ -221,17 +223,94 @@ void AdtEditStore::SnapshotVertexColorStrokes(std::vector<VertexColorStrokeRef>&
     });
 }
 
+AdtEditStore::TextureStrokeRef AdtEditStore::RecordTextureStroke(
+    int tileX, int tileY, const adt::TerrainTextureBrushStroke& stroke)
+{
+    TextureStrokeRef ref;
+    if (tileX < 0 || tileX >= 64 || tileY < 0 || tileY >= 64)
+        return ref;
+    ref.id = nextTextureStrokeId_++;
+    ref.tileX = tileX;
+    ref.tileY = tileY;
+    ref.stroke = stroke;
+    textures_[TileKey(tileX, tileY)].push_back(ref);
+    return ref;
+}
+
+bool AdtEditStore::RemoveTextureStroke(uint64_t id)
+{
+    if (id == 0)
+        return false;
+    for (auto it = textures_.begin(); it != textures_.end(); ++it)
+    {
+        std::vector<TextureStrokeRef>& strokes = it->second;
+        const auto found = std::find_if(strokes.begin(), strokes.end(), [id](const TextureStrokeRef& ref) {
+            return ref.id == id;
+        });
+        if (found == strokes.end())
+            continue;
+        strokes.erase(found);
+        if (strokes.empty())
+            textures_.erase(it);
+        return true;
+    }
+    return false;
+}
+
+bool AdtEditStore::RestoreTextureStroke(const TextureStrokeRef& stroke)
+{
+    if (stroke.id == 0 || stroke.tileX < 0 || stroke.tileX >= 64 ||
+        stroke.tileY < 0 || stroke.tileY >= 64)
+        return false;
+    std::vector<TextureStrokeRef>& strokes = textures_[TileKey(stroke.tileX, stroke.tileY)];
+    if (std::find_if(strokes.begin(), strokes.end(), [&](const TextureStrokeRef& ref) {
+            return ref.id == stroke.id;
+        }) != strokes.end())
+        return true;
+    const auto position = std::lower_bound(strokes.begin(), strokes.end(), stroke.id,
+                                           [](const TextureStrokeRef& ref, uint64_t id) {
+                                               return ref.id < id;
+                                           });
+    strokes.insert(position, stroke);
+    nextTextureStrokeId_ = std::max(nextTextureStrokeId_, stroke.id + 1);
+    return true;
+}
+
+void AdtEditStore::ClearTextureStrokes()
+{
+    textures_.clear();
+}
+
+int AdtEditStore::texturePendingCount() const
+{
+    int count = 0;
+    for (const auto& pair : textures_)
+        count += static_cast<int>(pair.second.size());
+    return count;
+}
+
+void AdtEditStore::SnapshotTextureStrokes(std::vector<TextureStrokeRef>& out) const
+{
+    out.clear();
+    out.reserve(static_cast<size_t>(texturePendingCount()));
+    for (const auto& pair : textures_)
+        out.insert(out.end(), pair.second.begin(), pair.second.end());
+    std::sort(out.begin(), out.end(), [](const TextureStrokeRef& a, const TextureStrokeRef& b) {
+        return a.id < b.id;
+    });
+}
+
 int AdtEditStore::pendingCount() const
 {
     int n = 0;
     for (const auto& kv : edits_)
         n += static_cast<int>(kv.second.size());
-    return n + terrainPendingCount() + vertexColorPendingCount();
+    return n + terrainPendingCount() + vertexColorPendingCount() + texturePendingCount();
 }
 
 bool AdtEditStore::Flush(ClientData& cd, const std::string& editRoot, std::string& status)
 {
-    if (mapDir_.empty() || (edits_.empty() && terrain_.empty() && vertexColors_.empty()))
+    if (mapDir_.empty() || (edits_.empty() && terrain_.empty() && vertexColors_.empty() && textures_.empty()))
     {
         status = "No ADT edits to save.";
         return true;
@@ -249,10 +328,13 @@ bool AdtEditStore::Flush(ClientData& cd, const std::string& editRoot, std::strin
     for (const auto& kv : edits_) keys.insert(kv.first);
     for (const auto& kv : terrain_) keys.insert(kv.first);
     for (const auto& kv : vertexColors_) keys.insert(kv.first);
+    for (const auto& kv : textures_) keys.insert(kv.first);
 
     int tilesWritten = 0;
     int editsWritten = 0;
     int terrainVertices = 0;
+    int textureTexels = 0;
+    int textureSkipped = 0;
     int colorVertices = 0;
     for (uint32_t key : keys)
     {
@@ -302,6 +384,23 @@ bool AdtEditStore::Flush(ClientData& cd, const std::string& editRoot, std::strin
                 terrainVertices += sculpt.touchedVertices;
             }
 
+        if (const auto xit = textures_.find(key); xit != textures_.end())
+            for (const TextureStrokeRef& stroke : xit->second)
+            {
+                adt::TerrainTextureBrushResult paint;
+                if (adt::PaintTerrainTexture(bytes, stroke.stroke, &paint))
+                {
+                    ++editsWritten;
+                    textureTexels += paint.touchedTexels;
+                }
+                else
+                {
+                    // Texture paint intentionally refuses to invent a missing MCLY/MTEX layer.
+                    // Treat an absent target layer as a visible skip, not a failed whole-tile save.
+                    textureSkipped += std::max(1, paint.skippedChunks);
+                }
+            }
+
         if (const auto cit = vertexColors_.find(key); cit != vertexColors_.end())
             for (const VertexColorStrokeRef& stroke : cit->second)
             {
@@ -326,15 +425,21 @@ bool AdtEditStore::Flush(ClientData& cd, const std::string& editRoot, std::strin
         edits_.erase(key);
         terrain_.erase(key);
         vertexColors_.erase(key);
+        textures_.erase(key);
         ++tilesWritten;
     }
 
     status = "Saved " + std::to_string(editsWritten) + " ADT edit(s) across " +
              std::to_string(tilesWritten) + " tile(s)" +
-             ((terrainVertices || colorVertices)
+             ((terrainVertices || textureTexels || colorVertices)
                  ? " (" + std::to_string(terrainVertices) + " terrain vertices sculpted, " +
-                       std::to_string(colorVertices) + " vertex colors painted)."
-                 : ".");
+                       std::to_string(textureTexels) + " texture texels painted, " +
+                       std::to_string(colorVertices) + " vertex colors painted" +
+                       (textureSkipped ? "; " + std::to_string(textureSkipped) +
+                                             " texture layer/chunk skip(s)" : std::string()) + ")."
+                 : textureSkipped ? " (" + std::to_string(textureSkipped) +
+                                      " texture layer/chunk skip(s); no missing layer was created)."
+                                  : ".");
     return true;
 }
 

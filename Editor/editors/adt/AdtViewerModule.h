@@ -492,6 +492,10 @@ private:
     void QueueVertexColorStrokeAcrossTiles(const adt::TerrainVertexColorStroke& stroke, int centerTileX, int centerTileY,
                                            std::vector<AdtEditStore::VertexColorStrokeRef>& outRefs);
     void PushVertexColorUndo(const std::vector<AdtEditStore::VertexColorStrokeRef>& refs, const char* label);
+    void QueueTextureStrokeAcrossTiles(const adt::TerrainTextureBrushStroke& stroke, int centerTileX, int centerTileY,
+                                       std::vector<AdtEditStore::TextureStrokeRef>& outRefs);
+    void PushTextureStrokeUndo(const std::vector<AdtEditStore::TextureStrokeRef>& refs, const char* label);
+    bool SampleTexturePaintLayers(int tileX, int tileY, const glm::vec3& world);
 
     // NPC model fallbacks: map markers remain visible/selectable when a custom display ID cannot be
     // resolved to an M2, and make a missing WoW client-model pack immediately diagnosable.
@@ -779,12 +783,24 @@ private:
     float terrainSmoothBlend_ = 0.55f;
     bool terrainSmoothPreserveEdges_ = true;
     float terrainSmoothEdgeThreshold_ = 4.0f;
+    // Texture paint affects only existing MCLY overlay slots and writes canonical MCAL alpha maps
+    // on Save/reload. It intentionally remains a separate mode from MCCV vertex tint.
+    bool terrainTexturePaintActive_ = false;
+    bool terrainTextureLayerSampleActive_ = false;
+    int terrainTexturePaintLayer_ = 1; // 0 reveal base; 1..3 existing MCLY overlay slots
+    int terrainTexturePaintMode_ = 0;  // adt::TerrainTextureBrushMode::Paint / Erase
+    float terrainTexturePaintRadius_ = 8.0f;
+    float terrainTexturePaintOpacity_ = 0.65f;
+    std::vector<adt::TerrainTextureLayerInfo> terrainTexturePaintLayers_;
+    int terrainTexturePaintSampleTileX_ = -1;
+    int terrainTexturePaintSampleTileY_ = -1;
     bool terrainVertexPaintActive_ = false;
     float terrainVertexPaintRadius_ = 8.0f;
     float terrainVertexPaintColor_[3] = {1.0f, 0.78f, 0.42f};
     float terrainVertexPaintOpacity_ = 0.65f;
     uint64_t terrainHistoryGeneration_ = 1;
     std::string terrainStatus_;
+    std::string terrainTexturePaintStatus_;
     std::string terrainPaintStatus_;
 
     // Right-click "add object here" flow.

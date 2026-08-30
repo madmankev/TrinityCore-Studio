@@ -3,8 +3,8 @@
 // AdtEditStore — accumulates pending ADT placement edits for the open map and flushes them to the
 // project's loose-file edit overlay. Batched by design: a Save groups edits by tile, reads each tile
 // once, applies all of that tile's edits, and writes it once (ADT tiles are multi-MB). This is the
-// foundation for ADT editing (add/remove placements and terrain heights today; textures later) —
-// every edit kind funnels through the same overlay-first read-patch-write flush.
+// foundation for ADT editing (placements, terrain heights, MCCV tint, and existing MCLY/MCAL
+// texture-layer paint) — every edit kind funnels through the same overlay-first read-patch-write flush.
 
 #include <cstdint>
 #include <string>
@@ -75,6 +75,23 @@ public:
     int vertexColorPendingCount() const;
     void SnapshotVertexColorStrokes(std::vector<VertexColorStrokeRef>& out) const;
 
+    // A staged MCAL/MCLY overlay-layer stroke. It only paints texture slots that already exist in
+    // the target MCNK; this preserves the project's authored MTEX/layer assignments rather than
+    // guessing a texture path during a map edit.
+    struct TextureStrokeRef
+    {
+        uint64_t id = 0;
+        int tileX = 0, tileY = 0;
+        adt::TerrainTextureBrushStroke stroke;
+    };
+    TextureStrokeRef RecordTextureStroke(int tileX, int tileY,
+                                         const adt::TerrainTextureBrushStroke& stroke);
+    bool RemoveTextureStroke(uint64_t id);
+    bool RestoreTextureStroke(const TextureStrokeRef& stroke);
+    void ClearTextureStrokes();
+    int texturePendingCount() const;
+    void SnapshotTextureStrokes(std::vector<TextureStrokeRef>& out) const;
+
     int  pendingCount() const;
     bool empty() const { return pendingCount() == 0; }
 
@@ -100,5 +117,7 @@ private:
     uint64_t nextTerrainStrokeId_ = 1;
     std::unordered_map<uint32_t, std::vector<VertexColorStrokeRef>> vertexColors_;
     uint64_t nextVertexColorStrokeId_ = 1;
+    std::unordered_map<uint32_t, std::vector<TextureStrokeRef>> textures_;
+    uint64_t nextTextureStrokeId_ = 1;
 };
 } // namespace we

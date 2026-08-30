@@ -212,6 +212,272 @@ inline uint32_t PackMccv(float r, float g, float b, uint8_t alpha)
            (static_cast<uint32_t>(alpha) << 24u);
 }
 
+bool NestedIs(const std::vector<uint8_t>& bytes, size_t offset, const char* human)
+{
+    return InBytes(bytes, offset, 4) && bytes[offset + 0] == human[3] &&
+           bytes[offset + 1] == human[2] && bytes[offset + 2] == human[1] &&
+           bytes[offset + 3] == human[0];
+}
+
+bool NestedPayload(const std::vector<uint8_t>& bytes, uint32_t relativeOffset, const char* human,
+                   size_t& chunkOffset, size_t& payloadOffset, uint32_t& payloadSize)
+{
+    if (relativeOffset < 8)
+        return false;
+    chunkOffset = static_cast<size_t>(relativeOffset) - 8; // header offsets are relative to MCNK magic
+    if (!NestedIs(bytes, chunkOffset, human) || !InBytes(bytes, chunkOffset + 4, sizeof(payloadSize)))
+        return false;
+    std::memcpy(&payloadSize, bytes.data() + chunkOffset + 4, sizeof(payloadSize));
+    payloadOffset = chunkOffset + 8;
+    return InBytes(bytes, payloadOffset, payloadSize);
+}
+
+void FixAlphaEdges(std::array<uint8_t, 4096>& alpha, bool doNotFix)
+{
+    if (doNotFix)
+        return;
+    for (int y = 0; y < 64; ++y)
+        alpha[y * 64 + 63] = alpha[y * 64 + 62];
+    for (int x = 0; x < 64; ++x)
+        alpha[63 * 64 + x] = alpha[62 * 64 + x];
+}
+
+// Decode one legacy MCAL layer exactly like the reader path. The writer re-emits canonical 8-bit
+// uncompressed data after a stroke, which avoids a lossy guess about original nibble/RLE spans while
+// retaining every untouched texel's decoded value.
+void DecodeMcalAlpha(const uint8_t* mcal, size_t mcalSize, uint32_t offset, uint32_t nextOffset,
+                     bool compressed, bool doNotFix, std::array<uint8_t, 4096>& out)
+{
+    out.fill(0);
+    if (!mcal || offset >= mcalSize)
+        return;
+    if (compressed)
+    {
+        size_t in = offset;
+        size_t written = 0;
+        const size_t end = std::min<size_t>(nextOffset > offset ? nextOffset : mcalSize, mcalSize);
+        while (written < out.size() && in < end)
+        {
+            const uint8_t control = mcal[in++];
+            const bool fill = (control & 0x80u) != 0;
+            const size_t count = control & 0x7Fu;
+            if (count == 0)
+                continue;
+            if (fill)
+            {
+                if (in >= end)
+                    break;
+                const uint8_t value = mcal[in++];
+                for (size_t i = 0; i < count && written < out.size(); ++i)
+                    out[written++] = value;
+            }
+            else
+            {
+                const size_t available = std::min(count, end - in);
+                for (size_t i = 0; i < available && written < out.size(); ++i)
+                    out[written++] = mcal[in++];
+                if (available < count)
+                    break;
+            }
+        }
+    }
+    else
+    {
+        const size_t end = std::min<size_t>(nextOffset > offset ? nextOffset : mcalSize, mcalSize);
+        const size_t span = end > offset ? end - offset : 0;
+        if (span >= out.size())
+            std::memcpy(out.data(), mcal + offset, out.size());
+        else if (span >= out.size() / 2)
+            for (size_t i = 0; i < out.size() / 2; ++i)
+            {
+                const uint8_t value = mcal[offset + i];
+                out[i * 2 + 0] = static_cast<uint8_t>((value & 0x0Fu) * 17u);
+                out[i * 2 + 1] = static_cast<uint8_t>(((value >> 4u) & 0x0Fu) * 17u);
+            }
+    }
+    FixAlphaEdges(out, doNotFix);
+}
+
+bool BrushTouchesMcnk(const AdtMcnkHeader& header, const TerrainTextureBrushStroke& stroke)
+{
+    const float minX = header.position[0] - kChunkSize;
+    const float maxX = header.position[0];
+    const float minY = header.position[1] - kChunkSize;
+    const float maxY = header.position[1];
+    return stroke.worldX + stroke.radius >= minX && stroke.worldX - stroke.radius <= maxX &&
+           stroke.worldY + stroke.radius >= minY && stroke.worldY - stroke.radius <= maxY;
+}
+
+bool ShiftMcnkOffset(uint32_t& offset, uint64_t oldMcalEnd, int64_t delta)
+{
+    if (offset == 0 || static_cast<uint64_t>(offset) < oldMcalEnd)
+        return true;
+    const int64_t shifted = static_cast<int64_t>(offset) + delta;
+    if (shifted < 8 || shifted > static_cast<int64_t>(UINT32_MAX))
+        return false;
+    offset = static_cast<uint32_t>(shifted);
+    return true;
+}
+
+bool PaintMcnkTexture(RawChunk& chunk, const TerrainTextureBrushStroke& stroke,
+                      TerrainTextureBrushResult& result)
+{
+    if (chunk.data.size() < sizeof(AdtMcnkHeader))
+        return false;
+    AdtMcnkHeader header{};
+    std::memcpy(&header, chunk.data.data(), sizeof(header));
+    if (!BrushTouchesMcnk(header, stroke))
+        return false;
+    if (header.nLayers == 0 || header.nLayers > 4 || stroke.layer < 0 ||
+        static_cast<uint32_t>(stroke.layer) >= header.nLayers ||
+        (stroke.layer == 0 && stroke.mode == TerrainTextureBrushMode::Erase))
+    {
+        ++result.skippedChunks;
+        return false;
+    }
+
+    size_t layerChunk = 0, layerData = 0, mcalChunk = 0, mcalData = 0;
+    uint32_t layerSize = 0, mcalSize = 0;
+    if (!NestedPayload(chunk.data, header.ofsLayer, "MCLY", layerChunk, layerData, layerSize) ||
+        layerSize < header.nLayers * sizeof(AdtLayer) ||
+        !NestedPayload(chunk.data, header.ofsAlpha, "MCAL", mcalChunk, mcalData, mcalSize))
+    {
+        ++result.skippedChunks;
+        return false;
+    }
+
+    std::array<AdtLayer, 4> layers{};
+    std::memcpy(layers.data(), chunk.data.data() + layerData,
+                static_cast<size_t>(header.nLayers) * sizeof(AdtLayer));
+    // Texture painting is intentionally conservative: do not assign alpha data to a layer that
+    // shipped without it. Such custom/legacy layouts can carry special semantics, and inventing
+    // a map would be less safe than asking the author to choose another sampled MCNK/layer.
+    for (uint32_t layer = 1; layer < header.nLayers; ++layer)
+        if ((layers[layer].flags & kAdtLayerUseAlphaMap) == 0)
+        {
+            ++result.skippedChunks;
+            return false;
+        }
+
+    std::array<std::array<uint8_t, 4096>, 4> alpha{};
+    const bool doNotFix = (header.flags & 0x8000u) != 0;
+    const uint8_t* mcal = chunk.data.data() + mcalData;
+    for (uint32_t layer = 1; layer < header.nLayers; ++layer)
+    {
+        uint32_t nextOffset = mcalSize;
+        for (uint32_t other = 1; other < header.nLayers; ++other)
+            if (other != layer && (layers[other].flags & kAdtLayerUseAlphaMap) != 0 &&
+                layers[other].offsetInMCAL > layers[layer].offsetInMCAL)
+                nextOffset = std::min(nextOffset, layers[other].offsetInMCAL);
+        DecodeMcalAlpha(mcal, mcalSize, layers[layer].offsetInMCAL, nextOffset,
+                        (layers[layer].flags & kAdtLayerAlphaCompressed) != 0, doNotFix,
+                        alpha[layer]);
+    }
+
+    bool changed = false;
+    const float opacity = Clamp(stroke.opacity, 0.0f, 1.0f);
+    for (int row = 0; row < 64; ++row)
+        for (int column = 0; column < 64; ++column)
+        {
+            const float worldX = header.position[0] - static_cast<float>(row) * (kChunkSize / 63.0f);
+            const float worldY = header.position[1] - static_cast<float>(column) * (kChunkSize / 63.0f);
+            const float dx = worldX - stroke.worldX;
+            const float dy = worldY - stroke.worldY;
+            const float distance = std::sqrt(dx * dx + dy * dy);
+            if (distance > stroke.radius)
+                continue;
+            const float amount = opacity * SmoothFalloff(1.0f - distance / stroke.radius);
+            if (amount <= 1e-5f)
+                continue;
+            const size_t index = static_cast<size_t>(row) * 64 + column;
+            bool texelChanged = false;
+            if (stroke.layer == 0)
+            {
+                // The base layer has no alpha map. Revealing it means fading all overlay layers
+                // in their existing draw order; this never invents an unknown target texture.
+                for (uint32_t layer = 1; layer < header.nLayers; ++layer)
+                {
+                    const uint8_t before = alpha[layer][index];
+                    const uint8_t after = static_cast<uint8_t>(std::round(before * (1.0f - amount)));
+                    alpha[layer][index] = after;
+                    texelChanged = texelChanged || before != after;
+                }
+            }
+            else
+            {
+                const uint32_t selected = static_cast<uint32_t>(stroke.layer);
+                const uint8_t before = alpha[selected][index];
+                const float target = stroke.mode == TerrainTextureBrushMode::Paint ? 255.0f : 0.0f;
+                const uint8_t after = static_cast<uint8_t>(std::round(before + (target - before) * amount));
+                alpha[selected][index] = after;
+                texelChanged = before != after;
+                // Layers painted later in the MCLY order would otherwise hide this stroke. Fade
+                // only those higher-priority overlays, preserving lower-layer detail beneath it.
+                if (stroke.mode == TerrainTextureBrushMode::Paint)
+                    for (uint32_t layer = selected + 1; layer < header.nLayers; ++layer)
+                    {
+                        const uint8_t overlayBefore = alpha[layer][index];
+                        const uint8_t overlayAfter =
+                            static_cast<uint8_t>(std::round(overlayBefore * (1.0f - amount)));
+                        alpha[layer][index] = overlayAfter;
+                        texelChanged = texelChanged || overlayBefore != overlayAfter;
+                    }
+            }
+            if (texelChanged)
+            {
+                changed = true;
+                ++result.touchedTexels;
+            }
+        }
+    if (!changed)
+        return false;
+
+    std::vector<uint8_t> encoded;
+    encoded.reserve(static_cast<size_t>(header.nLayers - 1) * 4096);
+    for (uint32_t layer = 1; layer < header.nLayers; ++layer)
+    {
+        FixAlphaEdges(alpha[layer], doNotFix);
+        layers[layer].flags |= kAdtLayerUseAlphaMap;
+        layers[layer].flags &= ~kAdtLayerAlphaCompressed;
+        layers[layer].offsetInMCAL = static_cast<uint32_t>(encoded.size());
+        encoded.insert(encoded.end(), alpha[layer].begin(), alpha[layer].end());
+    }
+    std::memcpy(chunk.data.data() + layerData, layers.data(),
+                static_cast<size_t>(header.nLayers) * sizeof(AdtLayer));
+
+    const uint32_t encodedSize = static_cast<uint32_t>(encoded.size());
+    std::vector<uint8_t> replacement;
+    replacement.reserve(8 + encoded.size());
+    replacement.push_back('L'); replacement.push_back('A'); replacement.push_back('C'); replacement.push_back('M');
+    const uint8_t* sizeBytes = reinterpret_cast<const uint8_t*>(&encodedSize);
+    replacement.insert(replacement.end(), sizeBytes, sizeBytes + sizeof(encodedSize));
+    replacement.insert(replacement.end(), encoded.begin(), encoded.end());
+
+    const uint64_t oldMcalEnd = static_cast<uint64_t>(header.ofsAlpha) + 8u + mcalSize;
+    const int64_t delta = static_cast<int64_t>(replacement.size()) -
+                          static_cast<int64_t>(8u + mcalSize);
+    // Any header offset that points to data after MCAL must follow its new byte position. `ofsAlpha`
+    // itself remains at the same nested chunk start.
+    if (!ShiftMcnkOffset(header.ofsHeight, oldMcalEnd, delta) ||
+        !ShiftMcnkOffset(header.ofsNormal, oldMcalEnd, delta) ||
+        !ShiftMcnkOffset(header.ofsLayer, oldMcalEnd, delta) ||
+        !ShiftMcnkOffset(header.ofsRefs, oldMcalEnd, delta) ||
+        !ShiftMcnkOffset(header.ofsShadow, oldMcalEnd, delta) ||
+        !ShiftMcnkOffset(header.ofsSndEmitters, oldMcalEnd, delta) ||
+        !ShiftMcnkOffset(header.ofsLiquid, oldMcalEnd, delta) ||
+        !ShiftMcnkOffset(header.ofsMCCV, oldMcalEnd, delta) ||
+        !ShiftMcnkOffset(header.ofsMCLV, oldMcalEnd, delta))
+        return false;
+    header.sizeAlpha = encodedSize;
+    chunk.data.erase(chunk.data.begin() + static_cast<std::ptrdiff_t>(mcalChunk),
+                     chunk.data.begin() + static_cast<std::ptrdiff_t>(mcalData + mcalSize));
+    chunk.data.insert(chunk.data.begin() + static_cast<std::ptrdiff_t>(mcalChunk),
+                      replacement.begin(), replacement.end());
+    std::memcpy(chunk.data.data(), &header, sizeof(header));
+    ++result.touchedChunks;
+    return true;
+}
+
 } // namespace
 
 bool SculptTerrain(std::vector<uint8_t>& bytes, const TerrainBrushStroke& stroke,
@@ -463,6 +729,102 @@ bool PaintTerrainVertexColor(std::vector<uint8_t>& bytes, const TerrainVertexCol
         return false;
     bytes = std::move(working);
     return true;
+}
+
+bool PaintTerrainTexture(std::vector<uint8_t>& bytes, const TerrainTextureBrushStroke& stroke,
+                         TerrainTextureBrushResult* result)
+{
+    if (result)
+        *result = TerrainTextureBrushResult{};
+    if (!std::isfinite(stroke.worldX) || !std::isfinite(stroke.worldY) ||
+        !std::isfinite(stroke.radius) || stroke.radius <= 0.01f ||
+        !std::isfinite(stroke.opacity) || stroke.layer < 0 || stroke.layer > 3)
+        return false;
+
+    std::vector<RawChunk> chunks = ParseChunks(bytes);
+    if (chunks.empty())
+        return false;
+    TerrainTextureBrushResult local;
+    bool changed = false;
+    for (RawChunk& chunk : chunks)
+    {
+        if (!chunk.Is("MCNK"))
+            continue;
+        changed = PaintMcnkTexture(chunk, stroke, local) || changed;
+    }
+    if (!changed)
+    {
+        if (result)
+            *result = local;
+        return false;
+    }
+    ReEmit(chunks, bytes);
+    if (result)
+        *result = local;
+    return true;
+}
+
+bool InspectTerrainTextureLayers(const std::vector<uint8_t>& bytes, float worldX, float worldY,
+                                 std::vector<TerrainTextureLayerInfo>& out)
+{
+    out.clear();
+    if (!std::isfinite(worldX) || !std::isfinite(worldY))
+        return false;
+    std::vector<RawChunk> chunks = ParseChunks(bytes);
+    if (chunks.empty())
+        return false;
+    const RawChunk* mtex = nullptr;
+    for (const RawChunk& chunk : chunks)
+        if (chunk.Is("MTEX"))
+        {
+            mtex = &chunk;
+            break;
+        }
+    std::vector<std::string> textureNames;
+    if (mtex)
+    {
+        size_t offset = 0;
+        while (offset < mtex->data.size())
+        {
+            const size_t begin = offset;
+            while (offset < mtex->data.size() && mtex->data[offset] != '\0')
+                ++offset;
+            textureNames.emplace_back(reinterpret_cast<const char*>(mtex->data.data() + begin), offset - begin);
+            if (offset < mtex->data.size())
+                ++offset;
+        }
+    }
+
+    for (const RawChunk& chunk : chunks)
+    {
+        if (!chunk.Is("MCNK") || chunk.data.size() < sizeof(AdtMcnkHeader))
+            continue;
+        AdtMcnkHeader header{};
+        std::memcpy(&header, chunk.data.data(), sizeof(header));
+        if (worldX < header.position[0] - kChunkSize || worldX > header.position[0] ||
+            worldY < header.position[1] - kChunkSize || worldY > header.position[1] ||
+            header.nLayers == 0 || header.nLayers > 4)
+            continue;
+        size_t layerChunk = 0, layerData = 0;
+        uint32_t layerSize = 0;
+        if (!NestedPayload(chunk.data, header.ofsLayer, "MCLY", layerChunk, layerData, layerSize) ||
+            layerSize < header.nLayers * sizeof(AdtLayer))
+            return false;
+        std::array<AdtLayer, 4> layers{};
+        std::memcpy(layers.data(), chunk.data.data() + layerData,
+                    static_cast<size_t>(header.nLayers) * sizeof(AdtLayer));
+        for (uint32_t index = 0; index < header.nLayers; ++index)
+        {
+            TerrainTextureLayerInfo info;
+            info.layer = static_cast<int>(index);
+            if (layers[index].textureId < textureNames.size())
+                info.texturePath = textureNames[layers[index].textureId];
+            info.hasAlphaMap = index > 0 && (layers[index].flags & kAdtLayerUseAlphaMap) != 0;
+            out.push_back(std::move(info));
+        }
+        return !out.empty();
+    }
+    return false;
 }
 
 RawPlacement PlacementToRaw(const glm::mat4& m, const glm::vec3& origin)

@@ -111,11 +111,26 @@ textures. Use **Layer Manager** to choose the active quartet.
   vegetation tone, or baked mood.
 
 Use auto-blend as a starting point only; inspect cliffs, shorelines, and paths
-manually. In the live World Editor, **Terrain Paint** writes radial MCCV
-per-vertex tint strokes. Choose a tint, opacity, and radius; right-click to
-stage it, then save ADT edits to safely create/update MCCV chunks and reload the
-authoritative client-overlay result. This is ideal for baked dirt, vegetation
-variation, shoreline darkness, and localized mood tinting.
+manually. In the live World Editor, **Terrain Paint** has two independent lanes:
+
+- **Texture layer paint** samples the clicked MCNK's real `MCLY` slots and MTEX
+  names before you paint. Choose Base to safely reveal the existing base texture,
+  or choose an existing Overlay 1–3 slot with MCAL alpha to paint/erase. A missing
+  or non-alpha slot is skipped—Studio does not invent an MTEX path, alpha payload,
+  or overwrite a different layer just to satisfy a brush click. On save, legacy
+  4-bit/RLE MCAL data is
+  decoded and re-emitted as canonical uncompressed 8-bit alpha maps with nested
+  MCNK and outer MCIN offsets repaired.
+- **Vertex tint** writes radial MCCV per-vertex color strokes. Choose a tint,
+  opacity, and radius; right-click to stage it, then save ADT edits to safely
+  create/update MCCV chunks and reload the authoritative client-overlay result.
+  This is ideal for baked dirt, vegetation variation, shoreline darkness, and
+  localized mood tinting.
+
+Both kinds of paint are staged, use Ctrl+Z/Ctrl+Y before save, and become visible
+after **Save ADT edits** reloads the edited-client overlay. Use `P` to arm
+texture paint and **Sample layers** when you want to inspect a surface without
+changing it.
 
 ## 5. Object composition
 
